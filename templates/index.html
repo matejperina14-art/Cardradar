@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+
 <title>CardRadar 🔍 – reálne ceny Pokémon kariet</title>
 
 <style>
+
 :root{
   --bg:#090d16;
   --panel:#1e293b;
@@ -15,6 +17,7 @@
   --border:#334155;
   --accent:#facc15;
   --green:#4ade80;
+  --blue:#2563eb;
 }
 
 *{
@@ -25,9 +28,22 @@ body{
   margin:0;
   padding:22px 14px;
   min-height:100vh;
-  background:linear-gradient(135deg,#090d16,#0f172a,#172033);
+
+  background:
+    linear-gradient(
+      135deg,
+      #090d16,
+      #0f172a,
+      #172033
+    );
+
   color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 
 .wrap{
@@ -48,6 +64,11 @@ h1{
   margin-bottom:22px;
 }
 
+
+/* =========================================================
+   SEARCH
+   ========================================================= */
+
 .search-wrap{
   position:relative;
 }
@@ -55,8 +76,11 @@ h1{
 .search{
   display:flex;
   gap:8px;
+
   background:#1e293bcc;
+
   padding:8px;
+
   border:1px solid var(--border);
   border-radius:14px;
 }
@@ -68,12 +92,27 @@ h1{
 .input,
 select,
 button{
+
   border:1px solid var(--border);
+
   background:var(--input);
+
   color:var(--text);
+
   border-radius:9px;
+
   padding:11px 13px;
+
   font-size:15px;
+}
+
+.input{
+  outline:none;
+}
+
+.input:focus{
+  border-color:#64748b;
+  box-shadow:0 0 0 2px rgba(100,116,139,.15);
 }
 
 button{
@@ -87,18 +126,43 @@ button.primary{
   border:0;
 }
 
+button.primary:disabled{
+  opacity:.6;
+  cursor:default;
+}
+
+
+/* =========================================================
+   AUTOCOMPLETE
+   ========================================================= */
+
 .suggestions{
+
   position:absolute;
+
   z-index:1000;
+
   top:calc(100% + 6px);
+
   left:0;
   right:0;
+
   background:#111827;
+
   border:1px solid var(--border);
+
   border-radius:12px;
+
   overflow:hidden;
-  box-shadow:0 15px 35px rgba(0,0,0,.45);
+
+  box-shadow:
+    0 15px 35px rgba(0,0,0,.45);
+
   display:none;
+
+  max-height:430px;
+
+  overflow-y:auto;
 }
 
 .suggestions.show{
@@ -106,12 +170,22 @@ button.primary{
 }
 
 .suggestion{
+
   display:flex;
+
   align-items:center;
+
   gap:12px;
+
   padding:11px 13px;
+
   cursor:pointer;
-  border-bottom:1px solid rgba(51,65,85,.65);
+
+  border-bottom:
+    1px solid rgba(51,65,85,.65);
+
+  transition:
+    background .12s ease;
 }
 
 .suggestion:last-child{
@@ -124,89 +198,153 @@ button.primary{
 }
 
 .suggestion-icon{
-  width:34px;
-  height:34px;
+
+  width:36px;
+  height:36px;
+
   border-radius:8px;
+
   display:flex;
+
   align-items:center;
   justify-content:center;
+
   background:#0f172a;
+
   font-size:17px;
+
   flex:none;
 }
 
 .suggestion-main{
+
   min-width:0;
+
   flex:1;
 }
 
 .suggestion-title{
+
   font-weight:700;
+
   white-space:nowrap;
+
   overflow:hidden;
+
   text-overflow:ellipsis;
 }
 
 .suggestion-sub{
+
   color:var(--sub);
+
   font-size:12px;
+
   margin-top:2px;
+
   white-space:nowrap;
+
   overflow:hidden;
+
   text-overflow:ellipsis;
 }
 
 .suggestion-type{
+
   color:var(--sub);
+
   font-size:11px;
+
   padding:4px 7px;
+
   border:1px solid var(--border);
+
   border-radius:6px;
+
   white-space:nowrap;
 }
 
 .suggestions-loading{
+
   padding:14px;
+
   text-align:center;
+
   color:var(--sub);
+
   font-size:14px;
 }
 
 .suggestions-empty{
+
   padding:14px;
+
   color:var(--sub);
+
   text-align:center;
+
   font-size:14px;
 }
 
+
+/* =========================================================
+   TAGS
+   ========================================================= */
+
 .tags{
+
   display:flex;
+
   gap:6px;
+
   flex-wrap:wrap;
+
   margin:12px 0;
 }
 
 .tags button{
+
   padding:7px 10px;
+
   font-size:13px;
 }
 
+
+/* =========================================================
+   PANELS
+   ========================================================= */
+
 .panel{
+
   background:#1e293bcc;
+
   border:1px solid var(--border);
+
   border-radius:14px;
+
   padding:16px;
+
   margin:14px 0;
 }
 
+
+/* =========================================================
+   PREVIEW
+   ========================================================= */
+
 .preview{
+
   display:flex;
+
   gap:15px;
+
   align-items:center;
 }
 
 .preview img{
+
   width:90px;
+
   border-radius:9px;
 }
 
@@ -214,38 +352,69 @@ button.primary{
   color:var(--sub);
 }
 
+
+/* =========================================================
+   SUMMARY
+   ========================================================= */
+
 .summary-grid{
+
   display:grid;
-  grid-template-columns:repeat(4,1fr);
+
+  grid-template-columns:
+    repeat(4,1fr);
+
   gap:8px;
+
   margin-top:14px;
 }
 
 .summary-box{
+
   background:#0f172a;
+
   border:1px solid var(--border);
+
   border-radius:10px;
+
   padding:11px;
+
   text-align:center;
 }
 
 .summary-label{
+
   color:var(--sub);
+
   font-size:11px;
+
   margin-bottom:4px;
 }
 
 .summary-value{
+
   font-size:17px;
+
   font-weight:800;
 }
 
+
+/* =========================================================
+   OFFERS
+   ========================================================= */
+
 .offer{
+
   display:flex;
+
   justify-content:space-between;
+
   gap:14px;
+
   align-items:center;
+
   padding:14px 0;
+
   border-bottom:1px solid var(--border);
 }
 
@@ -254,50 +423,87 @@ button.primary{
 }
 
 .price{
+
   font-size:1.3rem;
+
   color:var(--green);
+
   font-weight:800;
+
   white-space:nowrap;
 }
 
 .buy{
+
   display:inline-block;
+
   margin-top:7px;
+
   background:var(--accent);
+
   color:#111827;
+
   text-decoration:none;
+
   font-weight:800;
+
   padding:7px 10px;
+
   border-radius:7px;
+
   font-size:13px;
 }
 
+
+/* =========================================================
+   BADGES
+   ========================================================= */
+
 .badge{
+
   font-size:12px;
+
   background:#334155;
+
   padding:3px 7px;
+
   border-radius:5px;
+
   margin-right:4px;
 }
 
 .best{
+
   background:#16a34a;
+
   color:white;
 }
 
 .type-card{
+
   background:#2563eb;
+
   color:white;
 }
 
 .type-product{
+
   background:#7c3aed;
+
   color:white;
 }
 
+
+/* =========================================================
+   STATES
+   ========================================================= */
+
 .loading{
+
   text-align:center;
+
   padding:30px;
+
   color:var(--sub);
 }
 
@@ -306,10 +512,18 @@ button.primary{
 }
 
 .empty{
+
   text-align:center;
+
   padding:30px;
+
   color:var(--sub);
 }
+
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
 
 @media(max-width:650px){
 
@@ -330,7 +544,9 @@ button.primary{
   }
 
   .offer{
+
     align-items:flex-start;
+
     flex-direction:column;
   }
 
@@ -339,6 +555,7 @@ button.primary{
   }
 
   .preview{
+
     align-items:flex-start;
   }
 
@@ -347,22 +564,35 @@ button.primary{
   }
 
   .summary-grid{
-    grid-template-columns:repeat(2,1fr);
+
+    grid-template-columns:
+      repeat(2,1fr);
   }
 
 }
+
 </style>
 </head>
+
 
 <body>
 
 <div class="wrap">
 
-<h1>CardRadar 🔍</h1>
+
+<h1>
+  CardRadar 🔍
+</h1>
+
 
 <div class="sub">
-Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
+  Reálne ceny Pokémon kariet a produktov z CardyX
 </div>
+
+
+<!-- =======================================================
+     SEARCH
+======================================================= -->
 
 <div class="search-wrap">
 
@@ -372,12 +602,16 @@ Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
       id="q"
       class="input"
       autocomplete="off"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
       placeholder="Pikachu, Charizard, Surging Sparks ETB..."
       oninput="handleInput()"
       onkeydown="handleKeydown(event)"
     >
 
     <button
+      id="searchButton"
       class="primary"
       onclick="search()"
     >
@@ -386,12 +620,18 @@ Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
 
   </div>
 
+
   <div
     id="suggestions"
     class="suggestions"
   ></div>
 
 </div>
+
+
+<!-- =======================================================
+     QUICK SEARCH TAGS
+======================================================= -->
 
 <div class="tags">
 
@@ -421,7 +661,9 @@ Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
 
 </div>
 
+
 <div id="status"></div>
+
 
 <div
   id="preview"
@@ -429,15 +671,24 @@ Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
   style="display:none"
 ></div>
 
+
 <div id="results"></div>
 
+
 </div>
+
 
 <script>
 
 /* =========================================================
    CARD RADAR FRONTEND
-   ========================================================= */
+   VERSION 5.12 UI+
+========================================================= */
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
 
 const eur = (n) => {
 
@@ -451,14 +702,336 @@ const eur = (n) => {
 
 };
 
+
+function esc(s){
+
+  return String(
+    s ?? ''
+  ).replace(
+    /[&<>"']/g,
+    m => ({
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#039;'
+    }[m])
+  );
+
+}
+
+
+/* =========================================================
+   AUTOCOMPLETE STATE
+========================================================= */
+
 let suggestionTimer = null;
+
 let suggestionItems = [];
+
 let suggestionIndex = -1;
+
+let suggestionController = null;
+
+
+/*
+ * Krátka klientská cache.
+ *
+ * Výhoda:
+ * keď používateľ napíše napr.
+ * pika -> pikachu -> pika
+ *
+ * nemusíme zakaždým volať server.
+ */
+
+const suggestionCache =
+  new Map();
+
+const SUGGESTION_CACHE_TTL =
+  30000;
+
+
+/* =========================================================
+   POKÉMON AUTOCOMPLETE FALLBACK
+========================================================= */
+
+/*
+ * Toto je rýchla lokálna vrstva.
+ *
+ * Serverové návrhy majú prednosť.
+ * Táto vrstva zabezpečí okamžité návrhy
+ * aj pri prvom písaní.
+ */
+
+const pokemonCatalog = [
+
+  'Pikachu',
+  'Charizard',
+  'Umbreon',
+  'Eevee',
+  'Mew',
+  'Mewtwo',
+  'Gengar',
+  'Lucario',
+  'Greninja',
+  'Rayquaza',
+  'Gardevoir',
+  'Dragonite',
+  'Gyarados',
+  'Blastoise',
+  'Venusaur',
+  'Lugia',
+  'Ho-Oh',
+  'Arceus',
+  'Dialga',
+  'Palkia',
+  'Zekrom',
+  'Reshiram',
+  'Celebi',
+  'Jolteon',
+  'Vaporeon',
+  'Flareon',
+  'Espeon',
+  'Sylveon',
+  'Leafeon',
+  'Glaceon'
+
+];
+
+
+/* =========================================================
+   BUILD LOCAL SUGGESTIONS
+========================================================= */
+
+function buildLocalSuggestions(q){
+
+  const query =
+    q
+      .toLowerCase()
+      .trim();
+
+  if(query.length < 2){
+    return [];
+  }
+
+
+  const results = [];
+
+
+  for(
+    const pokemon
+    of pokemonCatalog
+  ){
+
+    const p =
+      pokemon.toLowerCase();
+
+
+    /*
+     * Pokémon samotný
+     */
+
+    if(
+      p.startsWith(query) ||
+      query.startsWith(p)
+    ){
+
+      results.push({
+
+        title:pokemon,
+
+        query:pokemon,
+
+        subtitle:
+          'Pokémon karta',
+
+        type:'pokemon',
+
+        type_label:'Pokémon'
+
+      });
+
+
+      /*
+       * Varianty karty
+       */
+
+      const suffixes = [
+
+        'ex',
+        'VMAX',
+        'VSTAR',
+        'V'
+
+      ];
+
+
+      for(
+        const suffix
+        of suffixes
+      ){
+
+        const title =
+          pokemon +
+          ' ' +
+          suffix;
+
+        const lower =
+          title.toLowerCase();
+
+
+        /*
+         * Zobrazíme variant,
+         * ak používateľ píše napr.
+         * pika
+         * pikachu
+         * pikachu v
+         * pikachu vmax
+         */
+
+        if(
+          query === p ||
+          lower.startsWith(query)
+        ){
+
+          results.push({
+
+            title:title,
+
+            query:title,
+
+            subtitle:
+              'Pokémon karta • ' +
+              suffix,
+
+            type:'card',
+
+            type_label:'Karta'
+
+          });
+
+        }
+
+      }
+
+    }
+
+  }
+
+
+  return results;
+
+}
+
+
+/* =========================================================
+   MERGE SUGGESTIONS
+========================================================= */
+
+function mergeSuggestions(
+  serverItems,
+  localItems
+){
+
+  const merged = [];
+
+  const seen =
+    new Set();
+
+
+  function add(item){
+
+    if(!item){
+      return;
+    }
+
+
+    const title =
+      String(
+        item.title ||
+        item.query ||
+        ''
+      ).trim();
+
+
+    const query =
+      String(
+        item.query ||
+        item.title ||
+        ''
+      ).trim();
+
+
+    if(!title || !query){
+      return;
+    }
+
+
+    const key =
+      query.toLowerCase();
+
+
+    if(seen.has(key)){
+      return;
+    }
+
+
+    seen.add(key);
+
+
+    merged.push({
+
+      title:title,
+
+      query:query,
+
+      subtitle:
+        item.subtitle || '',
+
+      type:
+        item.type || 'card',
+
+      type_label:
+        item.type_label ||
+        (
+          item.type === 'product'
+          ? 'Produkt'
+          : 'Karta'
+        )
+
+    });
+
+  }
+
+
+  /*
+   * Server má prednosť,
+   * pretože môže obsahovať konkrétne
+   * reálne produkty z CardyX.
+   */
+
+  (
+    Array.isArray(serverItems)
+      ? serverItems
+      : []
+  ).forEach(add);
+
+
+  (
+    Array.isArray(localItems)
+      ? localItems
+      : []
+  ).forEach(add);
+
+
+  return merged.slice(0,8);
+
+}
 
 
 /* =========================================================
    QUICK TAG
-   ========================================================= */
+========================================================= */
 
 function tag(x){
 
@@ -476,49 +1049,98 @@ function tag(x){
 
 /* =========================================================
    INPUT HANDLING
-   ========================================================= */
+========================================================= */
 
 function handleInput(){
 
+  const input =
+    document.getElementById('q');
+
   const q =
-    document.getElementById('q')
-      .value
-      .trim();
+    input.value.trim();
+
 
   suggestionIndex = -1;
+
 
   clearTimeout(
     suggestionTimer
   );
+
+
+  /*
+   * Zrušíme predchádzajúcu request
+   * ak používateľ už píše ďalej.
+   */
+
+  if(suggestionController){
+
+    suggestionController.abort();
+
+    suggestionController =
+      null;
+
+  }
+
 
   if(!q){
 
     hideSuggestions();
 
     return;
+
   }
+
 
   if(q.length < 2){
 
     hideSuggestions();
 
     return;
+
   }
 
-  showSuggestionsLoading();
+
+  /*
+   * Najprv okamžite zobrazíme lokálne návrhy.
+   */
+
+  const localItems =
+    buildLocalSuggestions(q);
+
+
+  if(localItems.length){
+
+    suggestionItems =
+      localItems;
+
+    renderSuggestions();
+
+  }
+  else{
+
+    showSuggestionsLoading();
+
+  }
+
+
+  /*
+   * Server zavoláme až po krátkom
+   * oneskorení.
+   */
 
   suggestionTimer =
     setTimeout(
       () => loadSuggestions(q),
-      220
+      120
     );
 
 }
 
 
 /* =========================================================
-   KEYBOARD NAVIGATION
-   ========================================================= */
+   KEYBOARD
+========================================================= */
 
 function handleKeydown(event){
 
@@ -532,6 +1154,7 @@ function handleKeydown(event){
       'show'
     );
 
+
   if(
     event.key === 'ArrowDown' &&
     visible
@@ -539,11 +1162,14 @@ function handleKeydown(event){
 
     event.preventDefault();
 
+
     if(!suggestionItems.length){
       return;
     }
 
+
     suggestionIndex++;
+
 
     if(
       suggestionIndex >=
@@ -554,10 +1180,13 @@ function handleKeydown(event){
 
     }
 
+
     renderActiveSuggestion();
 
     return;
+
   }
+
 
   if(
     event.key === 'ArrowUp' &&
@@ -566,11 +1195,14 @@ function handleKeydown(event){
 
     event.preventDefault();
 
+
     if(!suggestionItems.length){
       return;
     }
 
+
     suggestionIndex--;
+
 
     if(suggestionIndex < 0){
 
@@ -579,14 +1211,18 @@ function handleKeydown(event){
 
     }
 
+
     renderActiveSuggestion();
 
     return;
+
   }
+
 
   if(event.key === 'Enter'){
 
     event.preventDefault();
+
 
     if(
       visible &&
@@ -603,12 +1239,16 @@ function handleKeydown(event){
       );
 
       return;
+
     }
+
 
     search();
 
     return;
+
   }
+
 
   if(event.key === 'Escape'){
 
@@ -620,10 +1260,54 @@ function handleKeydown(event){
 
 
 /* =========================================================
-   LOAD AUTOCOMPLETE
-   ========================================================= */
+   LOAD SERVER SUGGESTIONS
+========================================================= */
 
 async function loadSuggestions(q){
+
+  const cacheKey =
+    q.toLowerCase().trim();
+
+
+  /*
+   * CACHE
+   */
+
+  const cached =
+    suggestionCache.get(
+      cacheKey
+    );
+
+
+  if(
+    cached &&
+    Date.now() -
+      cached.time <
+      SUGGESTION_CACHE_TTL
+  ){
+
+    suggestionItems =
+      mergeSuggestions(
+        cached.items,
+        buildLocalSuggestions(q)
+      );
+
+    suggestionIndex = -1;
+
+    renderSuggestions();
+
+    return;
+
+  }
+
+
+  /*
+   * AbortController
+   */
+
+  suggestionController =
+    new AbortController();
+
 
   try{
 
@@ -631,35 +1315,115 @@ async function loadSuggestions(q){
       '/api/suggestions?q=' +
       encodeURIComponent(q);
 
+
     const r =
-      await fetch(url);
+      await fetch(
+        url,
+        {
+          signal:
+            suggestionController.signal,
+
+          cache:'no-store'
+        }
+      );
+
+
+    if(!r.ok){
+      throw new Error(
+        'HTTP ' + r.status
+      );
+    }
+
 
     const d =
       await r.json();
 
-    if(!r.ok){
 
-      throw new Error(
-        d.error || 'Chyba'
-      );
-
-    }
-
-    suggestionItems =
+    const serverItems =
       Array.isArray(
         d.suggestions
       )
       ? d.suggestions
       : [];
 
+
+    /*
+     * Uložíme iba serverové výsledky.
+     */
+
+    suggestionCache.set(
+      cacheKey,
+      {
+        time:Date.now(),
+        items:serverItems
+      }
+    );
+
+
+    /*
+     * Spojíme:
+     *
+     * 1. reálne serverové návrhy
+     * 2. lokálne varianty
+     */
+
+    suggestionItems =
+      mergeSuggestions(
+        serverItems,
+        buildLocalSuggestions(q)
+      );
+
+
     suggestionIndex = -1;
+
 
     renderSuggestions();
 
   }
   catch(e){
 
-    hideSuggestions();
+    /*
+     * Abort nie je chyba.
+     */
+
+    if(
+      e &&
+      e.name === 'AbortError'
+    ){
+
+      return;
+
+    }
+
+
+    /*
+     * Server nedostupný?
+     * Lokálne návrhy stále fungujú.
+     */
+
+    suggestionItems =
+      buildLocalSuggestions(q);
+
+
+    suggestionIndex = -1;
+
+
+    if(suggestionItems.length){
+
+      renderSuggestions();
+
+    }
+    else{
+
+      hideSuggestions();
+
+    }
+
+  }
+  finally{
+
+    suggestionController =
+      null;
 
   }
 
@@ -667,8 +1431,8 @@ async function loadSuggestions(q){
 
 
 /* =========================================================
-   SHOW LOADING
-   ========================================================= */
+   LOADING
+========================================================= */
 
 function showSuggestionsLoading(){
 
@@ -677,10 +1441,12 @@ function showSuggestionsLoading(){
       'suggestions'
     );
 
+
   box.innerHTML =
     '<div class="suggestions-loading">' +
     '🔎 Hľadám návrhy...' +
     '</div>';
+
 
   box.classList.add(
     'show'
@@ -690,25 +1456,29 @@ function showSuggestionsLoading(){
 
 
 /* =========================================================
-   SUGGESTION ICON
-   ========================================================= */
+   ICON
+========================================================= */
 
 function suggestionIcon(item){
 
   const type =
     item.type || '';
 
+
   if(type === 'set'){
     return '📦';
   }
+
 
   if(type === 'product'){
     return '🛒';
   }
 
+
   if(type === 'pokemon'){
     return '⚡';
   }
+
 
   return '🃏';
 
@@ -717,7 +1487,7 @@ function suggestionIcon(item){
 
 /* =========================================================
    RENDER SUGGESTIONS
-   ========================================================= */
+========================================================= */
 
 function renderSuggestions(){
 
@@ -726,20 +1496,24 @@ function renderSuggestions(){
       'suggestions'
     );
 
+
   if(!suggestionItems.length){
 
     box.innerHTML =
       '<div class="suggestions-empty">' +
-      'Žiadny presný návrh – môžeš vyhľadať aj vlastný názov.' +
+      'Žiadny presný návrh – môžeš vyhľadať vlastný názov.' +
       '</div>';
+
 
     box.classList.add(
       'show'
     );
 
+
     return;
 
   }
+
 
   box.innerHTML =
     suggestionItems
@@ -751,15 +1525,18 @@ function renderSuggestions(){
               item.title || ''
             );
 
+
           const subtitle =
             esc(
               item.subtitle || ''
             );
 
+
           const type =
             esc(
               item.type_label || ''
             );
+
 
           return `
 
@@ -770,33 +1547,48 @@ function renderSuggestions(){
             >
 
               <div class="suggestion-icon">
+
                 ${suggestionIcon(item)}
+
               </div>
+
 
               <div class="suggestion-main">
 
                 <div class="suggestion-title">
+
                   ${title}
+
                 </div>
+
 
                 ${
                   subtitle
                   ? `
+
                     <div class="suggestion-sub">
+
                       ${subtitle}
+
                     </div>
+
                   `
                   : ''
                 }
 
               </div>
 
+
               ${
                 type
                 ? `
+
                   <div class="suggestion-type">
+
                     ${type}
+
                   </div>
+
                 `
                 : ''
               }
@@ -809,6 +1601,7 @@ function renderSuggestions(){
       )
       .join('');
 
+
   box.classList.add(
     'show'
   );
@@ -817,8 +1610,8 @@ function renderSuggestions(){
 
 
 /* =========================================================
-   ACTIVE SUGGESTION
-   ========================================================= */
+   ACTIVE
+========================================================= */
 
 function renderActiveSuggestion(){
 
@@ -826,6 +1619,7 @@ function renderActiveSuggestion(){
     document.querySelectorAll(
       '.suggestion'
     );
+
 
   rows.forEach(
     (row,index) => {
@@ -838,20 +1632,38 @@ function renderActiveSuggestion(){
     }
   );
 
+
+  const active =
+    document.querySelector(
+      '.suggestion.active'
+    );
+
+
+  if(active){
+
+    active.scrollIntoView({
+      block:'nearest'
+    });
+
+  }
+
 }
 
 
 /* =========================================================
-   CHOOSE SUGGESTION
-   ========================================================= */
+   CHOOSE
+========================================================= */
 
 function chooseSuggestionByIndex(index){
 
   if(
     !suggestionItems[index]
   ){
+
     return;
+
   }
+
 
   chooseSuggestion(
     suggestionItems[index]
@@ -867,11 +1679,14 @@ function chooseSuggestion(item){
     item.title ||
     '';
 
+
   document.getElementById(
     'q'
   ).value = value;
 
+
   hideSuggestions();
+
 
   search();
 
@@ -879,8 +1694,8 @@ function chooseSuggestion(item){
 
 
 /* =========================================================
-   HIDE SUGGESTIONS
-   ========================================================= */
+   HIDE
+========================================================= */
 
 function hideSuggestions(){
 
@@ -889,13 +1704,17 @@ function hideSuggestions(){
       'suggestions'
     );
 
+
   box.classList.remove(
     'show'
   );
 
+
   box.innerHTML = '';
 
+
   suggestionItems = [];
+
 
   suggestionIndex = -1;
 
@@ -903,14 +1722,15 @@ function hideSuggestions(){
 
 
 /* =========================================================
-   RENDER SUMMARY
-   ========================================================= */
+   SUMMARY
+========================================================= */
 
 function renderSummary(summary){
 
   if(!summary){
     return '';
   }
+
 
   return `
 
@@ -923,12 +1743,15 @@ function renderSummary(summary){
         </div>
 
         <div class="summary-value">
+
           ${Number(
             summary.count || 0
           )}
+
         </div>
 
       </div>
+
 
       <div class="summary-box">
 
@@ -937,12 +1760,15 @@ function renderSummary(summary){
         </div>
 
         <div class="summary-value">
+
           ${Number(
             summary.shops || 0
           )}
+
         </div>
 
       </div>
+
 
       <div class="summary-box">
 
@@ -951,15 +1777,18 @@ function renderSummary(summary){
         </div>
 
         <div class="summary-value">
+
           ${
             summary.lowest_eur !== null &&
             summary.lowest_eur !== undefined
             ? eur(summary.lowest_eur)
             : '-'
           }
+
         </div>
 
       </div>
+
 
       <div class="summary-box">
 
@@ -968,12 +1797,14 @@ function renderSummary(summary){
         </div>
 
         <div class="summary-value">
+
           ${
             summary.average_eur !== null &&
             summary.average_eur !== undefined
             ? eur(summary.average_eur)
             : '-'
           }
+
         </div>
 
       </div>
@@ -986,8 +1817,8 @@ function renderSummary(summary){
 
 
 /* =========================================================
-   RENDER PREVIEW
-   ========================================================= */
+   PREVIEW
+========================================================= */
 
 function renderPreview(
   info,
@@ -999,6 +1830,7 @@ function renderPreview(
     document.getElementById(
       'preview'
     );
+
 
   if(
     !info &&
@@ -1012,17 +1844,20 @@ function renderPreview(
 
   }
 
+
   const title =
     info &&
     info.title
     ? info.title
     : fallbackTitle;
 
+
   let subtitle =
     info &&
     info.subtitle
     ? info.subtitle
     : '';
+
 
   if(
     !subtitle &&
@@ -1058,8 +1893,10 @@ function renderPreview(
 
   }
 
+
   preview.style.display =
     'block';
+
 
   preview.innerHTML = `
 
@@ -1069,28 +1906,42 @@ function renderPreview(
         info &&
         info.image
         ? `
+
           <img
             src="${esc(
               info.image
             )}"
             alt=""
           >
+
         `
         : ''
       }
 
+
       <div>
 
         <h2>
-          ${esc(title || '')}
+
+          ${esc(
+            title || ''
+          )}
+
         </h2>
+
 
         ${
           subtitle
           ? `
+
             <div class="muted">
-              ${esc(subtitle)}
+
+              ${esc(
+                subtitle
+              )}
+
             </div>
+
           `
           : ''
         }
@@ -1105,8 +1956,8 @@ function renderPreview(
 
 
 /* =========================================================
-   RENDER RESULTS
-   ========================================================= */
+   RESULTS
+========================================================= */
 
 function renderResults(results){
 
@@ -1115,6 +1966,7 @@ function renderResults(results){
       'results'
     );
 
+
   if(
     !Array.isArray(results) ||
     !results.length
@@ -1122,20 +1974,27 @@ function renderResults(results){
 
     el.innerHTML =
       '<div class="empty">' +
+
       'Nenašiel som čitateľnú ponuku. ' +
+
       'Obchod mohol zmeniť stránku alebo ' +
+
       'vyhľadávanie nič nenašlo.' +
+
       '</div>';
+
 
     return;
 
   }
+
 
   el.innerHTML =
 
     '<div class="panel">' +
 
     '<h3>Aktuálne ponuky</h3>' +
+
 
     results
       .map(
@@ -1144,20 +2003,26 @@ function renderResults(results){
           const productType =
             detectFrontendType(x);
 
+
           const typeBadge =
             productType
             ? `
+
               <span class="badge ${
                 productType === 'Karta'
                 ? 'type-card'
                 : 'type-product'
               }">
+
                 ${esc(
                   productType
                 )}
+
               </span>
+
             `
             : '';
+
 
           return `
 
@@ -1168,12 +2033,15 @@ function renderResults(results){
                 <div>
 
                   <b>
+
                     ${esc(
                       x.title || ''
                     )}
+
                   </b>
 
                 </div>
+
 
                 <div
                   style="margin-top:6px"
@@ -1181,42 +2049,60 @@ function renderResults(results){
 
                   ${typeBadge}
 
+
                   <span class="badge">
+
                     ${esc(
                       x.shop || ''
                     )}
+
                   </span>
+
 
                   ${
                     x.country
                     ? `
+
                       <span class="badge">
+
                         ${esc(
                           x.country
                         )}
+
                       </span>
+
                     `
                     : ''
                   }
+
 
                   ${
                     x.condition
                     ? `
+
                       <span class="badge">
+
                         ${esc(
                           x.condition
                         )}
+
                       </span>
+
                     `
                     : ''
                   }
 
+
                   ${
                     i === 0
                     ? `
+
                       <span class="badge best">
+
                         NAJNIŽŠIA CENA
+
                       </span>
+
                     `
                     : ''
                   }
@@ -1225,17 +2111,22 @@ function renderResults(results){
 
               </div>
 
+
               <div>
 
                 <div class="price">
+
                   ${eur(
                     x.price_eur
                   )}
+
                 </div>
+
 
                 ${
                   x.link
                   ? `
+
                     <a
                       class="buy"
                       href="${esc(
@@ -1244,8 +2135,11 @@ function renderResults(results){
                       target="_blank"
                       rel="noopener noreferrer"
                     >
+
                       Otvoriť ponuku ↗
+
                     </a>
+
                   `
                   : ''
                 }
@@ -1266,8 +2160,8 @@ function renderResults(results){
 
 
 /* =========================================================
-   FRONTEND PRODUCT TYPE
-   ========================================================= */
+   PRODUCT TYPE
+========================================================= */
 
 function detectFrontendType(item){
 
@@ -1280,25 +2174,53 @@ function detectFrontendType(item){
 
   }
 
+
   const title =
     String(
       item.title || ''
     ).toLowerCase();
 
+
   if(
-    title.includes('elite trainer box') ||
-    /\betb\b/.test(title) ||
-    title.includes('booster box') ||
-    title.includes('booster bundle') ||
-    title.includes('collection box') ||
-    title.includes('premium collection') ||
-    title.includes('blister') ||
-    /\btin\b/.test(title)
+
+    title.includes(
+      'elite trainer box'
+    ) ||
+
+    /\betb\b/.test(
+      title
+    ) ||
+
+    title.includes(
+      'booster box'
+    ) ||
+
+    title.includes(
+      'booster bundle'
+    ) ||
+
+    title.includes(
+      'collection box'
+    ) ||
+
+    title.includes(
+      'premium collection'
+    ) ||
+
+    title.includes(
+      'blister'
+    ) ||
+
+    /\btin\b/.test(
+      title
+    )
+
   ){
 
     return 'Produkt';
 
   }
+
 
   return 'Karta';
 
@@ -1307,46 +2229,60 @@ function detectFrontendType(item){
 
 /* =========================================================
    SEARCH
-   ========================================================= */
+========================================================= */
 
 async function search(){
 
   let stage =
     'začiatok';
 
+
   const status =
     document.getElementById(
       'status'
     );
+
 
   const results =
     document.getElementById(
       'results'
     );
 
+
   const preview =
     document.getElementById(
       'preview'
     );
+
+
+  const button =
+    document.getElementById(
+      'searchButton'
+    );
+
 
   try{
 
     stage =
       'čítanie vyhľadávania';
 
+
     const input =
-      document.getElementById('q');
+      document.getElementById(
+        'q'
+      );
+
 
     const q =
       input.value.trim();
 
+
     if(!q){
+
       return;
+
     }
 
-
-    stage =
-      'zatváranie návrhov';
 
     hideSuggestions();
 
@@ -1354,12 +2290,21 @@ async function search(){
     stage =
       'zobrazenie loadingu';
 
+
+    button.disabled = true;
+
+
     status.innerHTML =
+
       '<div class="loading">' +
-      '🔎 Overujem aktuálne ponuky v obchodoch...' +
+
+      '🔎 Overujem aktuálne ponuky...' +
+
       '</div>';
 
+
     results.innerHTML = '';
+
 
     preview.style.display =
       'none';
@@ -1367,6 +2312,7 @@ async function search(){
 
     stage =
       'príprava URL';
+
 
     const apiUrl =
       '/api/search?q=' +
@@ -1382,8 +2328,14 @@ async function search(){
     stage =
       'odosielanie požiadavky';
 
+
     const r =
-      await fetch(apiUrl);
+      await fetch(
+        apiUrl,
+        {
+          cache:'no-store'
+        }
+      );
 
 
     console.log(
@@ -1394,6 +2346,7 @@ async function search(){
 
     stage =
       'čítanie odpovede';
+
 
     const responseText =
       await r.text();
@@ -1407,6 +2360,7 @@ async function search(){
 
     let d;
 
+
     try{
 
       d =
@@ -1418,14 +2372,20 @@ async function search(){
     catch(jsonError){
 
       throw new Error(
+
         'Server neposlal platný JSON. ' +
+
         'HTTP ' +
+
         r.status +
+
         '. Začiatok odpovede: ' +
+
         responseText.substring(
           0,
           500
         )
+
       );
 
     }
@@ -1433,6 +2393,7 @@ async function search(){
 
     stage =
       'spracovanie odpovede';
+
 
     if(!r.ok){
 
@@ -1447,6 +2408,7 @@ async function search(){
     stage =
       'vykreslenie náhľadu';
 
+
     renderPreview(
       d.info,
       d.parsed,
@@ -1457,6 +2419,7 @@ async function search(){
     stage =
       'spracovanie normalizácie';
 
+
     const normalized =
       d.normalized_query ||
       d.normalized ||
@@ -1464,10 +2427,14 @@ async function search(){
 
 
     if(
+
       normalized &&
+
       normalized.trim() &&
+
       normalized.toLowerCase() !==
       q.toLowerCase()
+
     ){
 
       input.value =
@@ -1478,6 +2445,7 @@ async function search(){
 
     stage =
       'spracovanie výsledkov';
+
 
     const resultCount =
       Array.isArray(
@@ -1490,64 +2458,105 @@ async function search(){
     stage =
       'vykreslenie statusu';
 
+
     status.innerHTML = `
 
       <div class="panel">
 
         <b>
+
           Nájdených reálnych ponúk:
           ${resultCount}
+
         </b>
+
 
         ${
           normalized &&
           normalized.toLowerCase() !==
           q.toLowerCase()
+
           ? `
+
             <div
               class="muted"
               style="margin-top:6px"
             >
+
               CardRadar rozpoznal:
+
               <b>
-                ${esc(normalized)}
+
+                ${esc(
+                  normalized
+                )}
+
               </b>
+
             </div>
+
           `
+
           : ''
+
         }
+
 
         ${
           d.parsed &&
           d.parsed.type
+
           ? `
+
             <div
               class="muted"
               style="margin-top:5px"
             >
+
               Typ vyhľadávania:
+
               <b>
+
                 ${
                   d.parsed.type === 'sealed'
                   ? 'zapečatený produkt'
                   : 'karta'
                 }
+
               </b>
+
             </div>
+
           `
+
           : ''
+
         }
 
-        <div
-          class="muted"
-          style="margin-top:5px"
-        >
-          Kurz CZK/EUR:
-          ${esc(
-            d.czk_per_eur ??
-            ''
-          )}
-        </div>
+
+        ${
+          d.czk_per_eur !== undefined
+
+          ? `
+
+            <div
+              class="muted"
+              style="margin-top:5px"
+            >
+
+              Kurz CZK/EUR:
+              ${esc(
+                d.czk_per_eur
+              )}
+
+            </div>
+
+          `
+
+          : ''
+
+        }
+
 
         ${renderSummary(
           d.summary
@@ -1561,6 +2570,7 @@ async function search(){
     stage =
       'vykreslenie ponúk';
 
+
     renderResults(
       d.results
     );
@@ -1572,6 +2582,7 @@ async function search(){
       d
     );
 
+
   }
   catch(e){
 
@@ -1581,16 +2592,19 @@ async function search(){
       e
     );
 
+
     status.innerHTML =
 
       '<div class="panel error">' +
 
       '<b>Chyba v kroku:</b> ' +
+
       esc(stage) +
 
       '<br><br>' +
 
       '<b>Typ:</b> ' +
+
       esc(
         e &&
         e.name
@@ -1601,6 +2615,7 @@ async function search(){
       '<br>' +
 
       '<b>Správa:</b> ' +
+
       esc(
         e &&
         e.message
@@ -1610,7 +2625,13 @@ async function search(){
 
       '</div>';
 
+
     results.innerHTML = '';
+
+  }
+  finally{
+
+    button.disabled = false;
 
   }
 
@@ -1618,30 +2639,8 @@ async function search(){
 
 
 /* =========================================================
-   ESCAPE HTML
-   ========================================================= */
-
-function esc(s){
-
-  return String(
-    s ?? ''
-  ).replace(
-    /[&<>"']/g,
-    m => ({
-      '&':'&amp;',
-      '<':'&lt;',
-      '>':'&gt;',
-      '"':'&quot;',
-      "'":'&#039;'
-    }[m])
-  );
-
-}
-
-
-/* =========================================================
-   CLOSE AUTOCOMPLETE
-   ========================================================= */
+   CLOSE AUTOCOMPLETE OUTSIDE
+========================================================= */
 
 document.addEventListener(
   'click',
@@ -1652,11 +2651,15 @@ document.addEventListener(
         '.search-wrap'
       );
 
+
     if(
+
       searchWrap &&
+
       !searchWrap.contains(
         event.target
       )
+
     ){
 
       hideSuggestions();
@@ -1668,8 +2671,8 @@ document.addEventListener(
 
 
 /* =========================================================
-   LOAD QUERY FROM URL
-   ========================================================= */
+   URL QUERY
+========================================================= */
 
 try{
 
@@ -1685,6 +2688,7 @@ try{
       'q'
     ).value =
       initialQuery;
+
 
     search();
 
