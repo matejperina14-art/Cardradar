@@ -605,7 +605,7 @@ button.primary:disabled{
 <script>
 
 /* =========================================================
-   CARD RADAR FRONTEND 5.22
+   CARD RADAR FRONTEND 5.23
 ========================================================= */
 
 const eur = n => {
@@ -1019,8 +1019,15 @@ function mergeSuggestions(serverItems, localItems){
       return;
     }
 
+    /*
+       Reálne serverové karty identifikujeme
+       prednostne podľa linku.
+    */
+
     const key =
-      normalized.query.toLowerCase();
+      normalized.link
+        ? 'link:' + normalized.link.toLowerCase()
+        : 'query:' + normalized.query.toLowerCase();
 
     if(seen.has(key)){
       return;
@@ -1078,6 +1085,7 @@ function handleInput(){
 
   /*
      Lokálne návrhy zobrazíme okamžite.
+     Serverové reálne karty ich následne nahradia.
   */
 
   const localItems =
@@ -1150,21 +1158,41 @@ async function loadSuggestions(q,generation){
     suggestionItems =
       mergeSuggestions(
         cached.items,
-        buildLocalSuggestions(q)
+        []
       );
 
     renderSuggestions();
 
+    /*
+       Ak cache nemá obrázky,
+       doplníme ich z reálneho searchu.
+    */
+
+    if(
+      suggestionItems.length &&
+      suggestionItems.some(
+        item => !getResultImage(item)
+      )
+    ){
+
+      enrichSuggestionImages(
+        q,
+        generation
+      );
+    }
+
     return;
   }
+
 
   suggestionController =
     new AbortController();
 
+
   try{
 
     /*
-       1. Najprv /api/suggestions
+       1. Najprv rýchly autocomplete endpoint.
     */
 
     const suggestionResponse =
@@ -1177,7 +1205,9 @@ async function loadSuggestions(q,generation){
         }
       );
 
+
     let serverItems = [];
+
 
     if(suggestionResponse.ok){
 
@@ -1192,17 +1222,13 @@ async function loadSuggestions(q,generation){
 
         serverItems =
           data.suggestions;
-
       }
     }
 
 
     /*
        2. Ak suggestions nič nevrátili,
-          použijeme reálne /api/search.
-
-       Toto je poistka proti prázdnemu
-       suggestion katalógu v backende.
+          použijeme normálne vyhľadávanie.
     */
 
     if(
@@ -1220,6 +1246,7 @@ async function loadSuggestions(q,generation){
           }
         );
 
+
       if(searchResponse.ok){
 
         const searchData =
@@ -1233,7 +1260,6 @@ async function loadSuggestions(q,generation){
 
           serverItems =
             searchData.results;
-
         }
       }
     }
@@ -1248,7 +1274,7 @@ async function loadSuggestions(q,generation){
 
 
     /*
-       Uložíme do cache.
+       Uložíme reálne návrhy do cache.
     */
 
     suggestionCache.set(
@@ -1261,20 +1287,41 @@ async function loadSuggestions(q,generation){
 
 
     /*
-       Spojíme reálne CardyX výsledky
-       s lokálnymi návrhmi.
+       DÔLEŽITÉ:
+       Serverové návrhy majú prednosť.
+       Lokálne návrhy už nemiešame medzi
+       reálne karty.
     */
 
     suggestionItems =
       mergeSuggestions(
         serverItems,
-        buildLocalSuggestions(q)
+        []
       );
 
 
     suggestionIndex = -1;
 
     renderSuggestions();
+
+
+    /*
+       Ak CardyX suggestions nemajú obrázky,
+       doplníme ich z /api/search.
+    */
+
+    if(
+      suggestionItems.length &&
+      suggestionItems.some(
+        item => !getResultImage(item)
+      )
+    ){
+
+      enrichSuggestionImages(
+        q,
+        generation
+      );
+    }
 
   }
   catch(error){
@@ -1291,6 +1338,12 @@ async function loadSuggestions(q,generation){
       error
     );
 
+
+    /*
+       Pri chybe zobrazíme aspoň lokálne
+       návrhy.
+    */
+
     suggestionItems =
       buildLocalSuggestions(q);
 
@@ -1301,7 +1354,6 @@ async function loadSuggestions(q,generation){
     }else{
 
       hideSuggestions();
-
     }
 
   }
@@ -1315,6 +1367,220 @@ async function loadSuggestions(q,generation){
       suggestionController =
         null;
     }
+  }
+}
+
+
+/* =========================================================
+   ENRICH SUGGESTION IMAGES
+   Doplní obrázky z normálneho /api/search
+========================================================= */
+
+async function enrichSuggestionImages(q,generation){
+
+  if(
+    generation !==
+    searchGeneration
+  ){
+    return;
+  }
+
+  try{
+
+    const response =
+      await fetch(
+        '/api/search?q=' +
+        encodeURIComponent(q),
+        {
+          cache:'no-store'
+        }
+      );
+
+
+    if(!response.ok){
+      return;
+    }
+
+
+    const data =
+      await response.json();
+
+
+    if(
+      !Array.isArray(
+        data.results
+      )
+    ){
+      return;
+    }
+
+
+    if(
+      generation !==
+      searchGeneration
+    ){
+      return;
+    }
+
+
+    const results =
+      data.results;
+
+
+    suggestionItems =
+      suggestionItems.map(
+        suggestion => {
+
+          if(
+            getResultImage(
+              suggestion
+            )
+          ){
+            return suggestion;
+          }
+
+
+          const suggestionTitle =
+            String(
+              suggestion.title ||
+              ''
+            )
+            .toLowerCase()
+            .trim();
+
+
+          const suggestionQuery =
+            String(
+              suggestion.query ||
+              ''
+            )
+            .toLowerCase()
+            .trim();
+
+
+          let match =
+            results.find(
+              result => {
+
+                const resultTitle =
+                  String(
+                    result.title ||
+                    ''
+                  )
+                  .toLowerCase()
+                  .trim();
+
+
+                const resultQuery =
+                  String(
+                    result.query ||
+                    ''
+                  )
+                  .toLowerCase()
+                  .trim();
+
+
+                return (
+                  (
+                    resultTitle &&
+                    suggestionTitle &&
+                    resultTitle ===
+                    suggestionTitle
+                  ) ||
+                  (
+                    resultQuery &&
+                    suggestionQuery &&
+                    resultQuery ===
+                    suggestionQuery
+                  )
+                );
+
+              }
+            );
+
+
+          /*
+             Keď presná zhoda neexistuje,
+             skúsime podľa linku.
+          */
+
+          if(
+            !match &&
+            suggestion.link
+          ){
+
+            match =
+              results.find(
+                result =>
+                  result.link &&
+                  result.link ===
+                  suggestion.link
+              );
+          }
+
+
+          if(!match){
+            return suggestion;
+          }
+
+
+          const image =
+            getResultImage(match);
+
+
+          const price =
+            getResultPrice(
+              suggestion
+            );
+
+
+          return {
+
+            ...suggestion,
+
+            image:
+              image ||
+              suggestion.image ||
+              '',
+
+            price_eur:
+              price !== null
+                ? price
+                : getResultPrice(match)
+
+          };
+
+        }
+      );
+
+
+    /*
+       Uložíme obohatené výsledky aj do cache.
+    */
+
+    const cacheKey =
+      q.toLowerCase().trim();
+
+    suggestionCache.set(
+      cacheKey,
+      {
+        time:Date.now(),
+        items:suggestionItems
+      }
+    );
+
+
+    renderSuggestions();
+
+
+  }
+  catch(error){
+
+    console.warn(
+      'Image enrichment failed:',
+      error
+    );
+
   }
 }
 
