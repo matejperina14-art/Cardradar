@@ -48,10 +48,6 @@ h1{
   margin-bottom:22px;
 }
 
-/* =========================================================
-   SEARCH
-   ========================================================= */
-
 .search-wrap{
   position:relative;
 }
@@ -90,10 +86,6 @@ button.primary{
   font-weight:800;
   border:0;
 }
-
-/* =========================================================
-   AUTOCOMPLETE
-   ========================================================= */
 
 .suggestions{
   position:absolute;
@@ -187,10 +179,6 @@ button.primary{
   font-size:14px;
 }
 
-/* =========================================================
-   QUICK TAGS
-   ========================================================= */
-
 .tags{
   display:flex;
   gap:6px;
@@ -202,10 +190,6 @@ button.primary{
   padding:7px 10px;
   font-size:13px;
 }
-
-/* =========================================================
-   PANELS
-   ========================================================= */
 
 .panel{
   background:#1e293bcc;
@@ -229,10 +213,6 @@ button.primary{
 .muted{
   color:var(--sub);
 }
-
-/* =========================================================
-   SUMMARY
-   ========================================================= */
 
 .summary-grid{
   display:grid;
@@ -259,10 +239,6 @@ button.primary{
   font-size:17px;
   font-weight:800;
 }
-
-/* =========================================================
-   OFFERS
-   ========================================================= */
 
 .offer{
   display:flex;
@@ -335,10 +311,6 @@ button.primary{
   color:var(--sub);
 }
 
-/* =========================================================
-   MOBILE
-   ========================================================= */
-
 @media(max-width:650px){
 
   body{
@@ -379,7 +351,6 @@ button.primary{
   }
 
 }
-
 </style>
 </head>
 
@@ -464,10 +435,6 @@ Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
 
 <script>
 
-/* =========================================================
-   CARD RADAR FRONTEND 6.1
-   ========================================================= */
-
 const eur = (n) => {
 
   const value = Number(n);
@@ -483,7 +450,6 @@ const eur = (n) => {
 let suggestionTimer = null;
 let suggestionItems = [];
 let suggestionIndex = -1;
-let searchController = null;
 
 
 /* =========================================================
@@ -547,7 +513,7 @@ function handleInput(){
 
 
 /* =========================================================
-   KEYBOARD NAVIGATION
+   KEYBOARD
    ========================================================= */
 
 function handleKeydown(event){
@@ -650,18 +616,19 @@ function handleKeydown(event){
 
 
 /* =========================================================
-   LOAD AUTOCOMPLETE
+   AUTOCOMPLETE
    ========================================================= */
 
 async function loadSuggestions(q){
 
   try{
 
+    const url =
+      '/api/suggestions?q=' +
+      encodeURIComponent(q);
+
     const r =
-      await fetch(
-        '/api/suggestions?q=' +
-        encodeURIComponent(q)
-      );
+      await fetch(url);
 
     const d =
       await r.json();
@@ -696,7 +663,7 @@ async function loadSuggestions(q){
 
 
 /* =========================================================
-   SHOW LOADING
+   LOADING
    ========================================================= */
 
 function showSuggestionsLoading(){
@@ -719,7 +686,7 @@ function showSuggestionsLoading(){
 
 
 /* =========================================================
-   SUGGESTION ICON
+   ICON
    ========================================================= */
 
 function suggestionIcon(item){
@@ -745,7 +712,7 @@ function suggestionIcon(item){
 
 
 /* =========================================================
-   RENDER SUGGESTIONS
+   SUGGESTIONS
    ========================================================= */
 
 function renderSuggestions(){
@@ -846,7 +813,7 @@ function renderSuggestions(){
 
 
 /* =========================================================
-   ACTIVE SUGGESTION
+   ACTIVE
    ========================================================= */
 
 function renderActiveSuggestion(){
@@ -871,7 +838,7 @@ function renderActiveSuggestion(){
 
 
 /* =========================================================
-   CHOOSE SUGGESTION
+   CHOOSE
    ========================================================= */
 
 function chooseSuggestionByIndex(index){
@@ -908,7 +875,7 @@ function chooseSuggestion(item){
 
 
 /* =========================================================
-   HIDE SUGGESTIONS
+   HIDE
    ========================================================= */
 
 function hideSuggestions(){
@@ -932,12 +899,10 @@ function hideSuggestions(){
 
 
 /* =========================================================
-   RENDER SUMMARY
+   SUMMARY
    ========================================================= */
 
-function renderSummary(
-  summary
-){
+function renderSummary(summary){
 
   if(!summary){
     return '';
@@ -1017,7 +982,7 @@ function renderSummary(
 
 
 /* =========================================================
-   RENDER PREVIEW
+   PREVIEW
    ========================================================= */
 
 function renderPreview(
@@ -1136,12 +1101,10 @@ function renderPreview(
 
 
 /* =========================================================
-   RENDER RESULTS
+   RESULTS
    ========================================================= */
 
-function renderResults(
-  results
-){
+function renderResults(results){
 
   const el =
     document.getElementById(
@@ -1175,9 +1138,7 @@ function renderResults(
         (x,i) => {
 
           const productType =
-            detectFrontendType(
-              x
-            );
+            detectFrontendType(x);
 
           const typeBadge =
             productType
@@ -1263,11 +1224,9 @@ function renderResults(
               <div>
 
                 <div class="price">
-
                   ${eur(
                     x.price_eur
                   )}
-
                 </div>
 
                 ${
@@ -1303,12 +1262,10 @@ function renderResults(
 
 
 /* =========================================================
-   FRONTEND PRODUCT TYPE
+   PRODUCT TYPE
    ========================================================= */
 
-function detectFrontendType(
-  item
-){
+function detectFrontendType(item){
 
   if(
     item.product_type &&
@@ -1325,25 +1282,13 @@ function detectFrontendType(
     ).toLowerCase();
 
   if(
-    title.includes(
-      'elite trainer box'
-    ) ||
+    title.includes('elite trainer box') ||
     /\betb\b/.test(title) ||
-    title.includes(
-      'booster box'
-    ) ||
-    title.includes(
-      'booster bundle'
-    ) ||
-    title.includes(
-      'collection box'
-    ) ||
-    title.includes(
-      'premium collection'
-    ) ||
-    title.includes(
-      'blister'
-    ) ||
+    title.includes('booster box') ||
+    title.includes('booster bundle') ||
+    title.includes('collection box') ||
+    title.includes('premium collection') ||
+    title.includes('blister') ||
     /\btin\b/.test(title)
   ){
 
@@ -1362,94 +1307,98 @@ function detectFrontendType(
 
 async function search(){
 
-  const q =
+  let stage =
+    'začiatok';
+
+  const status =
     document.getElementById(
-      'q'
-    )
-      .value
-      .trim();
-
-  if(!q){
-    return;
-  }
-
-  hideSuggestions();
-
-
-  /*
-   * Opravené prehliadanie URL.
-   * Zachováme aktuálnu cestu a bezpečne
-   * pridáme q parameter.
-   */
-
-  try {
-
-    window.history.replaceState(
-      {},
-      '',
-      window.location.pathname +
-      '?q=' +
-      encodeURIComponent(q)
+      'status'
     );
 
-  }
-  catch(e) {
-
-    console.log(
-      'URL update skipped:',
-      e
+  const results =
+    document.getElementById(
+      'results'
     );
 
-  }
-
-
-  document.getElementById(
-    'status'
-  ).innerHTML =
-
-    '<div class="loading">' +
-    '🔎 Overujem aktuálne ponuky v obchodoch...' +
-    '</div>';
-
-  document.getElementById(
-    'results'
-  ).innerHTML = '';
-
-  document.getElementById(
-    'preview'
-  ).style.display = 'none';
-
-
-  if(searchController){
-
-    try{
-      searchController.abort();
-    }
-    catch(e){}
-
-  }
-
-
-  searchController =
-    new AbortController();
-
+  const preview =
+    document.getElementById(
+      'preview'
+    );
 
   try{
 
-    const r =
-      await fetch(
-        '/api/search?q=' +
-        encodeURIComponent(q),
-        {
-          signal:
-            searchController.signal
-        }
-      );
+    stage =
+      'čítanie vyhľadávania';
 
+    const input =
+      document.getElementById('q');
+
+    const q =
+      input.value.trim();
+
+    if(!q){
+      return;
+    }
+
+
+    stage =
+      'zatváranie návrhov';
+
+    hideSuggestions();
+
+
+    /*
+     * ZÁMERNE sme odstránili:
+     *
+     * history.replaceState()
+     *
+     * aby sme úplne vylúčili Safari
+     * URL problém.
+     */
+
+
+    stage =
+      'zobrazenie loadingu';
+
+    status.innerHTML =
+      '<div class="loading">' +
+      '🔎 Overujem aktuálne ponuky v obchodoch...' +
+      '</div>';
+
+    results.innerHTML = '';
+
+    preview.style.display =
+      'none';
+
+
+    stage =
+      'príprava URL';
+
+    const apiUrl =
+      '/api/search?q=' +
+      encodeURIComponent(q);
+
+
+    /*
+     * ZÁMERNE bez AbortController.
+     */
+
+    stage =
+      'odosielanie požiadavky';
+
+    const r =
+      await fetch(apiUrl);
+
+
+    stage =
+      'čítanie odpovede';
 
     const d =
       await r.json();
 
+
+    stage =
+      'spracovanie odpovede';
 
     if(!r.ok){
 
@@ -1461,12 +1410,18 @@ async function search(){
     }
 
 
+    stage =
+      'vykreslenie náhľadu';
+
     renderPreview(
       d.info,
       d.parsed,
       d.normalized_query || q
     );
 
+
+    stage =
+      'spracovanie normalizácie';
 
     const normalized =
       d.normalized_query ||
@@ -1481,16 +1436,14 @@ async function search(){
       q.toLowerCase()
     ){
 
-      const input =
-        document.getElementById(
-          'q'
-        );
-
       input.value =
         normalized;
 
     }
 
+
+    stage =
+      'spracovanie výsledkov';
 
     const resultCount =
       Array.isArray(
@@ -1500,9 +1453,10 @@ async function search(){
       : 0;
 
 
-    document.getElementById(
-      'status'
-    ).innerHTML = `
+    stage =
+      'vykreslenie statusu';
+
+    status.innerHTML = `
 
       <div class="panel">
 
@@ -1510,7 +1464,6 @@ async function search(){
           Nájdených reálnych ponúk:
           ${resultCount}
         </b>
-
 
         ${
           normalized &&
@@ -1523,15 +1476,12 @@ async function search(){
             >
               CardRadar rozpoznal:
               <b>
-                ${esc(
-                  normalized
-                )}
+                ${esc(normalized)}
               </b>
             </div>
           `
           : ''
         }
-
 
         ${
           d.parsed &&
@@ -1554,7 +1504,6 @@ async function search(){
           : ''
         }
 
-
         <div
           class="muted"
           style="margin-top:5px"
@@ -1566,7 +1515,6 @@ async function search(){
           )}
         </div>
 
-
         ${renderSummary(
           d.summary
         )}
@@ -1576,40 +1524,63 @@ async function search(){
     `;
 
 
+    stage =
+      'vykreslenie ponúk';
+
     renderResults(
       d.results
     );
 
 
+    /*
+     * HOTOVO
+     */
+
+    console.log(
+      'CardRadar search OK:',
+      q,
+      d
+    );
+
   }
   catch(e){
 
-    if(
-      e &&
-      e.name === 'AbortError'
-    ){
+    console.error(
+      'CardRadar chyba:',
+      stage,
+      e
+    );
 
-      return;
-
-    }
-
-
-    document.getElementById(
-      'status'
-    ).innerHTML =
+    status.innerHTML =
 
       '<div class="panel error">' +
-      'Chyba: ' +
+
+      '<b>Chyba v kroku:</b> ' +
+      esc(stage) +
+
+      '<br><br>' +
+
+      '<b>Typ:</b> ' +
       esc(
-        e.message ||
-        'Neznáma chyba.'
+        e &&
+        e.name
+        ? e.name
+        : 'Unknown'
       ) +
+
+      '<br>' +
+
+      '<b>Správa:</b> ' +
+      esc(
+        e &&
+        e.message
+        ? e.message
+        : 'Neznáma chyba.'
+      ) +
+
       '</div>';
 
-
-    document.getElementById(
-      'results'
-    ).innerHTML = '';
+    results.innerHTML = '';
 
   }
 
@@ -1639,7 +1610,7 @@ function esc(s){
 
 
 /* =========================================================
-   CLOSE AUTOCOMPLETE WHEN CLICKING OUTSIDE
+   CLOSE AUTOCOMPLETE
    ========================================================= */
 
 document.addEventListener(
@@ -1670,20 +1641,32 @@ document.addEventListener(
    LOAD QUERY FROM URL
    ========================================================= */
 
-const initialQuery =
-  new URLSearchParams(
-    location.search
-  ).get('q');
+try{
+
+  const initialQuery =
+    new URLSearchParams(
+      window.location.search
+    ).get('q');
 
 
-if(initialQuery){
+  if(initialQuery){
 
-  document.getElementById(
-    'q'
-  ).value =
-    initialQuery;
+    document.getElementById(
+      'q'
+    ).value =
+      initialQuery;
 
-  search();
+    search();
+
+  }
+
+}
+catch(e){
+
+  console.error(
+    'Initial URL error:',
+    e
+  );
 
 }
 
