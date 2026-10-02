@@ -435,6 +435,10 @@ Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
 
 <script>
 
+/* =========================================================
+   CARD RADAR FRONTEND
+   ========================================================= */
+
 const eur = (n) => {
 
   const value = Number(n);
@@ -513,7 +517,7 @@ function handleInput(){
 
 
 /* =========================================================
-   KEYBOARD
+   KEYBOARD NAVIGATION
    ========================================================= */
 
 function handleKeydown(event){
@@ -616,7 +620,7 @@ function handleKeydown(event){
 
 
 /* =========================================================
-   AUTOCOMPLETE
+   LOAD AUTOCOMPLETE
    ========================================================= */
 
 async function loadSuggestions(q){
@@ -663,7 +667,7 @@ async function loadSuggestions(q){
 
 
 /* =========================================================
-   LOADING
+   SHOW LOADING
    ========================================================= */
 
 function showSuggestionsLoading(){
@@ -686,7 +690,7 @@ function showSuggestionsLoading(){
 
 
 /* =========================================================
-   ICON
+   SUGGESTION ICON
    ========================================================= */
 
 function suggestionIcon(item){
@@ -712,7 +716,7 @@ function suggestionIcon(item){
 
 
 /* =========================================================
-   SUGGESTIONS
+   RENDER SUGGESTIONS
    ========================================================= */
 
 function renderSuggestions(){
@@ -813,7 +817,7 @@ function renderSuggestions(){
 
 
 /* =========================================================
-   ACTIVE
+   ACTIVE SUGGESTION
    ========================================================= */
 
 function renderActiveSuggestion(){
@@ -838,7 +842,7 @@ function renderActiveSuggestion(){
 
 
 /* =========================================================
-   CHOOSE
+   CHOOSE SUGGESTION
    ========================================================= */
 
 function chooseSuggestionByIndex(index){
@@ -875,7 +879,7 @@ function chooseSuggestion(item){
 
 
 /* =========================================================
-   HIDE
+   HIDE SUGGESTIONS
    ========================================================= */
 
 function hideSuggestions(){
@@ -899,7 +903,7 @@ function hideSuggestions(){
 
 
 /* =========================================================
-   SUMMARY
+   RENDER SUMMARY
    ========================================================= */
 
 function renderSummary(summary){
@@ -982,7 +986,7 @@ function renderSummary(summary){
 
 
 /* =========================================================
-   PREVIEW
+   RENDER PREVIEW
    ========================================================= */
 
 function renderPreview(
@@ -1101,7 +1105,7 @@ function renderPreview(
 
 
 /* =========================================================
-   RESULTS
+   RENDER RESULTS
    ========================================================= */
 
 function renderResults(results){
@@ -1262,7 +1266,7 @@ function renderResults(results){
 
 
 /* =========================================================
-   PRODUCT TYPE
+   FRONTEND PRODUCT TYPE
    ========================================================= */
 
 function detectFrontendType(item){
@@ -1347,16 +1351,6 @@ async function search(){
     hideSuggestions();
 
 
-    /*
-     * ZÁMERNE sme odstránili:
-     *
-     * history.replaceState()
-     *
-     * aby sme úplne vylúčili Safari
-     * URL problém.
-     */
-
-
     stage =
       'zobrazenie loadingu';
 
@@ -1379,9 +1373,11 @@ async function search(){
       encodeURIComponent(q);
 
 
-    /*
-     * ZÁMERNE bez AbortController.
-     */
+    console.log(
+      'CardRadar API URL:',
+      apiUrl
+    );
+
 
     stage =
       'odosielanie požiadavky';
@@ -1390,11 +1386,49 @@ async function search(){
       await fetch(apiUrl);
 
 
+    console.log(
+      'CardRadar HTTP status:',
+      r.status
+    );
+
+
     stage =
       'čítanie odpovede';
 
-    const d =
-      await r.json();
+    const responseText =
+      await r.text();
+
+
+    console.log(
+      'CardRadar RAW RESPONSE:',
+      responseText
+    );
+
+
+    let d;
+
+    try{
+
+      d =
+        JSON.parse(
+          responseText
+        );
+
+    }
+    catch(jsonError){
+
+      throw new Error(
+        'Server neposlal platný JSON. ' +
+        'HTTP ' +
+        r.status +
+        '. Začiatok odpovede: ' +
+        responseText.substring(
+          0,
+          500
+        )
+      );
+
+    }
 
 
     stage =
@@ -1531,10 +1565,6 @@ async function search(){
       d.results
     );
 
-
-    /*
-     * HOTOVO
-     */
 
     console.log(
       'CardRadar search OK:',
