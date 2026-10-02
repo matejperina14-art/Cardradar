@@ -3,11 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-
 <title>CardRadar 🔍 – reálne ceny Pokémon kariet</title>
-
 <style>
-
 :root{
   --bg:#090d16;
   --panel:#1e293b;
@@ -19,16 +16,13 @@
   --green:#4ade80;
   --blue:#2563eb;
 }
-
 *{
   box-sizing:border-box;
 }
-
 body{
   margin:0;
   padding:22px 14px;
   min-height:100vh;
-
   background:
     linear-gradient(
       135deg,
@@ -36,577 +30,351 @@ body{
       #0f172a,
       #172033
     );
-
   color:var(--text);
-
   font-family:
     -apple-system,
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
 }
-
 .wrap{
   max-width:900px;
   margin:auto;
 }
-
 h1{
   text-align:center;
   color:var(--accent);
   font-size:2.3rem;
   margin:10px 0 4px;
 }
-
 .sub{
   text-align:center;
   color:var(--sub);
   margin-bottom:22px;
 }
-
-
 /* =========================================================
    SEARCH
    ========================================================= */
-
 .search-wrap{
   position:relative;
 }
-
 .search{
   display:flex;
   gap:8px;
-
   background:#1e293bcc;
-
   padding:8px;
-
   border:1px solid var(--border);
   border-radius:14px;
 }
-
 .search input{
   flex:1;
 }
-
 .input,
 select,
 button{
-
   border:1px solid var(--border);
-
   background:var(--input);
-
   color:var(--text);
-
   border-radius:9px;
-
   padding:11px 13px;
-
   font-size:15px;
 }
-
 .input{
   outline:none;
 }
-
 .input:focus{
   border-color:#64748b;
   box-shadow:0 0 0 2px rgba(100,116,139,.15);
 }
-
 button{
   cursor:pointer;
 }
-
 button.primary{
   background:var(--accent);
   color:#111827;
   font-weight:800;
   border:0;
 }
-
 button.primary:disabled{
   opacity:.6;
   cursor:default;
 }
-
-
 /* =========================================================
    AUTOCOMPLETE
    ========================================================= */
-
 .suggestions{
-
   position:absolute;
-
   z-index:1000;
-
   top:calc(100% + 6px);
-
   left:0;
   right:0;
-
   background:#111827;
-
   border:1px solid var(--border);
-
   border-radius:12px;
-
   overflow:hidden;
-
   box-shadow:
     0 15px 35px rgba(0,0,0,.45);
-
   display:none;
-
   max-height:430px;
-
   overflow-y:auto;
 }
-
 .suggestions.show{
   display:block;
 }
-
 .suggestion{
-
   display:flex;
-
   align-items:center;
-
   gap:12px;
-
   padding:11px 13px;
-
   cursor:pointer;
-
   border-bottom:
     1px solid rgba(51,65,85,.65);
-
   transition:
     background .12s ease;
 }
-
 .suggestion:last-child{
   border-bottom:0;
 }
-
 .suggestion:hover,
 .suggestion.active{
   background:#1e293b;
 }
-
 .suggestion-icon{
-
   width:36px;
   height:36px;
-
   border-radius:8px;
-
   display:flex;
-
   align-items:center;
   justify-content:center;
-
   background:#0f172a;
-
   font-size:17px;
-
   flex:none;
 }
-
 .suggestion-main{
-
   min-width:0;
-
   flex:1;
 }
-
 .suggestion-title{
-
   font-weight:700;
-
   white-space:nowrap;
-
   overflow:hidden;
-
   text-overflow:ellipsis;
 }
-
 .suggestion-sub{
-
   color:var(--sub);
-
   font-size:12px;
-
   margin-top:2px;
-
   white-space:nowrap;
-
   overflow:hidden;
-
   text-overflow:ellipsis;
 }
-
 .suggestion-type{
-
   color:var(--sub);
-
   font-size:11px;
-
   padding:4px 7px;
-
   border:1px solid var(--border);
-
   border-radius:6px;
-
   white-space:nowrap;
 }
-
 .suggestions-loading{
-
   padding:14px;
-
   text-align:center;
-
   color:var(--sub);
-
   font-size:14px;
 }
-
 .suggestions-empty{
-
   padding:14px;
-
   color:var(--sub);
-
   text-align:center;
-
   font-size:14px;
 }
-
-
 /* =========================================================
    TAGS
    ========================================================= */
-
 .tags{
-
   display:flex;
-
   gap:6px;
-
   flex-wrap:wrap;
-
   margin:12px 0;
 }
-
 .tags button{
-
   padding:7px 10px;
-
   font-size:13px;
 }
-
-
 /* =========================================================
    PANELS
    ========================================================= */
-
 .panel{
-
   background:#1e293bcc;
-
   border:1px solid var(--border);
-
   border-radius:14px;
-
   padding:16px;
-
   margin:14px 0;
 }
-
-
 /* =========================================================
    PREVIEW
    ========================================================= */
-
 .preview{
-
   display:flex;
-
   gap:15px;
-
   align-items:center;
 }
-
 .preview img{
-
   width:90px;
-
   border-radius:9px;
 }
-
 .muted{
   color:var(--sub);
 }
-
-
 /* =========================================================
    SUMMARY
    ========================================================= */
-
 .summary-grid{
-
   display:grid;
-
   grid-template-columns:
     repeat(4,1fr);
-
   gap:8px;
-
   margin-top:14px;
 }
-
 .summary-box{
-
   background:#0f172a;
-
   border:1px solid var(--border);
-
   border-radius:10px;
-
   padding:11px;
-
   text-align:center;
 }
-
 .summary-label{
-
   color:var(--sub);
-
   font-size:11px;
-
   margin-bottom:4px;
 }
-
 .summary-value{
-
   font-size:17px;
-
   font-weight:800;
 }
-
-
 /* =========================================================
    OFFERS
    ========================================================= */
-
 .offer{
-
   display:flex;
-
   justify-content:space-between;
-
   gap:14px;
-
   align-items:center;
-
   padding:14px 0;
-
   border-bottom:1px solid var(--border);
 }
-
 .offer:last-child{
   border-bottom:0;
 }
-
 .price{
-
   font-size:1.3rem;
-
   color:var(--green);
-
   font-weight:800;
-
   white-space:nowrap;
 }
-
 .price-missing{
-
   color:var(--sub);
-
   font-size:1rem;
-
   font-weight:600;
 }
-
 .buy{
-
   display:inline-block;
-
   margin-top:7px;
-
   background:var(--accent);
-
   color:#111827;
-
   text-decoration:none;
-
   font-weight:800;
-
   padding:7px 10px;
-
   border-radius:7px;
-
   font-size:13px;
 }
-
-
 /* =========================================================
    BADGES
    ========================================================= */
-
 .badge{
-
   font-size:12px;
-
   background:#334155;
-
   padding:3px 7px;
-
   border-radius:5px;
-
   margin-right:4px;
 }
-
 .best{
-
   background:#16a34a;
-
   color:white;
 }
-
 .type-card{
-
   background:#2563eb;
-
   color:white;
 }
-
 .type-product{
-
   background:#7c3aed;
-
   color:white;
 }
-
-
 /* =========================================================
    STATES
    ========================================================= */
-
 .loading{
-
   text-align:center;
-
   padding:30px;
-
   color:var(--sub);
 }
-
 .error{
   color:#fda4af;
 }
-
 .empty{
-
   text-align:center;
-
   padding:30px;
-
   color:var(--sub);
 }
-
-
 /* =========================================================
    MOBILE
    ========================================================= */
-
 @media(max-width:650px){
-
   body{
     padding:16px 10px;
   }
-
   h1{
     font-size:2rem;
   }
-
   .search{
     flex-direction:column;
   }
-
   .search button{
     width:100%;
   }
-
   .offer{
-
     align-items:flex-start;
-
     flex-direction:column;
   }
-
   .price{
     text-align:left;
   }
-
   .preview{
-
     align-items:flex-start;
   }
-
   .suggestion-type{
     display:none;
   }
-
   .summary-grid{
-
     grid-template-columns:
       repeat(2,1fr);
   }
-
 }
-
 </style>
 </head>
-
-
 <body>
-
 <div class="wrap">
-
-
 <h1>
   CardRadar 🔍
 </h1>
-
-
 <div class="sub">
   Reálne ceny Pokémon kariet a produktov z CardyX
 </div>
-
-
 <!-- =======================================================
      SEARCH
 ======================================================= -->
-
 <div class="search-wrap">
-
   <div class="search">
-
     <input
       id="q"
       class="input"
@@ -618,7 +386,6 @@ button.primary:disabled{
       oninput="handleInput()"
       onkeydown="handleKeydown(event)"
     >
-
     <button
       id="searchButton"
       class="primary"
@@ -626,385 +393,205 @@ button.primary:disabled{
     >
       Hľadať
     </button>
-
   </div>
-
-
   <div
     id="suggestions"
     class="suggestions"
   ></div>
-
 </div>
-
-
 <!-- =======================================================
      QUICK SEARCH TAGS
 ======================================================= -->
-
 <div class="tags">
-
   <button onclick="tag('Charizard VMAX')">
     Charizard VMAX
   </button>
-
   <button onclick="tag('Pikachu ex')">
     Pikachu ex
   </button>
-
   <button onclick="tag('Surging Sparks ETB')">
     Surging Sparks ETB
   </button>
-
   <button onclick="tag('Umbreon VMAX')">
     Umbreon VMAX
   </button>
-
   <button onclick="tag('Pokémon 151 ETB')">
     Pokémon 151 ETB
   </button>
-
   <button onclick="tag('Booster Box')">
     Booster Box
   </button>
-
 </div>
-
-
 <div id="status"></div>
-
-
 <div
   id="preview"
   class="panel"
   style="display:none"
 ></div>
-
-
 <div id="results"></div>
-
-
 </div>
-
-
 <script>
-
 /* =========================================================
    CARD RADAR FRONTEND
-   VERSION 5.14
+   VERSION 5.15
 ========================================================= */
-
-
 /* =========================================================
    HELPERS
-========================================================= */
-
+   ========================================================= */
 const eur = (n) => {
-
   const value = Number(n);
-
   if(!Number.isFinite(value)){
     return '-';
   }
-
   return value.toFixed(2) + ' €';
-
 };
-
-
-/*
- * Univerzálne spracovanie ceny.
- *
- * Backend môže poslať napríklad:
- *
- * price_eur: 4.99
- * price: 4.99
- * price: "4,99 €"
- * amount: 4.99
- * value: 4.99
- *
- * Frontend sa pokúsi nájsť cenu
- * bez ohľadu na konkrétne pole.
- */
-
 function parsePriceValue(value){
-
   if(
     value === null ||
     value === undefined ||
     value === ''
   ){
-
     return null;
-
   }
-
-
   if(typeof value === 'number'){
-
     return Number.isFinite(value)
       ? value
       : null;
-
   }
-
-
   let text =
     String(value)
       .trim()
       .replace(/\s/g,'')
       .replace(',', '.');
-
-
   if(!text){
     return null;
   }
-
-
-  /*
-   * Odstránime menu a ostatné znaky,
-   * ale ponecháme čísla a desatinnú bodku.
-   */
-
   text =
     text.replace(
       /[^0-9.]/g,
       ''
     );
-
-
   if(!text){
     return null;
   }
-
-
-  /*
-   * Ak je v texte viac bodiek,
-   * ponecháme poslednú ako desatinnú.
-   */
-
   const dots =
     (text.match(/\./g) || []).length;
-
-
   if(dots > 1){
-
     const parts =
       text.split('.');
-
     const decimal =
       parts.pop();
-
     text =
       parts.join('') +
       '.' +
       decimal;
-
   }
-
-
   const number =
     Number(text);
-
-
   return Number.isFinite(number)
     ? number
     : null;
-
 }
-
-
-/*
- * Nájde cenu v objekte výsledku.
- */
-
 function getResultPrice(item){
-
   if(!item){
     return null;
   }
-
-
   const fields = [
-
     'price_eur',
-
     'priceEUR',
-
     'eur',
-
     'price',
-
     'amount',
-
     'value',
-
     'current_price',
-
     'currentPrice',
-
     'price_value',
-
     'priceValue'
-
   ];
-
-
   for(
     const field
     of fields
   ){
-
     if(
       item[field] !== undefined &&
       item[field] !== null &&
       item[field] !== ''
     ){
-
       const parsed =
         parsePriceValue(
           item[field]
         );
-
-
       if(parsed !== null){
         return parsed;
       }
-
     }
-
   }
-
-
-  /*
-   * Niektoré odpovede môžu mať
-   * cenu uloženú ako textové pole.
-   */
-
   const textFields = [
-
     'price_text',
     'priceText',
     'price_label',
     'priceLabel'
-
   ];
-
-
   for(
     const field
     of textFields
   ){
-
     if(
       item[field] !== undefined &&
       item[field] !== null
     ){
-
       const parsed =
         parsePriceValue(
           item[field]
         );
-
-
       if(parsed !== null){
         return parsed;
       }
-
     }
-
   }
-
-
   return null;
-
 }
-
-
-/*
- * Bezpečné zobrazenie ceny.
- */
-
 function renderPrice(item){
-
   const price =
     getResultPrice(item);
-
-
   if(price === null){
-
     return `
       <div class="price price-missing">
         Cena nezistená
       </div>
     `;
-
   }
-
-
   return `
     <div class="price">
       ${eur(price)}
     </div>
   `;
-
 }
-
-
-/*
- * Získa všetky výsledky s platnou cenou.
- */
-
 function getPricedResults(results){
-
   return results.filter(
     item =>
       getResultPrice(item) !== null
   );
-
 }
-
-
-/*
- * Určí najlacnejší výsledok.
- */
-
 function getCheapestIndex(results){
-
   let bestIndex = -1;
-
   let bestPrice = Infinity;
-
-
   results.forEach(
     (item,index) => {
-
       const price =
         getResultPrice(item);
-
-
       if(
         price !== null &&
         price < bestPrice
       ){
-
         bestPrice = price;
-
         bestIndex = index;
-
       }
-
     }
   );
-
-
   return bestIndex;
-
 }
-
-
 function esc(s){
-
   return String(
     s ?? ''
   ).replace(
@@ -1017,36 +604,31 @@ function esc(s){
       "'":'&#039;'
     }[m])
   );
-
 }
-
-
 /* =========================================================
    AUTOCOMPLETE STATE
 ========================================================= */
-
 let suggestionTimer = null;
-
 let suggestionItems = [];
-
 let suggestionIndex = -1;
-
 let suggestionController = null;
-
-
+/*
+ * Toto číslo sa zvýši pri každom novom
+ * vyhľadávaní.
+ *
+ * Ak starý autocomplete request dokončí
+ * odpoveď neskôr, nebude už môcť znovu
+ * otvoriť návrhy.
+ */
+let searchGeneration = 0;
 const suggestionCache =
   new Map();
-
 const SUGGESTION_CACHE_TTL =
   30000;
-
-
 /* =========================================================
    POKÉMON AUTOCOMPLETE FALLBACK
 ========================================================= */
-
 const pokemonCatalog = [
-
   'Pikachu',
   'Charizard',
   'Umbreon',
@@ -1077,185 +659,114 @@ const pokemonCatalog = [
   'Sylveon',
   'Leafeon',
   'Glaceon'
-
 ];
-
-
 /* =========================================================
    BUILD LOCAL SUGGESTIONS
 ========================================================= */
-
 function buildLocalSuggestions(q){
-
   const query =
     q
       .toLowerCase()
       .trim();
-
   if(query.length < 2){
     return [];
   }
-
-
   const results = [];
-
-
   for(
     const pokemon
     of pokemonCatalog
   ){
-
     const p =
       pokemon.toLowerCase();
-
-
     if(
       p.startsWith(query) ||
       query.startsWith(p)
     ){
-
       results.push({
-
         title:pokemon,
-
         query:pokemon,
-
         subtitle:
           'Pokémon karta',
-
         type:'pokemon',
-
         type_label:'Pokémon'
-
       });
-
-
       const suffixes = [
-
         'ex',
         'VMAX',
         'VSTAR',
         'V'
-
       ];
-
-
       for(
         const suffix
         of suffixes
       ){
-
         const title =
           pokemon +
           ' ' +
           suffix;
-
         const lower =
           title.toLowerCase();
-
-
         if(
           query === p ||
           lower.startsWith(query)
         ){
-
           results.push({
-
             title:title,
-
             query:title,
-
             subtitle:
               'Pokémon karta • ' +
               suffix,
-
             type:'card',
-
             type_label:'Karta'
-
           });
-
         }
-
       }
-
     }
-
   }
-
-
   return results;
-
 }
-
-
 /* =========================================================
    MERGE SUGGESTIONS
 ========================================================= */
-
 function mergeSuggestions(
   serverItems,
   localItems
 ){
-
   const merged = [];
-
   const seen =
     new Set();
-
-
   function add(item){
-
     if(!item){
       return;
     }
-
-
     const title =
       String(
         item.title ||
         item.query ||
         ''
       ).trim();
-
-
     const query =
       String(
         item.query ||
         item.title ||
         ''
       ).trim();
-
-
     if(!title || !query){
       return;
     }
-
-
     const key =
       query.toLowerCase();
-
-
     if(seen.has(key)){
       return;
     }
-
-
     seen.add(key);
-
-
     merged.push({
-
       title:title,
-
       query:query,
-
       subtitle:
         item.subtitle || '',
-
       type:
         item.type || 'card',
-
       type_label:
         item.type_label ||
         (
@@ -1263,212 +774,144 @@ function mergeSuggestions(
           ? 'Produkt'
           : 'Karta'
         )
-
     });
-
   }
-
-
   (
     Array.isArray(serverItems)
       ? serverItems
       : []
   ).forEach(add);
-
-
   (
     Array.isArray(localItems)
       ? localItems
       : []
   ).forEach(add);
-
-
   return merged.slice(0,8);
-
 }
-
-
 /* =========================================================
    QUICK TAG
 ========================================================= */
-
 function tag(x){
-
   const input =
     document.getElementById('q');
-
   input.value = x;
-
   hideSuggestions();
-
   search();
-
 }
-
-
 /* =========================================================
    INPUT HANDLING
 ========================================================= */
-
 function handleInput(){
-
+  /*
+   * Používateľ začal nové písanie.
+   * Odteraz môže autocomplete opäť
+   * normálne fungovať.
+   */
+  searchGeneration++;
   const input =
     document.getElementById('q');
-
   const q =
     input.value.trim();
-
-
   suggestionIndex = -1;
-
-
   clearTimeout(
     suggestionTimer
   );
-
-
   if(suggestionController){
-
     suggestionController.abort();
-
     suggestionController =
       null;
-
   }
-
-
   if(!q){
-
     hideSuggestions();
-
     return;
-
   }
-
-
   if(q.length < 2){
-
     hideSuggestions();
-
     return;
-
   }
-
-
   const localItems =
     buildLocalSuggestions(q);
-
-
   if(localItems.length){
-
     suggestionItems =
       localItems;
-
     renderSuggestions();
-
   }
   else{
-
     showSuggestionsLoading();
-
   }
-
-
+  const generation =
+    searchGeneration;
   suggestionTimer =
     setTimeout(
-      () => loadSuggestions(q),
+      () => {
+        /*
+         * Ak používateľ medzitým
+         * spustil vyhľadávanie alebo
+         * začal písať nové slovo,
+         * tento starý timer už nič nerobí.
+         */
+        if(
+          generation !==
+          searchGeneration
+        ){
+          return;
+        }
+        loadSuggestions(
+          q,
+          generation
+        );
+      },
       120
     );
-
 }
-
-
 /* =========================================================
    KEYBOARD
 ========================================================= */
-
 function handleKeydown(event){
-
   const box =
     document.getElementById(
       'suggestions'
     );
-
   const visible =
     box.classList.contains(
       'show'
     );
-
-
   if(
     event.key === 'ArrowDown' &&
     visible
   ){
-
     event.preventDefault();
-
-
     if(!suggestionItems.length){
       return;
     }
-
-
     suggestionIndex++;
-
-
     if(
       suggestionIndex >=
       suggestionItems.length
     ){
-
       suggestionIndex = 0;
-
     }
-
-
     renderActiveSuggestion();
-
     return;
-
   }
-
-
   if(
     event.key === 'ArrowUp' &&
     visible
   ){
-
     event.preventDefault();
-
-
     if(!suggestionItems.length){
       return;
     }
-
-
     suggestionIndex--;
-
-
     if(suggestionIndex < 0){
-
       suggestionIndex =
         suggestionItems.length - 1;
-
     }
-
-
     renderActiveSuggestion();
-
     return;
-
   }
-
-
   if(event.key === 'Enter'){
-
     event.preventDefault();
-
-
     if(
       visible &&
       suggestionIndex >= 0 &&
@@ -1476,114 +919,103 @@ function handleKeydown(event){
         suggestionIndex
       ]
     ){
-
       chooseSuggestion(
         suggestionItems[
           suggestionIndex
         ]
       );
-
       return;
-
     }
-
-
     search();
-
     return;
-
   }
-
-
   if(event.key === 'Escape'){
-
     hideSuggestions();
-
   }
-
 }
-
-
 /* =========================================================
    LOAD SERVER SUGGESTIONS
 ========================================================= */
-
-async function loadSuggestions(q){
-
+async function loadSuggestions(
+  q,
+  generation
+){
+  /*
+   * Starý autocomplete nesmie
+   * zmeniť aktuálne výsledky.
+   */
+  if(
+    generation !==
+    searchGeneration
+  ){
+    return;
+  }
   const cacheKey =
     q.toLowerCase().trim();
-
-
   const cached =
     suggestionCache.get(
       cacheKey
     );
-
-
   if(
     cached &&
     Date.now() -
       cached.time <
       SUGGESTION_CACHE_TTL
   ){
-
+    if(
+      generation !==
+      searchGeneration
+    ){
+      return;
+    }
     suggestionItems =
       mergeSuggestions(
         cached.items,
         buildLocalSuggestions(q)
       );
-
     suggestionIndex = -1;
-
     renderSuggestions();
-
     return;
-
   }
-
-
   suggestionController =
     new AbortController();
-
-
   try{
-
     const url =
       '/api/suggestions?q=' +
       encodeURIComponent(q);
-
-
     const r =
       await fetch(
         url,
         {
           signal:
             suggestionController.signal,
-
           cache:'no-store'
         }
       );
-
-
     if(!r.ok){
       throw new Error(
         'HTTP ' + r.status
       );
     }
-
-
     const d =
       await r.json();
-
-
+    /*
+     * Vyhľadávanie už mohlo medzitým
+     * skončiť. V tom prípade túto
+     * odpoveď úplne ignorujeme.
+     */
+    if(
+      generation !==
+      searchGeneration
+    ){
+      return;
+    }
     const serverItems =
       Array.isArray(
         d.suggestions
       )
       ? d.suggestions
       : [];
-
-
     suggestionCache.set(
       cacheKey,
       {
@@ -1591,190 +1023,131 @@ async function loadSuggestions(q){
         items:serverItems
       }
     );
-
-
     suggestionItems =
       mergeSuggestions(
         serverItems,
         buildLocalSuggestions(q)
       );
-
-
     suggestionIndex = -1;
-
-
     renderSuggestions();
-
   }
   catch(e){
-
     if(
       e &&
       e.name === 'AbortError'
     ){
-
       return;
-
     }
-
-
+    if(
+      generation !==
+      searchGeneration
+    ){
+      return;
+    }
     suggestionItems =
       buildLocalSuggestions(q);
-
-
     suggestionIndex = -1;
-
-
     if(suggestionItems.length){
-
       renderSuggestions();
-
     }
     else{
-
       hideSuggestions();
-
     }
-
   }
   finally{
-
-    suggestionController =
-      null;
-
+    /*
+     * Controller nastavíme na null
+     * iba ak stále patrí tomuto requestu.
+     */
+    if(
+      generation ===
+      searchGeneration
+    ){
+      suggestionController =
+        null;
+    }
   }
-
 }
-
-
 /* =========================================================
    LOADING
 ========================================================= */
-
 function showSuggestionsLoading(){
-
   const box =
     document.getElementById(
       'suggestions'
     );
-
-
   box.innerHTML =
     '<div class="suggestions-loading">' +
     '🔎 Hľadám návrhy...' +
     '</div>';
-
-
   box.classList.add(
     'show'
   );
-
 }
-
-
 /* =========================================================
    ICON
 ========================================================= */
-
 function suggestionIcon(item){
-
   const type =
     item.type || '';
-
-
   if(type === 'set'){
     return '📦';
   }
-
-
   if(type === 'product'){
     return '🛒';
   }
-
-
   if(type === 'pokemon'){
     return '⚡';
   }
-
-
   return '🃏';
-
 }
-
-
 /* =========================================================
    RENDER SUGGESTIONS
 ========================================================= */
-
 function renderSuggestions(){
-
   const box =
     document.getElementById(
       'suggestions'
     );
-
-
   if(!suggestionItems.length){
-
     box.innerHTML =
       '<div class="suggestions-empty">' +
       'Žiadny presný návrh – môžeš vyhľadať vlastný názov.' +
       '</div>';
-
-
     box.classList.add(
       'show'
     );
-
-
     return;
-
   }
-
-
   box.innerHTML =
     suggestionItems
       .map(
         (item,index) => {
-
           const title =
             esc(
               item.title || ''
             );
-
-
           const subtitle =
             esc(
               item.subtitle || ''
             );
-
-
           const type =
             esc(
               item.type_label || ''
             );
-
-
           return `
-
             <div
               class="suggestion"
               data-index="${index}"
               onclick="chooseSuggestionByIndex(${index})"
             >
-
               <div class="suggestion-icon">
                 ${suggestionIcon(item)}
               </div>
-
-
               <div class="suggestion-main">
-
                 <div class="suggestion-title">
                   ${title}
                 </div>
-
-
                 ${
                   subtitle
                   ? `
@@ -1784,10 +1157,7 @@ function renderSuggestions(){
                   `
                   : ''
                 }
-
               </div>
-
-
               ${
                 type
                 ? `
@@ -1797,316 +1167,210 @@ function renderSuggestions(){
                 `
                 : ''
               }
-
             </div>
-
           `;
-
         }
       )
       .join('');
-
-
   box.classList.add(
     'show'
   );
-
 }
-
-
 /* =========================================================
    ACTIVE
 ========================================================= */
-
 function renderActiveSuggestion(){
-
   const rows =
     document.querySelectorAll(
       '.suggestion'
     );
-
-
   rows.forEach(
     (row,index) => {
-
       row.classList.toggle(
         'active',
         index === suggestionIndex
       );
-
     }
   );
-
-
   const active =
     document.querySelector(
       '.suggestion.active'
     );
-
-
   if(active){
-
     active.scrollIntoView({
       block:'nearest'
     });
-
   }
-
 }
-
-
 /* =========================================================
    CHOOSE
 ========================================================= */
-
 function chooseSuggestionByIndex(index){
-
   if(
     !suggestionItems[index]
   ){
-
     return;
-
   }
-
-
   chooseSuggestion(
     suggestionItems[index]
   );
-
 }
-
-
 function chooseSuggestion(item){
-
   const value =
     item.query ||
     item.title ||
     '';
-
-
+  /*
+   * Výber návrhu je zároveň
+   * nový search.
+   */
+  searchGeneration++;
+  clearTimeout(
+    suggestionTimer
+  );
+  if(suggestionController){
+    suggestionController.abort();
+    suggestionController =
+      null;
+  }
+  hideSuggestions();
   document.getElementById(
     'q'
   ).value = value;
-
-
-  hideSuggestions();
-
-
   search();
-
 }
-
-
 /* =========================================================
    HIDE
 ========================================================= */
-
 function hideSuggestions(){
-
   const box =
     document.getElementById(
       'suggestions'
     );
-
-
   box.classList.remove(
     'show'
   );
-
-
   box.innerHTML = '';
-
-
   suggestionItems = [];
-
-
   suggestionIndex = -1;
-
 }
-
-
 /* =========================================================
    SUMMARY
 ========================================================= */
-
 function renderSummary(summary){
-
   if(!summary){
     return '';
   }
-
-
   return `
-
     <div class="summary-grid">
-
       <div class="summary-box">
-
         <div class="summary-label">
           Ponuky
         </div>
-
         <div class="summary-value">
-
           ${Number(
             summary.count || 0
           )}
-
         </div>
-
       </div>
-
-
       <div class="summary-box">
-
         <div class="summary-label">
           Obchody
         </div>
-
         <div class="summary-value">
-
           ${Number(
             summary.shops || 0
           )}
-
         </div>
-
       </div>
-
-
       <div class="summary-box">
-
         <div class="summary-label">
           Najnižšia cena
         </div>
-
         <div class="summary-value">
-
           ${
             summary.lowest_eur !== null &&
             summary.lowest_eur !== undefined
             ? eur(summary.lowest_eur)
             : '-'
           }
-
         </div>
-
       </div>
-
-
       <div class="summary-box">
-
         <div class="summary-label">
           Priemerná cena
         </div>
-
         <div class="summary-value">
-
           ${
             summary.average_eur !== null &&
             summary.average_eur !== undefined
             ? eur(summary.average_eur)
             : '-'
           }
-
         </div>
-
       </div>
-
     </div>
-
   `;
-
 }
-
-
 /* =========================================================
    PREVIEW
 ========================================================= */
-
 function renderPreview(
   info,
   parsed,
   fallbackTitle
 ){
-
   const preview =
     document.getElementById(
       'preview'
     );
-
-
   if(
     !info &&
     !parsed
   ){
-
     preview.style.display =
       'none';
-
     return;
-
   }
-
-
   const title =
     info &&
     info.title
     ? info.title
     : fallbackTitle;
-
-
   let subtitle =
     info &&
     info.subtitle
     ? info.subtitle
     : '';
-
-
   if(
     !subtitle &&
     parsed
   ){
-
     if(
       parsed.product_type
     ){
-
       subtitle =
         parsed.product_type;
-
     }
     else if(
       parsed.set_name
     ){
-
       subtitle =
         'Set: ' +
         parsed.set_name;
-
     }
     else if(
       parsed.pokemon
     ){
-
       subtitle =
         'Pokémon: ' +
         parsed.pokemon;
-
     }
-
   }
-
-
   preview.style.display =
     'block';
-
-
   preview.innerHTML = `
-
     <div class="preview">
-
       ${
         info &&
         info.image
@@ -2120,17 +1384,12 @@ function renderPreview(
         `
         : ''
       }
-
-
       <div>
-
         <h2>
           ${esc(
             title || ''
           )}
         </h2>
-
-
         ${
           subtitle
           ? `
@@ -2142,121 +1401,64 @@ function renderPreview(
           `
           : ''
         }
-
       </div>
-
     </div>
-
   `;
-
 }
-
-
 /* =========================================================
    RESULTS
 ========================================================= */
-
 function renderResults(results){
-
   const el =
     document.getElementById(
       'results'
     );
-
-
   if(
     !Array.isArray(results) ||
     !results.length
   ){
-
     el.innerHTML =
       '<div class="empty">' +
-
       'Nenašiel som čitateľnú ponuku. ' +
-
       'Obchod mohol zmeniť stránku alebo ' +
-
       'vyhľadávanie nič nenašlo.' +
-
       '</div>';
-
-
     return;
-
   }
-
-
-  /*
-   * Skopírujeme výsledky, aby sme
-   * nemenili pôvodné dáta z API.
-   */
-
   const sortedResults =
     [...results];
-
-
-  /*
-   * Najprv zobrazíme výsledky,
-   * ktoré majú platnú cenu.
-   *
-   * Tie bez ceny pôjdu až na koniec.
-   */
-
   sortedResults.sort(
     (a,b) => {
-
       const priceA =
         getResultPrice(a);
-
       const priceB =
         getResultPrice(b);
-
-
       if(
         priceA === null &&
         priceB === null
       ){
-
         return 0;
-
       }
-
-
       if(priceA === null){
         return 1;
       }
-
-
       if(priceB === null){
         return -1;
       }
-
-
       return priceA - priceB;
-
     }
   );
-
-
   const cheapestIndex =
     getCheapestIndex(
       sortedResults
     );
-
-
   const pricedCount =
     getPricedResults(
       sortedResults
     ).length;
-
-
   el.innerHTML =
-
     '<div class="panel">' +
-
     '<h3>Aktuálne ponuky</h3>' +
-
-
     `
       <div
         class="muted"
@@ -2268,64 +1470,41 @@ function renderResults(results){
         s dostupnou cenou
       </div>
     ` +
-
-
     sortedResults
       .map(
         (x,i) => {
-
           const productType =
             detectFrontendType(x);
-
-
           const typeBadge =
             productType
             ? `
-
               <span class="badge ${
                 productType === 'Karta'
                 ? 'type-card'
                 : 'type-product'
               }">
-
                 ${esc(
                   productType
                 )}
-
               </span>
-
             `
             : '';
-
-
           const isCheapest =
             i === cheapestIndex;
-
-
           return `
-
             <div class="offer">
-
               <div>
-
                 <div>
-
                   <b>
                     ${esc(
                       x.title || ''
                     )}
                   </b>
-
                 </div>
-
-
                 <div
                   style="margin-top:6px"
                 >
-
                   ${typeBadge}
-
-
                   ${
                     x.shop
                     ? `
@@ -2337,8 +1516,6 @@ function renderResults(results){
                     `
                     : ''
                   }
-
-
                   ${
                     x.country
                     ? `
@@ -2350,8 +1527,6 @@ function renderResults(results){
                     `
                     : ''
                   }
-
-
                   ${
                     x.condition
                     ? `
@@ -2363,8 +1538,6 @@ function renderResults(results){
                     `
                     : ''
                   }
-
-
                   ${
                     isCheapest
                     ? `
@@ -2374,17 +1547,10 @@ function renderResults(results){
                     `
                     : ''
                   }
-
                 </div>
-
               </div>
-
-
               <div>
-
                 ${renderPrice(x)}
-
-
                 ${
                   x.link
                   ? `
@@ -2401,192 +1567,138 @@ function renderResults(results){
                   `
                   : ''
                 }
-
               </div>
-
             </div>
-
           `;
-
         }
       )
       .join('') +
-
     '</div>';
-
 }
-
-
 /* =========================================================
    PRODUCT TYPE
 ========================================================= */
-
 function detectFrontendType(item){
-
   if(
     item.product_type &&
     item.product_type !== 'card'
   ){
-
     return 'Produkt';
-
   }
-
-
   const title =
     String(
       item.title || ''
     ).toLowerCase();
-
-
   if(
-
     title.includes(
       'elite trainer box'
     ) ||
-
     /\betb\b/.test(
       title
     ) ||
-
     title.includes(
       'booster box'
     ) ||
-
     title.includes(
       'booster bundle'
     ) ||
-
     title.includes(
       'collection box'
     ) ||
-
     title.includes(
       'premium collection'
     ) ||
-
     title.includes(
       'blister'
     ) ||
-
     /\btin\b/.test(
       title
     )
-
   ){
-
     return 'Produkt';
-
   }
-
-
   return 'Karta';
-
 }
-
-
 /* =========================================================
    SEARCH
 ========================================================= */
-
 async function search(){
-
+  /*
+   * Toto je hlavná oprava.
+   *
+   * Každé nové vyhľadávanie dostane
+   * nové číslo generácie.
+   *
+   * Starý autocomplete už následne
+   * nesmie znovu zobraziť návrhy.
+   */
+  searchGeneration++;
+  clearTimeout(
+    suggestionTimer
+  );
+  suggestionTimer = null;
+  if(suggestionController){
+    suggestionController.abort();
+    suggestionController =
+      null;
+  }
+  hideSuggestions();
   let stage =
     'začiatok';
-
-
   const status =
     document.getElementById(
       'status'
     );
-
-
   const results =
     document.getElementById(
       'results'
     );
-
-
   const preview =
     document.getElementById(
       'preview'
     );
-
-
   const button =
     document.getElementById(
       'searchButton'
     );
-
-
   try{
-
     stage =
       'čítanie vyhľadávania';
-
-
     const input =
       document.getElementById(
         'q'
       );
-
-
     const q =
       input.value.trim();
-
-
     if(!q){
-
       return;
-
     }
-
-
+    /*
+     * Ešte raz zatvoríme autocomplete
+     * tesne pred samotným requestom.
+     */
     hideSuggestions();
-
-
     stage =
       'zobrazenie loadingu';
-
-
     button.disabled = true;
-
-
     status.innerHTML =
-
       '<div class="loading">' +
-
       '🔎 Overujem aktuálne ponuky...' +
-
       '</div>';
-
-
     results.innerHTML = '';
-
-
     preview.style.display =
       'none';
-
-
     stage =
       'príprava URL';
-
-
     const apiUrl =
       '/api/search?q=' +
       encodeURIComponent(q);
-
-
     console.log(
       'CardRadar API URL:',
       apiUrl
     );
-
-
     stage =
       'odosielanie požiadavky';
-
-
     const r =
       await fetch(
         apiUrl,
@@ -2594,125 +1706,75 @@ async function search(){
           cache:'no-store'
         }
       );
-
-
     console.log(
       'CardRadar HTTP status:',
       r.status
     );
-
-
     stage =
       'čítanie odpovede';
-
-
     const responseText =
       await r.text();
-
-
     console.log(
       'CardRadar RAW RESPONSE:',
       responseText
     );
-
-
     let d;
-
-
     try{
-
       d =
         JSON.parse(
           responseText
         );
-
     }
     catch(jsonError){
-
       throw new Error(
-
         'Server neposlal platný JSON. ' +
-
         'HTTP ' +
-
         r.status +
-
         '. Začiatok odpovede: ' +
-
         responseText.substring(
           0,
           500
         )
-
       );
-
     }
-
-
     stage =
       'spracovanie odpovede';
-
-
     if(!r.ok){
-
       throw new Error(
         d.error ||
         'Chyba pri vyhľadávaní.'
       );
-
     }
-
-
     stage =
       'vykreslenie náhľadu';
-
-
     renderPreview(
       d.info,
       d.parsed,
       d.normalized_query || q
     );
-
-
     stage =
       'spracovanie normalizácie';
-
-
     const normalized =
       d.normalized_query ||
       d.normalized ||
       '';
-
-
     if(
-
       normalized &&
-
       normalized.trim() &&
-
       normalized.toLowerCase() !==
       q.toLowerCase()
-
     ){
-
       input.value =
         normalized;
-
     }
-
-
     stage =
       'spracovanie výsledkov';
-
-
     const resultCount =
       Array.isArray(
         d.results
       )
       ? d.results.length
       : 0;
-
-
     const pricedResults =
       Array.isArray(
         d.results
@@ -2721,22 +1783,14 @@ async function search(){
           d.results
         ).length
       : 0;
-
-
     stage =
       'vykreslenie statusu';
-
-
     status.innerHTML = `
-
       <div class="panel">
-
         <b>
           Nájdených reálnych ponúk:
           ${resultCount}
         </b>
-
-
         <div
           class="muted"
           style="margin-top:5px"
@@ -2746,234 +1800,157 @@ async function search(){
             ${pricedResults}
           </b>
         </div>
-
-
         ${
           normalized &&
           normalized.toLowerCase() !==
           q.toLowerCase()
-
           ? `
             <div
               class="muted"
               style="margin-top:6px"
             >
-
               CardRadar rozpoznal:
-
               <b>
                 ${esc(
                   normalized
                 )}
               </b>
-
             </div>
           `
-
           : ''
-
         }
-
-
         ${
           d.parsed &&
           d.parsed.type
-
           ? `
             <div
               class="muted"
               style="margin-top:5px"
             >
-
               Typ vyhľadávania:
-
               <b>
-
                 ${
                   d.parsed.type === 'sealed'
                   ? 'zapečatený produkt'
                   : 'karta'
                 }
-
               </b>
-
             </div>
           `
-
           : ''
-
         }
-
-
         ${
           d.czk_per_eur !== undefined
-
           ? `
             <div
               class="muted"
               style="margin-top:5px"
             >
-
               Kurz CZK/EUR:
               ${esc(
                 d.czk_per_eur
               )}
-
             </div>
           `
-
           : ''
-
         }
-
-
         ${renderSummary(
           d.summary
         )}
-
       </div>
-
     `;
-
-
     stage =
       'vykreslenie ponúk';
-
-
     renderResults(
       d.results
     );
-
-
+    /*
+     * Posledná poistka:
+     * autocomplete musí byť zavreté aj
+     * po úspešnom dokončení search requestu.
+     */
+    hideSuggestions();
     console.log(
       'CardRadar search OK:',
       q,
       d
     );
-
-
   }
   catch(e){
-
     console.error(
       'CardRadar chyba:',
       stage,
       e
     );
-
-
     status.innerHTML =
-
       '<div class="panel error">' +
-
       '<b>Chyba v kroku:</b> ' +
-
       esc(stage) +
-
       '<br><br>' +
-
       '<b>Typ:</b> ' +
-
       esc(
         e &&
         e.name
         ? e.name
         : 'Unknown'
       ) +
-
       '<br>' +
-
       '<b>Správa:</b> ' +
-
       esc(
         e &&
         e.message
         ? e.message
         : 'Neznáma chyba.'
       ) +
-
       '</div>';
-
-
     results.innerHTML = '';
-
   }
   finally{
-
     button.disabled = false;
-
   }
-
 }
-
-
 /* =========================================================
    CLOSE AUTOCOMPLETE OUTSIDE
 ========================================================= */
-
 document.addEventListener(
   'click',
   function(event){
-
     const searchWrap =
       document.querySelector(
         '.search-wrap'
       );
-
-
     if(
-
       searchWrap &&
-
       !searchWrap.contains(
         event.target
       )
-
     ){
-
       hideSuggestions();
-
     }
-
   }
 );
-
-
 /* =========================================================
    URL QUERY
 ========================================================= */
-
 try{
-
   const initialQuery =
     new URLSearchParams(
       window.location.search
     ).get('q');
-
-
   if(initialQuery){
-
     document.getElementById(
       'q'
     ).value =
       initialQuery;
-
-
     search();
-
   }
-
 }
 catch(e){
-
   console.error(
     'Initial URL error:',
     e
   );
-
 }
-
 </script>
-
 </body>
 </html>
