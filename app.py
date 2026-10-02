@@ -5,14 +5,13 @@ import unicodedata
 from datetime import datetime
 from urllib.parse import quote, urljoin
 
-import requests
+from flask import Flask, jsonify, request, send_from_directory
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request
+import requests
 
 app = Flask(__name__)
 
-VERSION = "5.0"
-
+VERSION = "5.1"
 DB_FILE = "cardradar.db"
 
 HEADERS = {
@@ -25,10 +24,12 @@ HEADERS = {
 }
 
 TIMEOUT = 15
+CZK_PER_EUR = 24.4618
 
-# ---------------------------------------------------------
+
+# =========================================================
 # DATABASE
-# ---------------------------------------------------------
+# =========================================================
 
 def db():
     conn = sqlite3.connect(DB_FILE)
@@ -57,9 +58,9 @@ def init_db():
 init_db()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # NORMALIZATION
-# ---------------------------------------------------------
+# =========================================================
 
 def normalize(text):
     if not text:
@@ -74,7 +75,6 @@ def normalize(text):
     )
 
     text = text.lower()
-
     text = text.replace("–", "-")
     text = text.replace("—", "-")
     text = text.replace("’", "'")
@@ -85,23 +85,23 @@ def normalize(text):
 
 
 def words(text):
-    return re.findall(r"[a-z0-9]+", normalize(text))
+    return re.findall(
+        r"[a-z0-9]+",
+        normalize(text)
+    )
 
 
-# ---------------------------------------------------------
-# QUERY CLASSIFICATION
-# ---------------------------------------------------------
+# =========================================================
+# QUERY TYPE
+# =========================================================
 
 MERCH_WORDS = {
     "plysak",
     "plysovy",
-    "plysovy",
     "hracka",
     "hracky",
     "figurka",
-    "figurka",
     "funko",
-    "figurine",
     "toy",
     "plush",
     "plushie",
@@ -159,11 +159,12 @@ def classify_query(query):
     return "card"
 
 
-# ---------------------------------------------------------
-# QUERY REQUIREMENTS
-# ---------------------------------------------------------
+# =========================================================
+# CARD NUMBER
+# =========================================================
 
 def card_number_from_query(query):
+
     m = re.search(
         r"\b(\d{1,3})\s*/\s*(\d{1,3})\b",
         query
@@ -172,60 +173,32 @@ def card_number_from_query(query):
     if not m:
         return None
 
-    return f"{int(m.group(1))}/{int(m.group(2))}"
-
-
-def extract_set_terms(query):
-    """
-    Z query odstráni typické card suffixy a číslo.
-    Zvyšok použijeme ako pomocné hľadanie.
-    """
-
-    q = normalize(query)
-
-    q = re.sub(
-        r"\b\d{1,3}\s*/\s*\d{1,3}\b",
-        " ",
-        q
+    return (
+        f"{int(m.group(1))}/"
+        f"{int(m.group(2))}"
     )
 
-    q = re.sub(
-        r"\b(pokemon|tcg|card|karte|karta)\b",
-        " ",
-        q
-    )
 
-    q = re.sub(
-        r"\b(nm|near mint|lp|light played|mp|played)\b",
-        " ",
-        q
-    )
-
-    q = re.sub(r"\s+", " ", q)
-
-    return q.strip()
-
-
-# ---------------------------------------------------------
-# RELEVANCE
-# ---------------------------------------------------------
+# =========================================================
+# PRODUCT FILTERS
+# =========================================================
 
 def candidate_is_merch(title):
+
     t = normalize(title)
 
     for bad in MERCH_WORDS:
-        if re.search(r"\b" + re.escape(bad) + r"\b", t):
+
+        if re.search(
+            r"\b" + re.escape(bad) + r"\b",
+            t
+        ):
             return True
 
     return False
 
 
 def card_matches_query(title, query):
-    """
-    Dôležité:
-    'Pikachu ex' musí mať Pikachu aj ex ako samostatné slová.
-    Plyšák a merch sa vyradia.
-    """
 
     if not title:
         return False
@@ -244,7 +217,10 @@ def card_matches_query(title, query):
 
     if "ex" in qwords:
 
-        if not re.search(r"(?<![a-z0-9])ex(?![a-z0-9])", title_n):
+        if not re.search(
+            r"(?<![a-z0-9])ex(?![a-z0-9])",
+            title_n
+        ):
             return False
 
     # -----------------------------------------------------
@@ -257,12 +233,12 @@ def card_matches_query(title, query):
             return False
 
     # -----------------------------------------------------
-    # V
+    # VSTAR
     # -----------------------------------------------------
 
-    if "v" in qwords:
+    if "vstar" in qwords:
 
-        if not re.search(r"(?<![a-z0-9])v(?![a-z0-9])", title_n):
+        if "vstar" not in title_n:
             return False
 
     # -----------------------------------------------------
@@ -271,7 +247,10 @@ def card_matches_query(title, query):
 
     if "gx" in qwords:
 
-        if not re.search(r"(?<![a-z0-9])gx(?![a-z0-9])", title_n):
+        if not re.search(
+            r"(?<![a-z0-9])gx(?![a-z0-9])",
+            title_n
+        ):
             return False
 
     # -----------------------------------------------------
@@ -293,6 +272,7 @@ def card_matches_query(title, query):
         found = False
 
         for p in possible:
+
             if p in title_n:
                 found = True
                 break
@@ -301,7 +281,7 @@ def card_matches_query(title, query):
             return False
 
     # -----------------------------------------------------
-    # MAIN NAME
+    # IMPORTANT NAME WORDS
     # -----------------------------------------------------
 
     ignore = {
@@ -324,14 +304,14 @@ def card_matches_query(title, query):
     }
 
     important = [
-        w for w in qwords
+        w
+        for w in qwords
         if w not in ignore
         and not w.isdigit()
     ]
 
     for word in important:
 
-        # čísla neriešime ako samostatné slová
         if len(word) <= 1:
             continue
 
@@ -342,6 +322,7 @@ def card_matches_query(title, query):
 
 
 def sealed_matches_query(title, query):
+
     if not title:
         return False
 
@@ -362,31 +343,40 @@ def sealed_matches_query(title, query):
         ):
             return False
 
-    # Booster Box
-    if "booster" in qwords and "box" in qwords:
+    # BOOSTER BOX
+    if (
+        "booster" in qwords
+        and "box" in qwords
+    ):
 
         if "booster box" not in title_n:
             return False
 
-    # Booster Bundle
-    if "booster" in qwords and "bundle" in qwords:
+    # BOOSTER BUNDLE
+    if (
+        "booster" in qwords
+        and "bundle" in qwords
+    ):
 
         if "booster bundle" not in title_n:
             return False
 
-    # Tin
+    # TIN
     if "tin" in qwords:
 
-        if not re.search(r"\btin\b", title_n):
+        if not re.search(
+            r"\btin\b",
+            title_n
+        ):
             return False
 
-    # Collection
+    # COLLECTION
     if "collection" in qwords:
 
         if "collection" not in title_n:
             return False
 
-    # Set/name
+    # SET / PRODUCT NAME
     important = []
 
     for w in qwords:
@@ -394,7 +384,10 @@ def sealed_matches_query(title, query):
         if w in SEALED_WORDS:
             continue
 
-        if w in {"pokemon", "tcg"}:
+        if w in {
+            "pokemon",
+            "tcg"
+        }:
             continue
 
         important.append(w)
@@ -410,215 +403,139 @@ def sealed_matches_query(title, query):
     return True
 
 
-# ---------------------------------------------------------
-# PRICE PARSING
-# ---------------------------------------------------------
+# =========================================================
+# PRICE
+# =========================================================
 
 def parse_number(value):
+
     if value is None:
         return None
 
     value = str(value).strip()
 
-    value = value.replace("\xa0", " ")
-    value = value.replace("€", "")
-    value = value.replace("EUR", "")
-    value = value.replace("Kč", "")
-    value = value.replace("CZK", "")
+    value = value.replace(
+        "\xa0",
+        " "
+    )
+
+    value = value.replace(
+        "€",
+        ""
+    )
+
+    value = value.replace(
+        "EUR",
+        ""
+    )
+
+    value = value.replace(
+        "Kč",
+        ""
+    )
+
+    value = value.replace(
+        "CZK",
+        ""
+    )
+
     value = value.strip()
 
-    # 1 299,99
     if "," in value and "." in value:
 
         if value.rfind(",") > value.rfind("."):
-            value = value.replace(".", "")
-            value = value.replace(",", ".")
+
+            value = value.replace(
+                ".",
+                ""
+            )
+
+            value = value.replace(
+                ",",
+                "."
+            )
+
         else:
-            value = value.replace(",", "")
+
+            value = value.replace(
+                ",",
+                ""
+            )
 
     elif "," in value:
 
-        value = value.replace(".", "")
-        value = value.replace(",", ".")
+        value = value.replace(
+            ".",
+            ""
+        )
+
+        value = value.replace(
+            ",",
+            "."
+        )
 
     else:
 
-        # 1.299.99 -> 1299.99
         if value.count(".") > 1:
-            parts = value.split(".")
-            value = "".join(parts[:-1]) + "." + parts[-1]
 
-    m = re.search(r"\d+(?:\.\d+)?", value)
+            parts = value.split(".")
+
+            value = (
+                "".join(parts[:-1])
+                + "."
+                + parts[-1]
+            )
+
+    m = re.search(
+        r"\d+(?:\.\d+)?",
+        value
+    )
 
     if not m:
         return None
 
     try:
         return float(m.group(0))
+
     except Exception:
         return None
 
 
-# ---------------------------------------------------------
-# CZK / EUR
-# ---------------------------------------------------------
-
-CZK_PER_EUR = 24.4618
-
-
 def czk_to_eur(value):
+
     if value is None:
         return None
 
     return float(value) / CZK_PER_EUR
 
 
-# ---------------------------------------------------------
+# =========================================================
 # HTTP
-# ---------------------------------------------------------
+# =========================================================
 
 def get(url):
+
     try:
 
-        r = requests.get(
+        response = requests.get(
             url,
             headers=HEADERS,
             timeout=TIMEOUT
         )
 
-        if r.status_code != 200:
+        if response.status_code != 200:
             return None
 
-        return r
+        return response
 
     except Exception:
+
         return None
 
 
-# ---------------------------------------------------------
+# =========================================================
 # CARDYX
-# ---------------------------------------------------------
-
-def search_cardyx_cards(query):
-    """
-    CardyX má samostatnú kolekciu Kusové karty.
-    Preto pri kartách nehľadáme cez všeobecný Pokémon shop,
-    ale priamo cez kolekciu kusových kariet.
-
-    CardyX stránky používajú Shopify štruktúru.
-    """
-
-    results = []
-
-    query_n = normalize(query)
-
-    # -----------------------------------------------------
-    # Najprv Shopify search
-    # -----------------------------------------------------
-
-    search_url = (
-        "https://www.cardyx.sk/search"
-        "?type=product&q="
-        + quote(query)
-    )
-
-    r = get(search_url)
-
-    if r:
-
-        soup = BeautifulSoup(
-            r.text,
-            "html.parser"
-        )
-
-        # Shopify produktové karty
-        cards = soup.select(
-            "a[href*='/products/']"
-        )
-
-        seen = set()
-
-        for a in cards:
-
-            href = a.get("href")
-
-            if not href:
-                continue
-
-            url = urljoin(
-                "https://www.cardyx.sk",
-                href
-            )
-
-            if url in seen:
-                continue
-
-            seen.add(url)
-
-            title = a.get_text(
-                " ",
-                strip=True
-            )
-
-            if not title:
-                continue
-
-            # Ak samotný anchor obsahuje veľa textu,
-            # skúsime nájsť názov v rodičovi.
-            parent = a.parent
-
-            if parent:
-
-                text = parent.get_text(
-                    " ",
-                    strip=True
-                )
-
-                if len(text) > len(title):
-                    title = text
-
-            # odfiltruj merch
-            if candidate_is_merch(title):
-                continue
-
-            if not card_matches_query(
-                title,
-                query_n
-            ):
-                continue
-
-            price = extract_cardyx_price_from_product(
-                url
-            )
-
-            if price is None:
-                continue
-
-            results.append({
-                "shop": "CardyX",
-                "country": "SK",
-                "language": "EN",
-                "condition": "NM",
-                "in_stock": True,
-                "title": title,
-                "price_eur": round(price, 2),
-                "link": url,
-            })
-
-    # odstránenie duplicít
-    unique = {}
-
-    for item in results:
-
-        key = (
-            item["title"],
-            item["link"],
-        )
-
-        unique[key] = item
-
-    return list(unique.values())
-
+# =========================================================
 
 def extract_cardyx_price_from_product(url):
 
@@ -647,7 +564,6 @@ def extract_cardyx_price_from_product(url):
         if not raw:
             continue
 
-        # price
         m = re.search(
             r'"price"\s*:\s*"?(\\?[\d.,]+)',
             raw
@@ -659,14 +575,14 @@ def extract_cardyx_price_from_product(url):
                 m.group(1)
             )
 
-            if value is not None:
-
-                # CardyX je EUR
-                if 0 < value < 100000:
-                    return value
+            if (
+                value is not None
+                and 0.5 <= value <= 100000
+            ):
+                return value
 
     # -----------------------------------------------------
-    # Shopify meta
+    # META
     # -----------------------------------------------------
 
     meta = soup.select_one(
@@ -679,11 +595,14 @@ def extract_cardyx_price_from_product(url):
             meta.get("content")
         )
 
-        if value is not None:
+        if (
+            value is not None
+            and 0.5 <= value <= 100000
+        ):
             return value
 
     # -----------------------------------------------------
-    # Shopify price elements
+    # SHOPIFY PRICE
     # -----------------------------------------------------
 
     selectors = [
@@ -695,29 +614,28 @@ def extract_cardyx_price_from_product(url):
 
     for selector in selectors:
 
-        for node in soup.select(selector):
+        for node in soup.select(
+            selector
+        ):
 
-            text = node.get_text(
-                " ",
-                strip=True
+            value = parse_number(
+                node.get_text(
+                    " ",
+                    strip=True
+                )
             )
 
-            value = parse_number(text)
-
-            if value is not None:
-
-                # ochrana proti chybnému číslu
-                if 0.5 <= value <= 100000:
-                    return value
+            if (
+                value is not None
+                and 0.5 <= value <= 100000
+            ):
+                return value
 
     return None
 
 
-# ---------------------------------------------------------
-# CARDYX SEALED
-# ---------------------------------------------------------
+def search_cardyx_cards(query):
 
-def search_cardyx_sealed(query):
     results = []
 
     url = (
@@ -736,28 +654,28 @@ def search_cardyx_sealed(query):
         "html.parser"
     )
 
-    cards = soup.select(
+    links = soup.select(
         "a[href*='/products/']"
     )
 
     seen = set()
 
-    for a in cards:
+    for a in links:
 
         href = a.get("href")
 
         if not href:
             continue
 
-        link = urljoin(
+        product_url = urljoin(
             "https://www.cardyx.sk",
             href
         )
 
-        if link in seen:
+        if product_url in seen:
             continue
 
-        seen.add(link)
+        seen.add(product_url)
 
         title = a.get_text(
             " ",
@@ -771,13 +689,106 @@ def search_cardyx_sealed(query):
 
         if parent:
 
-            txt = parent.get_text(
+            parent_text = parent.get_text(
                 " ",
                 strip=True
             )
 
-            if len(txt) > len(title):
-                title = txt
+            if len(parent_text) > len(title):
+                title = parent_text
+
+        if not card_matches_query(
+            title,
+            query
+        ):
+            continue
+
+        price = extract_cardyx_price_from_product(
+            product_url
+        )
+
+        if price is None:
+            continue
+
+        results.append({
+            "shop": "CardyX",
+            "country": "SK",
+            "language": "EN",
+            "condition": "NM",
+            "in_stock": True,
+            "title": title,
+            "price_eur": round(
+                price,
+                2
+            ),
+            "link": product_url,
+        })
+
+    return results
+
+
+def search_cardyx_sealed(query):
+
+    results = []
+
+    url = (
+        "https://www.cardyx.sk/search"
+        "?type=product&q="
+        + quote(query)
+    )
+
+    r = get(url)
+
+    if not r:
+        return results
+
+    soup = BeautifulSoup(
+        r.text,
+        "html.parser"
+    )
+
+    links = soup.select(
+        "a[href*='/products/']"
+    )
+
+    seen = set()
+
+    for a in links:
+
+        href = a.get("href")
+
+        if not href:
+            continue
+
+        product_url = urljoin(
+            "https://www.cardyx.sk",
+            href
+        )
+
+        if product_url in seen:
+            continue
+
+        seen.add(product_url)
+
+        title = a.get_text(
+            " ",
+            strip=True
+        )
+
+        if not title:
+            continue
+
+        parent = a.parent
+
+        if parent:
+
+            parent_text = parent.get_text(
+                " ",
+                strip=True
+            )
+
+            if len(parent_text) > len(title):
+                title = parent_text
 
         if not sealed_matches_query(
             title,
@@ -786,7 +797,7 @@ def search_cardyx_sealed(query):
             continue
 
         price = extract_cardyx_price_from_product(
-            link
+            product_url
         )
 
         if price is None:
@@ -799,40 +810,128 @@ def search_cardyx_sealed(query):
             "condition": "Sealed",
             "in_stock": True,
             "title": title,
-            "price_eur": round(price, 2),
-            "link": link,
+            "price_eur": round(
+                price,
+                2
+            ),
+            "link": product_url,
         })
 
     return results
 
 
-# ---------------------------------------------------------
-# GENERIC SHOP SEARCH
-# ---------------------------------------------------------
+# =========================================================
+# OTHER SHOPS
+# =========================================================
 
 SHOPS = [
+
     {
         "name": "Veselý Drak",
         "country": "CZ",
         "base": "https://www.vesely-drak.cz",
-        "search": "https://www.vesely-drak.cz/vyhledavani/?q={q}",
+        "search": (
+            "https://www.vesely-drak.cz/"
+            "vyhledavani/?q={q}"
+        ),
     },
+
     {
         "name": "iHRYsko",
         "country": "SK",
         "base": "https://www.ihrysko.sk",
-        "search": "https://www.ihrysko.sk/vysledky-vyhladavania/?q={q}",
+        "search": (
+            "https://www.ihrysko.sk/"
+            "vysledky-vyhladavania/?q={q}"
+        ),
     },
+
     {
         "name": "Černý Rytíř",
         "country": "CZ",
         "base": "https://www.cernyrytir.cz",
-        "search": "https://www.cernyrytir.cz/index.php3?akce=3&stranka=1&search={q}",
+        "search": (
+            "https://www.cernyrytir.cz/"
+            "index.php3?akce=3&stranka=1&search={q}"
+        ),
     },
 ]
 
 
-def generic_search(shop, query, mode):
+def find_price_near_link(
+    anchor,
+    country
+):
+
+    nodes = []
+
+    parent = anchor
+
+    for _ in range(5):
+
+        if parent is None:
+            break
+
+        nodes.append(parent)
+        parent = parent.parent
+
+    for node in nodes:
+
+        text = node.get_text(
+            " ",
+            strip=True
+        )
+
+        # EUR
+        m = re.search(
+            r"(\d[\d\s.,]*)\s*(?:€|EUR)",
+            text,
+            re.I
+        )
+
+        if m:
+
+            value = parse_number(
+                m.group(1)
+            )
+
+            if (
+                value is not None
+                and 0.5 <= value <= 100000
+            ):
+                return value
+
+        # CZK
+        if country == "CZ":
+
+            m = re.search(
+                r"(\d[\d\s.,]*)\s*(?:Kč|CZK)",
+                text,
+                re.I
+            )
+
+            if m:
+
+                value = parse_number(
+                    m.group(1)
+                )
+
+                if (
+                    value is not None
+                    and 1 <= value <= 1000000
+                ):
+                    return czk_to_eur(
+                        value
+                    )
+
+    return None
+
+
+def generic_search(
+    shop,
+    query,
+    mode
+):
 
     results = []
 
@@ -850,7 +949,10 @@ def generic_search(shop, query, mode):
         "html.parser"
     )
 
-    links = soup.find_all("a", href=True)
+    links = soup.find_all(
+        "a",
+        href=True
+    )
 
     seen = set()
 
@@ -869,22 +971,11 @@ def generic_search(shop, query, mode):
         if not title:
             continue
 
-        title_n = normalize(title)
-
-        # -------------------------------------------------
-        # veľmi dôležité:
-        # nechceme navigačné odkazy
-        # -------------------------------------------------
-
         if len(title) < 3:
             continue
 
         if len(title) > 300:
             continue
-
-        # -------------------------------------------------
-        # správna relevancia
-        # -------------------------------------------------
 
         if mode == "card":
 
@@ -912,10 +1003,6 @@ def generic_search(shop, query, mode):
 
         seen.add(link)
 
-        # -------------------------------------------------
-        # cena
-        # -------------------------------------------------
-
         price = find_price_near_link(
             a,
             shop["country"]
@@ -928,10 +1015,17 @@ def generic_search(shop, query, mode):
             "shop": shop["name"],
             "country": shop["country"],
             "language": "EN",
-            "condition": "Sealed" if mode == "sealed" else "NM",
+            "condition": (
+                "Sealed"
+                if mode == "sealed"
+                else "NM"
+            ),
             "in_stock": True,
             "title": title,
-            "price_eur": round(price, 2),
+            "price_eur": round(
+                price,
+                2
+            ),
             "link": link,
         })
 
@@ -941,75 +1035,14 @@ def generic_search(shop, query, mode):
     return results
 
 
-def find_price_near_link(a, country):
-
-    # -----------------------------------------------------
-    # Nečítame ľubovoľné čísla z celej stránky.
-    # Hľadáme cenu iba v blízkom rodičovi.
-    # -----------------------------------------------------
-
-    nodes = []
-
-    parent = a
-
-    for _ in range(5):
-
-        if parent is None:
-            break
-
-        nodes.append(parent)
-
-        parent = parent.parent
-
-    for node in nodes:
-
-        text = node.get_text(
-            " ",
-            strip=True
-        )
-
-        # EUR
-        m = re.search(
-            r"(\d[\d\s.,]*)\s*(?:€|EUR)",
-            text,
-            re.I
-        )
-
-        if m:
-
-            value = parse_number(
-                m.group(1)
-            )
-
-            if value is not None and 0.5 <= value <= 100000:
-                return value
-
-        # CZK
-        if country == "CZ":
-
-            m = re.search(
-                r"(\d[\d\s.,]*)\s*(?:Kč|CZK)",
-                text,
-                re.I
-            )
-
-            if m:
-
-                value = parse_number(
-                    m.group(1)
-                )
-
-                if value is not None and 1 <= value <= 1000000:
-                    return czk_to_eur(value)
-
-    return None
-
-
-# ---------------------------------------------------------
+# =========================================================
 # HISTORY
-# ---------------------------------------------------------
+# =========================================================
 
-def save_history(query, result):
+def save_history(
+    query,
+    result
+):
 
     try:
 
@@ -1076,37 +1109,41 @@ def get_history(query):
         return []
 
 
-# ---------------------------------------------------------
-# SORTING
-# ---------------------------------------------------------
+# =========================================================
+# SORT
+# =========================================================
 
 def sort_results(results):
 
-    # odstránenie rovnakých ponúk
     unique = {}
 
-    for r in results:
+    for result in results:
 
         key = (
-            normalize(r["title"]),
-            r["shop"],
-            r["link"],
+            normalize(
+                result["title"]
+            ),
+            result["shop"],
+            result["link"],
         )
 
-        unique[key] = r
+        unique[key] = result
 
-    results = list(unique.values())
+    results = list(
+        unique.values()
+    )
 
     results.sort(
-        key=lambda x: x["price_eur"]
+        key=lambda x:
+        x["price_eur"]
     )
 
     return results
 
 
-# ---------------------------------------------------------
+# =========================================================
 # API SEARCH
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route("/api/search")
 def api_search():
@@ -1122,7 +1159,9 @@ def api_search():
             "error": "Chýba vyhľadávanie."
         }), 400
 
-    mode = classify_query(query)
+    mode = classify_query(
+        query
+    )
 
     results = []
 
@@ -1133,17 +1172,21 @@ def api_search():
     if mode == "card":
 
         results.extend(
-            search_cardyx_cards(query)
+            search_cardyx_cards(
+                query
+            )
         )
 
     else:
 
         results.extend(
-            search_cardyx_sealed(query)
+            search_cardyx_sealed(
+                query
+            )
         )
 
     # -----------------------------------------------------
-    # OSTATNÉ OBCHODY
+    # OTHER SHOPS
     # -----------------------------------------------------
 
     for shop in SHOPS:
@@ -1166,7 +1209,7 @@ def api_search():
             )
 
     # -----------------------------------------------------
-    # FINÁLNE FILTROVANIE
+    # FINAL FILTER
     # -----------------------------------------------------
 
     clean = []
@@ -1188,12 +1231,12 @@ def api_search():
         if price is None:
             continue
 
-        # žiadne nulové / nezmyselné ceny
         if price <= 0:
             continue
 
-        # odstránenie merchu
-        if candidate_is_merch(title):
+        if candidate_is_merch(
+            title
+        ):
             continue
 
         if mode == "card":
@@ -1212,15 +1255,20 @@ def api_search():
             ):
                 continue
 
-        clean.append(result)
+        clean.append(
+            result
+        )
 
-    results = sort_results(clean)
+    results = sort_results(
+        clean
+    )
 
     # -----------------------------------------------------
     # HISTORY
     # -----------------------------------------------------
 
     for result in results[:10]:
+
         save_history(
             query,
             result
@@ -1253,9 +1301,9 @@ def api_search():
     })
 
 
-# ---------------------------------------------------------
+# =========================================================
 # HEALTH
-# ---------------------------------------------------------
+# =========================================================
 
 @app.route("/health")
 def health():
@@ -1267,32 +1315,22 @@ def health():
     })
 
 
-# ---------------------------------------------------------
-# HOME
-# ---------------------------------------------------------
+# =========================================================
+# FRONTEND
+# =========================================================
 
 @app.route("/")
 def home():
 
-    return """
-    <!doctype html>
-    <html lang="sk">
-    <head>
-        <meta charset="utf-8">
-        <title>CardRadar</title>
-    </head>
-    <body>
-        <h1>CardRadar</h1>
-        <p>Backend is running.</p>
-        <p>Version: 5.0</p>
-    </body>
-    </html>
-    """
+    return send_from_directory(
+        ".",
+        "index.html"
+    )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # START
-# ---------------------------------------------------------
+# =========================================================
 
 if __name__ == "__main__":
 
