@@ -15,12 +15,12 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 5.21
+# VERSION 5.22
 # CARDYX FOCUS
 # FAST AUTOCOMPLETE + REAL PRICES + PRODUCT IMAGES
 # =========================================================
 
-VERSION = "5.21"
+VERSION = "5.22"
 
 app = Flask(__name__)
 
@@ -43,10 +43,14 @@ DB_PATH = os.path.join(
 CACHE_TTL = 120
 CACHE_MAX_ITEMS = 50
 
-SUGGESTION_CACHE_TTL = 120
-SUGGESTION_CACHE_MAX_ITEMS = 100
+SUGGESTION_CACHE_TTL = 300
+SUGGESTION_CACHE_MAX_ITEMS = 200
 
 SEARCH_TIMEOUT = 10
+
+# Autocomplete používa kratší timeout.
+# Ak CardyX neodpovie rýchlo, stránka sa nezasekne.
+SUGGESTION_TIMEOUT = 4
 
 
 # =========================================================
@@ -91,6 +95,7 @@ _http_local = threading.local()
 
 
 def get_http_session():
+
     session = getattr(
         _http_local,
         "session",
@@ -98,10 +103,13 @@ def get_http_session():
     )
 
     if session is None:
+
         session = requests.Session()
+
         session.headers.update(
             HEADERS
         )
+
         _http_local.session = session
 
     return session
@@ -116,12 +124,14 @@ _search_cache_lock = threading.Lock()
 
 
 def cache_key(query):
+
     return normalize_spaces(
         query
     ).lower()
 
 
 def cache_get(query):
+
     key = cache_key(
         query
     )
@@ -129,6 +139,7 @@ def cache_get(query):
     now = time.monotonic()
 
     with _search_cache_lock:
+
         item = _search_cache.get(
             key
         )
@@ -147,10 +158,12 @@ def cache_get(query):
             >
             CACHE_TTL
         ):
+
             _search_cache.pop(
                 key,
                 None
             )
+
             return None
 
         return copy.deepcopy(
@@ -164,17 +177,20 @@ def cache_set(
     query,
     data
 ):
+
     key = cache_key(
         query
     )
 
     with _search_cache_lock:
+
         if (
             key not in _search_cache
             and
             len(_search_cache)
             >= CACHE_MAX_ITEMS
         ):
+
             oldest_key = min(
                 _search_cache,
                 key=lambda k:
@@ -192,6 +208,7 @@ def cache_set(
         _search_cache[key] = {
             "timestamp":
                 time.monotonic(),
+
             "data":
                 copy.deepcopy(
                     data
@@ -200,6 +217,7 @@ def cache_set(
 
 
 def cache_clear():
+
     with _search_cache_lock:
         _search_cache.clear()
 
@@ -213,12 +231,14 @@ _suggestion_cache_lock = threading.Lock()
 
 
 def suggestion_cache_key(query):
+
     return normalize_spaces(
         query
     ).lower()
 
 
 def suggestion_cache_get(query):
+
     key = suggestion_cache_key(
         query
     )
@@ -226,6 +246,7 @@ def suggestion_cache_get(query):
     now = time.monotonic()
 
     with _suggestion_cache_lock:
+
         item = _suggestion_cache.get(
             key
         )
@@ -244,10 +265,12 @@ def suggestion_cache_get(query):
             >
             SUGGESTION_CACHE_TTL
         ):
+
             _suggestion_cache.pop(
                 key,
                 None
             )
+
             return None
 
         return copy.deepcopy(
@@ -262,17 +285,20 @@ def suggestion_cache_set(
     query,
     data
 ):
+
     key = suggestion_cache_key(
         query
     )
 
     with _suggestion_cache_lock:
+
         if (
             key not in _suggestion_cache
             and
             len(_suggestion_cache)
             >= SUGGESTION_CACHE_MAX_ITEMS
         ):
+
             oldest_key = min(
                 _suggestion_cache,
                 key=lambda k:
@@ -290,6 +316,7 @@ def suggestion_cache_set(
         _suggestion_cache[key] = {
             "timestamp":
                 time.monotonic(),
+
             "data":
                 copy.deepcopy(
                     data
@@ -298,6 +325,7 @@ def suggestion_cache_set(
 
 
 def suggestion_cache_clear():
+
     with _suggestion_cache_lock:
         _suggestion_cache.clear()
 
@@ -313,6 +341,7 @@ _image_cache_lock = threading.Lock()
 def image_cache_get(
     product_url
 ):
+
     product_url = clean_text(
         product_url
     )
@@ -323,6 +352,7 @@ def image_cache_get(
     now = time.monotonic()
 
     with _image_cache_lock:
+
         item = _image_cache.get(
             product_url
         )
@@ -341,10 +371,12 @@ def image_cache_get(
             >
             IMAGE_CACHE_TTL
         ):
+
             _image_cache.pop(
                 product_url,
                 None
             )
+
             return None
 
         return item.get(
@@ -357,6 +389,7 @@ def image_cache_set(
     product_url,
     image_url
 ):
+
     product_url = clean_text(
         product_url
     )
@@ -369,12 +402,14 @@ def image_cache_set(
     )
 
     with _image_cache_lock:
+
         if (
             product_url not in _image_cache
             and
             len(_image_cache)
             >= IMAGE_CACHE_MAX_ITEMS
         ):
+
             oldest_key = min(
                 _image_cache,
                 key=lambda k:
@@ -392,12 +427,14 @@ def image_cache_set(
         _image_cache[product_url] = {
             "timestamp":
                 time.monotonic(),
+
             "image":
                 image_url,
         }
 
 
 def image_cache_clear():
+
     with _image_cache_lock:
         _image_cache.clear()
 
@@ -407,6 +444,7 @@ def image_cache_clear():
 # =========================================================
 
 def init_db():
+
     conn = sqlite3.connect(
         DB_PATH
     )
@@ -435,17 +473,21 @@ init_db()
 # =========================================================
 
 def find_index():
+
     candidates = [
+
         os.path.join(
             BASE_DIR,
             "templates",
             "index.html"
         ),
+
         os.path.join(
             BASE_DIR,
             "Templates",
             "index.html"
         ),
+
         os.path.join(
             BASE_DIR,
             "index.html"
@@ -453,6 +495,7 @@ def find_index():
     ]
 
     for path in candidates:
+
         if os.path.isfile(path):
             return path
 
@@ -464,6 +507,7 @@ def find_index():
 # =========================================================
 
 def clean_text(value):
+
     value = str(
         value or ""
     )
@@ -483,6 +527,7 @@ def clean_text(value):
 
 
 def words(text):
+
     text = clean_text(
         text
     ).lower()
@@ -496,6 +541,7 @@ def words(text):
 
 
 def normalize_spaces(text):
+
     return re.sub(
         r"\s+",
         " ",
@@ -507,6 +553,7 @@ def text_contains_word(
     text,
     word
 ):
+
     if not text or not word:
         return False
 
@@ -529,6 +576,7 @@ def text_contains_word(
 # =========================================================
 
 SET_ALIASES = {
+
     "sv8": "surging sparks",
     "sv8a": "terastal festival",
     "sv9": "journey together",
@@ -543,74 +591,129 @@ SET_ALIASES = {
     "sv3": "obsidian flames",
     "sv2": "paldea evolved",
     "sv1": "scarlet violet base",
+
     "151": "pokemon 151",
     "pokemon151": "pokemon 151",
     "pokemon 151": "pokemon 151",
+
     "prismatic": "prismatic evolutions",
     "prismatic evo": "prismatic evolutions",
+
     "surging": "surging sparks",
     "sparks": "surging sparks",
+
     "destined": "destined rivals",
     "journey": "journey together",
     "terastal": "terastal festival",
+
     "phantasmal": "phantasmal flames",
     "phantasmal flames": "phantasmal flames",
-    "mega brave": "mega evolution mega brave",
-    "mega evolution": "mega evolution",
+
+    "mega brave":
+        "mega evolution mega brave",
+
+    "mega evolution":
+        "mega evolution",
 }
 
 
 PRODUCT_ALIASES = {
-    "etb": "elite trainer box",
-    "elite trainer": "elite trainer box",
-    "elite trainer box": "elite trainer box",
-    "booster box": "booster box",
-    "boosterbox": "booster box",
-    "bb": "booster box",
-    "booster bundle": "booster bundle",
-    "bundle": "booster bundle",
-    "collection box": "collection box",
-    "collection": "collection box",
-    "premium collection": "premium collection",
-    "premium box": "premium collection",
-    "tin": "tin",
-    "tins": "tin",
-    "blister": "blister",
-    "blister pack": "blister",
-    "box": "box",
+
+    "etb":
+        "elite trainer box",
+
+    "elite trainer":
+        "elite trainer box",
+
+    "elite trainer box":
+        "elite trainer box",
+
+    "booster box":
+        "booster box",
+
+    "boosterbox":
+        "booster box",
+
+    "bb":
+        "booster box",
+
+    "booster bundle":
+        "booster bundle",
+
+    "bundle":
+        "booster bundle",
+
+    "collection box":
+        "collection box",
+
+    "collection":
+        "collection box",
+
+    "premium collection":
+        "premium collection",
+
+    "premium box":
+        "premium collection",
+
+    "tin":
+        "tin",
+
+    "tins":
+        "tin",
+
+    "blister":
+        "blister",
+
+    "blister pack":
+        "blister",
+
+    "box":
+        "box",
 }
 
 
 POKEMON_ALIASES = {
+
     "pikachu": "Pikachu",
     "pika": "Pikachu",
+
     "charizard": "Charizard",
     "char": "Charizard",
+
     "umbreon": "Umbreon",
     "eevee": "Eevee",
+
     "mew": "Mew",
     "mewtwo": "Mewtwo",
+
     "gengar": "Gengar",
     "lucario": "Lucario",
     "greninja": "Greninja",
+
     "rayquaza": "Rayquaza",
     "gardevoir": "Gardevoir",
     "dragonite": "Dragonite",
     "gyarados": "Gyarados",
+
     "blastoise": "Blastoise",
     "venusaur": "Venusaur",
+
     "lugia": "Lugia",
     "ho-oh": "Ho-Oh",
     "hooh": "Ho-Oh",
+
     "arceus": "Arceus",
     "dialga": "Dialga",
     "palkia": "Palkia",
+
     "zekrom": "Zekrom",
     "reshiram": "Reshiram",
     "celebi": "Celebi",
+
     "jolteon": "Jolteon",
     "vaporeon": "Vaporeon",
     "flareon": "Flareon",
+
     "espeon": "Espeon",
     "sylveon": "Sylveon",
     "leafeon": "Leafeon",
@@ -630,6 +733,7 @@ _suggestion_catalog_lock = threading.Lock()
 def add_suggestions_from_results(
     results
 ):
+
     if not results:
         return
 
@@ -638,6 +742,7 @@ def add_suggestions_from_results(
         existing = {}
 
         for item in SUGGESTION_CATALOG:
+
             key = clean_text(
                 item.get(
                     "query",
@@ -666,15 +771,17 @@ def add_suggestions_from_results(
             if is_merch(title):
                 continue
 
-            suggestion = make_suggestion_from_title(
-                title
+            suggestion = (
+                make_suggestion_from_title(
+                    title
+                )
             )
 
             if not suggestion:
                 continue
 
             # =================================================
-            # OBRÁZOK
+            # IMAGE
             # =================================================
 
             suggestion["image"] = clean_text(
@@ -685,7 +792,7 @@ def add_suggestions_from_results(
             )
 
             # =================================================
-            # CENA
+            # PRICE
             # =================================================
 
             price = result.get(
@@ -693,18 +800,43 @@ def add_suggestions_from_results(
             )
 
             if price is not None:
+
                 try:
-                    suggestion["price_eur"] = round(
+
+                    suggestion[
+                        "price_eur"
+                    ] = round(
                         float(price),
                         2
                     )
-                except Exception:
-                    suggestion["price_eur"] = None
-            else:
-                suggestion["price_eur"] = None
 
-            suggestion["price"] = suggestion.get(
+                except Exception:
+
+                    suggestion[
+                        "price_eur"
+                    ] = None
+
+            else:
+
+                suggestion[
+                    "price_eur"
+                ] = None
+
+            suggestion[
+                "price"
+            ] = suggestion.get(
                 "price_eur"
+            )
+
+            # =================================================
+            # LINK
+            # =================================================
+
+            suggestion["link"] = clean_text(
+                result.get(
+                    "link",
+                    ""
+                )
             )
 
             key = clean_text(
@@ -723,7 +855,7 @@ def add_suggestions_from_results(
             existing.values()
         )
 
-        new_catalog = new_catalog[-300:]
+        new_catalog = new_catalog[-500:]
 
         SUGGESTION_CATALOG.clear()
 
@@ -735,6 +867,7 @@ def add_suggestions_from_results(
 def make_suggestion_from_title(
     title
 ):
+
     title = clean_text(
         title
     )
@@ -824,6 +957,7 @@ def make_suggestion_from_title(
     )
 
     return {
+
         "title":
             title,
 
@@ -847,6 +981,9 @@ def make_suggestion_from_title(
 
         "price":
             None,
+
+        "link":
+            "",
     }
 
 
@@ -861,7 +998,9 @@ def normalize_query(query):
     )
 
     if not original:
+
         return {
+
             "original": "",
             "normalized": "",
             "pokemon": "",
@@ -882,6 +1021,7 @@ def normalize_query(query):
     card_number = ""
 
     if number_match:
+
         card_number = (
             f"{number_match.group(1)}/"
             f"{number_match.group(2)}"
@@ -897,34 +1037,42 @@ def normalize_query(query):
     product_type = ""
 
     product_patterns = [
+
         (
             "elite trainer box",
             r"\belite\s+trainer\s+box\b"
         ),
+
         (
             "elite trainer box",
             r"\betb\b"
         ),
+
         (
             "booster box",
             r"\bbooster\s*box\b"
         ),
+
         (
             "booster bundle",
             r"\bbooster\s*bundle\b"
         ),
+
         (
             "collection box",
             r"\bcollection\s+box\b"
         ),
+
         (
             "premium collection",
             r"\bpremium\s+collection\b"
         ),
+
         (
             "blister",
             r"\bblister(?:\s+pack)?\b"
         ),
+
         (
             "tin",
             r"\btins?\b"
@@ -937,6 +1085,7 @@ def normalize_query(query):
             pattern,
             q
         ):
+
             product_type = canonical
 
             q = re.sub(
@@ -951,7 +1100,8 @@ def normalize_query(query):
 
     for alias, canonical in sorted(
         SET_ALIASES.items(),
-        key=lambda x: len(x[0]),
+        key=lambda x:
+        len(x[0]),
         reverse=True
     ):
 
@@ -981,6 +1131,7 @@ def normalize_query(query):
     if not set_name:
 
         known_sets = sorted(
+
             set(
                 list(
                     SET_ALIASES.values()
@@ -1001,6 +1152,7 @@ def normalize_query(query):
                     "phantasmal flames",
                 ]
             ),
+
             key=len,
             reverse=True
         )
@@ -1034,7 +1186,8 @@ def normalize_query(query):
 
     for alias, canonical in sorted(
         POKEMON_ALIASES.items(),
-        key=lambda x: len(x[0]),
+        key=lambda x:
+        len(x[0]),
         reverse=True
     ):
 
@@ -1164,6 +1317,7 @@ def normalize_query(query):
         )
 
     return {
+
         "original":
             original,
 
@@ -1305,6 +1459,7 @@ def card_matches_query(
     )
 
     if parsed is None:
+
         parsed = normalize_query(
             query
         )
@@ -1409,6 +1564,7 @@ def card_matches_query(
             return False
 
     if return_reason:
+
         return (
             True,
             "matched"
@@ -1436,6 +1592,7 @@ def sealed_matches_query(
     ).lower()
 
     if parsed is None:
+
         parsed = normalize_query(
             query
         )
@@ -1518,6 +1675,7 @@ def sealed_matches_query(
             return False
 
     if return_reason:
+
         return (
             True,
             "matched"
@@ -1540,7 +1698,9 @@ def parse_price(text):
     )
 
     eur_patterns = [
+
         r"(\d{1,6}(?:[.,]\d{1,2})?)\s*€",
+
         r"€\s*(\d{1,6}(?:[.,]\d{1,2})?)",
     ]
 
@@ -1598,14 +1758,18 @@ def parse_price(text):
                 )
 
             try:
+
                 return float(
                     value
                 )
+
             except Exception:
                 pass
 
     czk_patterns = [
+
         r"(\d{1,8}(?:[.,]\d{1,2})?)\s*(?:Kč|CZK)",
+
         r"(?:Kč|CZK)\s*(\d{1,8}(?:[.,]\d{1,2})?)",
     ]
 
@@ -1649,77 +1813,102 @@ def parse_price(text):
 # =========================================================
 
 MERCH_BLACKLIST = [
+
     "plush",
     "plyš",
     "peluche",
+
     "figúrka",
     "figurka",
     "figure",
     "figurine",
     "vinyl figure",
     "statue",
+
     "funko",
     "funko pop",
     "pop!",
     "pop vinyl",
+
     "hrnček",
     "hrnek",
     "mug",
+
     "tričko",
     "tricko",
     "shirt",
+
     "mikina",
     "hoodie",
+
     "ponožky",
     "ponozky",
     "socks",
+
     "puzzle",
+
     "podložka",
     "podlozka",
     "playmat",
+
     "album",
     "binder",
+
     "obal",
     "sleeves",
     "sleeve",
+
     "keychain",
     "kľúčenka",
     "klucenka",
+
     "batoh",
     "backpack",
+
     "taška",
     "taska",
+
     "poster",
     "plagát",
     "plagat",
+
     "sticker",
     "nálepka",
     "nalepka",
+
     "slúchadlá",
     "sluchatka",
     "headphones",
     "earphones",
+
     "hračka",
     "hracka",
     "toy",
     "toys",
+
     "lampa",
     "lamp",
+
     "fľaša",
     "flasa",
     "bottle",
+
     "peňaženka",
     "penezenka",
     "wallet",
+
     "puzdro",
     "pouzdro",
     "phone case",
     "mobile case",
+
     "čepice",
     "cepice",
     "cap",
+
     "deka",
     "blanket",
+
     "polštář",
     "polstar",
     "vankúš",
@@ -1758,6 +1947,7 @@ def fetch(
     start = time.monotonic()
 
     debug = {
+
         "url":
             url,
 
@@ -2008,6 +2198,7 @@ def cardyx_extract_image(
         return ""
 
     attributes = [
+
         "src",
         "data-src",
         "data-lazy-src",
@@ -2089,6 +2280,7 @@ def cardyx_extract_image(
                         width = int(
                             match.group(1)
                         )
+
                     except Exception:
                         width = 0
 
@@ -2131,8 +2323,11 @@ def cardyx_extract_product_page_image(
         return ""
 
     for selector in [
+
         'meta[property="og:image"]',
+
         'meta[property="og:image:url"]',
+
         'meta[name="og:image"]',
     ]:
 
@@ -2166,7 +2361,9 @@ def cardyx_extract_product_page_image(
                     return absolute
 
     for selector in [
+
         'meta[name="twitter:image"]',
+
         'meta[property="twitter:image"]',
     ]:
 
@@ -2200,6 +2397,7 @@ def cardyx_extract_product_page_image(
                     return absolute
 
     attributes = [
+
         "src",
         "data-src",
         "data-lazy-src",
@@ -2250,6 +2448,7 @@ def cardyx_extract_product_page_image(
         if any(
             token in marker
             for token in [
+
                 "product",
                 "produkt",
                 "gallery",
@@ -2350,6 +2549,7 @@ def cardyx_extract_product_page_image(
                             width = int(
                                 match.group(1)
                             )
+
                         except Exception:
                             width = 0
 
@@ -2499,6 +2699,7 @@ def cardyx_enrich_missing_images(
         ) as executor:
 
             future_map = {
+
                 executor.submit(
                     cardyx_fetch_product_image,
                     item.get(
@@ -2507,6 +2708,7 @@ def cardyx_enrich_missing_images(
                     )
                 ):
                     item
+
                 for item in missing
             }
 
@@ -2522,6 +2724,7 @@ def cardyx_enrich_missing_images(
 
                 try:
                     image_url = future.result()
+
                 except Exception:
                     image_url = ""
 
@@ -2629,10 +2832,14 @@ def cardyx_search(
     query,
     return_debug=False,
     enrich_images=True,
-    cache_result=True
+    cache_result=True,
+    timeout=None
 ):
 
     start = time.monotonic()
+
+    if timeout is None:
+        timeout = SEARCH_TIMEOUT
 
     # =====================================================
     # CACHE
@@ -2684,6 +2891,7 @@ def cardyx_search(
     results = []
 
     debug = {
+
         "shop":
             "CardyX",
 
@@ -2771,7 +2979,7 @@ def cardyx_search(
 
         response, http_debug = fetch(
             url,
-            timeout=SEARCH_TIMEOUT
+            timeout=timeout
         )
 
         debug[
@@ -2832,10 +3040,6 @@ def cardyx_search(
 
         seen = set()
 
-        # =================================================
-        # PARSE QUERY IBA RAZ
-        # =================================================
-
         parsed = normalize_query(
             query
         )
@@ -2893,10 +3097,13 @@ def cardyx_search(
                     debug[
                         "sample_decisions"
                     ].append({
+
                         "title":
                             "",
+
                         "decision":
                             "filtered",
+
                         "reason":
                             "no_title",
                     })
@@ -2951,10 +3158,13 @@ def cardyx_search(
                     debug[
                         "sample_decisions"
                     ].append({
+
                         "title":
                             title,
+
                         "decision":
                             "filtered",
+
                         "reason":
                             "no_price",
                     })
@@ -2986,10 +3196,13 @@ def cardyx_search(
                     debug[
                         "sample_decisions"
                     ].append({
+
                         "title":
                             title,
+
                         "decision":
                             "filtered",
+
                         "reason":
                             "merch",
                     })
@@ -3039,10 +3252,13 @@ def cardyx_search(
                     debug[
                         "sample_decisions"
                     ].append({
+
                         "title":
                             title,
+
                         "decision":
                             "filtered",
+
                         "reason":
                             reason,
                     })
@@ -3050,26 +3266,11 @@ def cardyx_search(
                 continue
 
             # =================================================
-            # IMAGE COUNTER
-            # =================================================
-
-            if image_url:
-
-                debug[
-                    "images_found"
-                ] += 1
-
-            else:
-
-                debug[
-                    "images_missing"
-                ] += 1
-
-            # =================================================
             # ACCEPT
             # =================================================
 
             result = {
+
                 "title":
                     title,
 
@@ -3112,6 +3313,7 @@ def cardyx_search(
                 debug[
                     "sample_decisions"
                 ].append({
+
                     "title":
                         title,
 
@@ -3184,7 +3386,7 @@ def cardyx_search(
             )
 
         # =====================================================
-        # UPDATE IMAGE COUNTERS
+        # IMAGE COUNTERS
         # =====================================================
 
         final_images_found = 0
@@ -3214,7 +3416,7 @@ def cardyx_search(
         ] = final_images_missing
 
         # =====================================================
-        # SORT BY PRICE
+        # SORT
         # =====================================================
 
         results.sort(
@@ -3262,7 +3464,7 @@ def cardyx_search(
     )
 
     # =====================================================
-    # CACHE RESULT
+    # CACHE
     # =====================================================
 
     if cache_result:
@@ -3270,6 +3472,7 @@ def cardyx_search(
         cache_set(
             query,
             {
+
                 "results":
                     results,
 
@@ -3279,7 +3482,7 @@ def cardyx_search(
         )
 
     # =====================================================
-    # UPDATE AUTOCOMPLETE CATALOG
+    # AUTOCOMPLETE CATALOG
     # =====================================================
 
     add_suggestions_from_results(
@@ -3336,6 +3539,7 @@ def run_shop(
             )
 
         return [], {
+
             "shop":
                 name,
 
@@ -3364,6 +3568,7 @@ def run_shop(
     except Exception as e:
 
         return [], {
+
             "shop":
                 name,
 
@@ -3402,10 +3607,6 @@ def search_all(
     results = []
     diagnostics = []
 
-    # =====================================================
-    # CARDYX
-    # =====================================================
-
     shop_results, debug = run_shop(
         "CardyX",
         query
@@ -3419,15 +3620,12 @@ def search_all(
         debug
     )
 
-    # =====================================================
-    # DEDUPLICATE
-    # =====================================================
-
     unique = {}
 
     for item in results:
 
         key = (
+
             clean_text(
                 item.get(
                     "shop",
@@ -3456,10 +3654,6 @@ def search_all(
         unique.values()
     )
 
-    # =====================================================
-    # PRICE SORT
-    # =====================================================
-
     results.sort(
         key=lambda item:
         float(
@@ -3475,6 +3669,7 @@ def search_all(
         return (
             results,
             {
+
                 "query":
                     query,
 
@@ -3520,6 +3715,7 @@ def save_history(
 
             rows.append(
                 (
+
                     query,
 
                     item.get(
@@ -3617,6 +3813,23 @@ def suggestion_score(
     if q in subtitle:
         score += 10
 
+    # Preferuj položky, ktoré majú
+    # reálnu cenu a obrázok.
+    if item.get(
+        "price_eur"
+    ) is not None:
+
+        score += 15
+
+    if clean_text(
+        item.get(
+            "image",
+            ""
+        )
+    ):
+
+        score += 10
+
     score += max(
         0,
         20 -
@@ -3627,10 +3840,179 @@ def suggestion_score(
 
 
 # =========================================================
+# BUILD REMOTE SUGGESTIONS
+# =========================================================
+
+def build_suggestions_from_results(
+    results
+):
+
+    suggestions = []
+
+    if not results:
+        return suggestions
+
+    for result in results:
+
+        title = clean_text(
+            result.get(
+                "title",
+                ""
+            )
+        )
+
+        if not title:
+            continue
+
+        if is_merch(title):
+            continue
+
+        suggestion = (
+            make_suggestion_from_title(
+                title
+            )
+        )
+
+        if not suggestion:
+            continue
+
+        suggestion[
+            "image"
+        ] = clean_text(
+            result.get(
+                "image",
+                ""
+            )
+        )
+
+        suggestion[
+            "link"
+        ] = clean_text(
+            result.get(
+                "link",
+                ""
+            )
+        )
+
+        price = result.get(
+            "price_eur"
+        )
+
+        if price is not None:
+
+            try:
+
+                price = round(
+                    float(price),
+                    2
+                )
+
+            except Exception:
+
+                price = None
+
+        suggestion[
+            "price_eur"
+        ] = price
+
+        suggestion[
+            "price"
+        ] = price
+
+        suggestions.append(
+            suggestion
+        )
+
+    # =====================================================
+    # DEDUP
+    # =====================================================
+
+    unique = {}
+    order = []
+
+    for item in suggestions:
+
+        key = clean_text(
+            item.get(
+                "query",
+                item.get(
+                    "title",
+                    ""
+                )
+            )
+        ).lower()
+
+        if not key:
+            continue
+
+        if key not in unique:
+
+            order.append(
+                key
+            )
+
+        # Ak príde rovnaká karta druhýkrát,
+        # necháme tú s cenou/obrázkom.
+        old = unique.get(
+            key
+        )
+
+        if old is None:
+
+            unique[key] = item
+
+        else:
+
+            old_score = (
+                bool(
+                    old.get(
+                        "image"
+                    )
+                )
+                +
+                bool(
+                    old.get(
+                        "price_eur"
+                    ) is not None
+                )
+            )
+
+            new_score = (
+                bool(
+                    item.get(
+                        "image"
+                    )
+                )
+                +
+                bool(
+                    item.get(
+                        "price_eur"
+                    ) is not None
+                )
+            )
+
+            if new_score > old_score:
+
+                unique[key] = item
+
+    return list(
+        unique.values()
+    )
+
+
+# =========================================================
 # API SUGGESTIONS
 #
-# RÝCHLE:
-# autocomplete už NEVOLÁ CardyX pri každom písmene.
+# NOVÉ SPRÁVANIE:
+#
+# 1. Najprv lokálny katalóg -> okamžite.
+# 2. Ak nič nenájde -> CardyX.
+# 3. CardyX výsledky obsahujú:
+#       - názov
+#       - obrázok
+#       - cenu
+# 4. Výsledky sa uložia do katalógu.
+# 5. Ďalšie vyhľadanie je už rýchle.
 # =========================================================
 
 @app.get(
@@ -3648,11 +4030,47 @@ def api_suggestions():
     if len(q) < 2:
 
         return jsonify({
+
             "query":
                 q,
 
+            "normalized_query":
+                "",
+
             "suggestions":
                 [],
+        })
+
+    # =====================================================
+    # CACHE SUGGESTIONS
+    # =====================================================
+
+    cached_suggestions = (
+        suggestion_cache_get(
+            q
+        )
+    )
+
+    if cached_suggestions is not None:
+
+        return jsonify({
+
+            "query":
+                q,
+
+            "normalized_query":
+                normalize_query(
+                    q
+                ).get(
+                    "normalized",
+                    ""
+                ),
+
+            "suggestions":
+                cached_suggestions,
+
+            "source":
+                "suggestion_cache",
         })
 
     q_lower = q.lower()
@@ -3660,7 +4078,7 @@ def api_suggestions():
     candidates = []
 
     # =====================================================
-    # 1. OKAMŽITÝ LOKÁLNY KATALÓG
+    # 1. LOKÁLNY KATALÓG
     # =====================================================
 
     with _suggestion_catalog_lock:
@@ -3679,6 +4097,13 @@ def api_suggestions():
             )
         ).lower()
 
+        query_value = clean_text(
+            item.get(
+                "query",
+                ""
+            )
+        ).lower()
+
         subtitle = clean_text(
             item.get(
                 "subtitle",
@@ -3688,6 +4113,8 @@ def api_suggestions():
 
         if (
             q_lower in title
+            or
+            q_lower in query_value
             or
             q_lower in subtitle
             or
@@ -3701,118 +4128,163 @@ def api_suggestions():
             )
 
     # =====================================================
-    # 2. AUTOMATICKÉ ROZPOZNANIE
+    # 2. AK LOKÁLNY KATALÓG NIČ NENAŠIEL,
+    #    SKÚSIME CARDYX
     # =====================================================
 
-    parsed = normalize_query(
-        q
-    )
+    remote_used = False
 
-    normalized = parsed.get(
-        "normalized",
-        ""
-    )
+    if not candidates:
 
-    if normalized:
+        remote_used = True
 
-        normalized_lower = (
-            normalized.lower()
+        remote_results = cardyx_search(
+
+            q,
+
+            return_debug=False,
+
+            # DÔLEŽITÉ:
+            # autocomplete nesmie otvárať
+            # každú produktovú stránku.
+            enrich_images=False,
+
+            cache_result=True,
+
+            timeout=SUGGESTION_TIMEOUT
         )
 
-        exists = any(
-            clean_text(
-                item.get(
-                    "query",
-                    ""
-                )
-            ).lower()
-            ==
-            normalized_lower
-            for item in candidates
+        remote_suggestions = (
+            build_suggestions_from_results(
+                remote_results
+            )
         )
 
-        if (
-            not exists
-            and
-            normalized_lower
-            != q_lower
-        ):
+        if remote_suggestions:
 
-            if parsed.get(
-                "product_type"
+            # Uložíme ich do hlavného katalógu.
+            add_suggestions_from_results(
+                remote_results
+            )
+
+            candidates.extend(
+                remote_suggestions
+            )
+
+        # =================================================
+        # Ak CardyX nič nenašiel,
+        # môžeme ešte ponúknuť automaticky
+        # rozpoznaný výraz.
+        # =================================================
+
+        if not candidates:
+
+            parsed = normalize_query(
+                q
+            )
+
+            normalized = parsed.get(
+                "normalized",
+                ""
+            )
+
+            if (
+                normalized
+                and
+                normalized.lower()
+                != q_lower
             ):
 
-                candidates.append({
-                    "title":
-                        normalized,
+                if parsed.get(
+                    "product_type"
+                ):
 
-                    "query":
-                        normalized,
+                    candidates.append({
 
-                    "subtitle":
-                        "Automaticky rozpoznaný produkt",
+                        "title":
+                            normalized,
 
-                    "type":
-                        "product",
+                        "query":
+                            normalized,
 
-                    "type_label":
-                        "Produkt",
+                        "subtitle":
+                            "Produkt",
 
-                    "image":
-                        "",
+                        "type":
+                            "product",
 
-                    "price_eur":
-                        None,
+                        "type_label":
+                            "Produkt",
 
-                    "price":
-                        None,
-                })
+                        "image":
+                            "",
 
-            elif parsed.get(
-                "pokemon"
-            ):
+                        "price_eur":
+                            None,
 
-                candidates.append({
-                    "title":
-                        normalized,
+                        "price":
+                            None,
 
-                    "query":
-                        normalized,
+                        "link":
+                            "",
+                    })
 
-                    "subtitle":
-                        "Pokémon",
+                elif parsed.get(
+                    "pokemon"
+                ):
 
-                    "type":
-                        "card",
+                    candidates.append({
 
-                    "type_label":
-                        "Karta",
+                        "title":
+                            normalized,
 
-                    "image":
-                        "",
+                        "query":
+                            normalized,
 
-                    "price_eur":
-                        None,
+                        "subtitle":
+                            "Pokémon",
 
-                    "price":
-                        None,
-                })
+                        "type":
+                            "card",
+
+                        "type_label":
+                            "Karta",
+
+                        "image":
+                            "",
+
+                        "price_eur":
+                            None,
+
+                        "price":
+                            None,
+
+                        "link":
+                            "",
+                    })
 
     # =====================================================
-    # 3. SORT
+    # 3. AK UŽ MÁME LOKÁLNE VÝSLEDKY,
+    #    NEVOLÁME CARDYX
+    # =====================================================
+
+    # =====================================================
+    # 4. SORT
     # =====================================================
 
     candidates.sort(
+
         key=lambda item:
         suggestion_score(
             item,
             q
         ),
+
         reverse=True
     )
 
     # =====================================================
-    # 4. DEDUPLICATE
+    # 5. DEDUPLICATE
     # =====================================================
 
     output = []
@@ -3847,15 +4319,39 @@ def api_suggestions():
         if len(output) >= 8:
             break
 
+    # =====================================================
+    # 6. CACHE
+    # =====================================================
+
+    suggestion_cache_set(
+        q,
+        output
+    )
+
+    parsed = normalize_query(
+        q
+    )
+
     return jsonify({
+
         "query":
             q,
 
         "normalized_query":
-            normalized,
+            parsed.get(
+                "normalized",
+                ""
+            ),
 
         "suggestions":
             output,
+
+        "source":
+            (
+                "cardyx"
+                if remote_used
+                else "catalog"
+            ),
     })
 
 
@@ -3907,6 +4403,7 @@ def api_search():
     if not original_query:
 
         return jsonify({
+
             "error":
                 "Chýba vyhľadávanie.",
         }), 400
@@ -3931,6 +4428,7 @@ def api_search():
     )
 
     info = {
+
         "title":
             normalized_query,
 
@@ -3968,6 +4466,7 @@ def api_search():
         )
 
     return jsonify({
+
         "query":
             original_query,
 
@@ -4010,6 +4509,7 @@ def api_debug_search():
     if not original_query:
 
         return jsonify({
+
             "error":
                 "Chýba vyhľadávanie.",
         }), 400
@@ -4029,6 +4529,7 @@ def api_debug_search():
     )
 
     return jsonify({
+
         "query":
             original_query,
 
@@ -4074,6 +4575,7 @@ def api_debug_cache():
 
             if age <= CACHE_TTL:
                 active += 1
+
             else:
                 expired += 1
 
@@ -4110,6 +4612,7 @@ def api_debug_cache():
 
             if age <= IMAGE_CACHE_TTL:
                 image_active += 1
+
             else:
                 image_expired += 1
 
@@ -4176,6 +4679,7 @@ def api_debug_cache_clear():
     image_cache_clear()
 
     with _suggestion_catalog_lock:
+
         SUGGESTION_CATALOG.clear()
 
     return jsonify({
@@ -4264,6 +4768,9 @@ def health():
 
         "search_timeout":
             SEARCH_TIMEOUT,
+
+        "suggestion_timeout":
+            SUGGESTION_TIMEOUT,
     })
 
 
@@ -4279,11 +4786,14 @@ def home():
     if not index_path:
 
         return Response(
+
             """
             <h1>CardRadar</h1>
             <p>index.html nebol nájdený.</p>
             """,
+
             status=500,
+
             mimetype="text/html"
         )
 
@@ -4303,6 +4813,7 @@ def home():
     except Exception as e:
 
         return Response(
+
             (
                 "<h1>CardRadar</h1>"
                 "<p>"
@@ -4310,7 +4821,9 @@ def home():
                 "</p>"
                 f"<pre>{e}</pre>"
             ),
+
             status=500,
+
             mimetype="text/html"
         )
 
