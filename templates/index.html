@@ -163,16 +163,34 @@ button.primary:disabled{
   background:#1e293b;
 }
 
-.suggestion-icon{
-  width:36px;
-  height:36px;
-  border-radius:8px;
+/* =========================================================
+   AUTOCOMPLETE IMAGE
+========================================================= */
+
+.suggestion-image-wrap{
+  width:46px;
+  height:54px;
+  flex:none;
+  border-radius:7px;
+  overflow:hidden;
+  background:#0f172a;
+  border:1px solid var(--border);
   display:flex;
   align-items:center;
   justify-content:center;
-  background:#0f172a;
-  font-size:17px;
-  flex:none;
+}
+
+.suggestion-image{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  padding:3px;
+  display:block;
+}
+
+.suggestion-image-placeholder{
+  font-size:21px;
+  opacity:.75;
 }
 
 .suggestion-main{
@@ -194,6 +212,14 @@ button.primary:disabled{
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
+}
+
+.suggestion-price{
+  color:var(--green);
+  font-size:13px;
+  font-weight:800;
+  white-space:nowrap;
+  margin-left:6px;
 }
 
 .suggestion-type{
@@ -545,6 +571,20 @@ button.primary:disabled{
     display:none;
   }
 
+  .suggestion{
+    gap:9px;
+    padding:9px 10px;
+  }
+
+  .suggestion-image-wrap{
+    width:42px;
+    height:50px;
+  }
+
+  .suggestion-price{
+    font-size:12px;
+  }
+
   .result-summary{
     font-size:13px;
   }
@@ -657,7 +697,7 @@ button.primary:disabled{
 
 /* =========================================================
    CARD RADAR FRONTEND
-   VERSION 5.17
+   VERSION 5.18
 ========================================================= */
 
 /* =========================================================
@@ -675,6 +715,7 @@ const eur = (n) => {
   return value.toFixed(2) + ' €';
 
 };
+
 
 function parsePriceValue(value){
 
@@ -739,6 +780,7 @@ function parsePriceValue(value){
     ? number
     : null;
 }
+
 
 function getResultPrice(item){
 
@@ -816,6 +858,7 @@ function getResultPrice(item){
   return null;
 }
 
+
 function renderPrice(item){
 
   const price =
@@ -839,6 +882,7 @@ function renderPrice(item){
 
 }
 
+
 function getPricedResults(results){
 
   return results.filter(
@@ -847,6 +891,7 @@ function getPricedResults(results){
   );
 
 }
+
 
 function getCheapestIndex(results){
 
@@ -873,7 +918,9 @@ function getCheapestIndex(results){
   );
 
   return bestIndex;
+
 }
+
 
 function esc(s){
 
@@ -891,6 +938,7 @@ function esc(s){
   );
 
 }
+
 
 /* =========================================================
    RESULT IMAGE
@@ -934,6 +982,7 @@ function getResultImage(item){
   return '';
 
 }
+
 
 function renderResultImage(item){
 
@@ -1037,13 +1086,17 @@ function renderResultImage(item){
 
 }
 
+
 /* =========================================================
    AUTOCOMPLETE STATE
 ========================================================= */
 
 let suggestionTimer = null;
+
 let suggestionItems = [];
+
 let suggestionIndex = -1;
+
 let suggestionController = null;
 
 let searchGeneration = 0;
@@ -1053,6 +1106,7 @@ const suggestionCache =
 
 const SUGGESTION_CACHE_TTL =
   30000;
+
 
 /* =========================================================
    POKÉMON AUTOCOMPLETE FALLBACK
@@ -1092,6 +1146,7 @@ const pokemonCatalog = [
   'Glaceon'
 
 ];
+
 
 /* =========================================================
    BUILD LOCAL SUGGESTIONS
@@ -1134,7 +1189,11 @@ function buildLocalSuggestions(q){
 
         type:'pokemon',
 
-        type_label:'Pokémon'
+        type_label:'Pokémon',
+
+        image:'',
+
+        price_eur:null
 
       });
 
@@ -1175,7 +1234,11 @@ function buildLocalSuggestions(q){
 
             type:'card',
 
-            type_label:'Karta'
+            type_label:'Karta',
+
+            image:'',
+
+            price_eur:null
 
           });
 
@@ -1190,6 +1253,7 @@ function buildLocalSuggestions(q){
   return results;
 
 }
+
 
 /* =========================================================
    MERGE SUGGESTIONS
@@ -1256,7 +1320,16 @@ function mergeSuggestions(
           item.type === 'product'
           ? 'Produkt'
           : 'Karta'
-        )
+        ),
+
+      image:
+        item.image || '',
+
+      price_eur:
+        item.price_eur ??
+        item.priceEUR ??
+        item.price ??
+        null
 
     });
 
@@ -1278,6 +1351,7 @@ function mergeSuggestions(
 
 }
 
+
 /* =========================================================
    QUICK TAG
 ========================================================= */
@@ -1294,6 +1368,7 @@ function tag(x){
   search();
 
 }
+
 
 /* =========================================================
    INPUT HANDLING
@@ -1383,6 +1458,7 @@ function handleInput(){
     );
 
 }
+
 
 /* =========================================================
    KEYBOARD
@@ -1489,6 +1565,7 @@ function handleKeydown(event){
   }
 
 }
+
 
 /* =========================================================
    LOAD SERVER SUGGESTIONS
@@ -1665,6 +1742,7 @@ async function loadSuggestions(
 
 }
 
+
 /* =========================================================
    LOADING
 ========================================================= */
@@ -1686,6 +1764,7 @@ function showSuggestionsLoading(){
   );
 
 }
+
 
 /* =========================================================
    ICON
@@ -1711,6 +1790,7 @@ function suggestionIcon(item){
   return '🃏';
 
 }
+
 
 /* =========================================================
    RENDER SUGGESTIONS
@@ -1758,6 +1838,56 @@ function renderSuggestions(){
               item.type_label || ''
             );
 
+          const image =
+            item.image
+              ? esc(item.image)
+              : '';
+
+          const price =
+            parsePriceValue(
+              item.price_eur
+            );
+
+          const priceHtml =
+            price !== null
+              ? `
+                <span class="suggestion-price">
+                  ${eur(price)}
+                </span>
+              `
+              : '';
+
+          const imageHtml =
+            image
+              ? `
+                <img
+                  class="suggestion-image"
+                  src="${image}"
+                  alt="${title}"
+                  loading="lazy"
+                  onerror="
+                    this.style.display='none';
+                    this.parentElement
+                      .querySelector(
+                        '.suggestion-image-placeholder'
+                      )
+                      .style.display='block';
+                  "
+                >
+
+                <div
+                  class="suggestion-image-placeholder"
+                  style="display:none;"
+                >
+                  🃏
+                </div>
+              `
+              : `
+                <div class="suggestion-image-placeholder">
+                  ${suggestionIcon(item)}
+                </div>
+              `;
+
           return `
 
             <div
@@ -1766,14 +1896,15 @@ function renderSuggestions(){
               onclick="chooseSuggestionByIndex(${index})"
             >
 
-              <div class="suggestion-icon">
-                ${suggestionIcon(item)}
+              <div class="suggestion-image-wrap">
+                ${imageHtml}
               </div>
 
               <div class="suggestion-main">
 
                 <div class="suggestion-title">
                   ${title}
+                  ${priceHtml}
                 </div>
 
                 ${
@@ -1812,8 +1943,9 @@ function renderSuggestions(){
 
 }
 
+
 /* =========================================================
-   ACTIVE
+   ACTIVE SUGGESTION
 ========================================================= */
 
 function renderActiveSuggestion(){
@@ -1849,8 +1981,9 @@ function renderActiveSuggestion(){
 
 }
 
+
 /* =========================================================
-   CHOOSE
+   CHOOSE SUGGESTION
 ========================================================= */
 
 function chooseSuggestionByIndex(index){
@@ -1868,6 +2001,7 @@ function chooseSuggestionByIndex(index){
   );
 
 }
+
 
 function chooseSuggestion(item){
 
@@ -1901,8 +2035,9 @@ function chooseSuggestion(item){
 
 }
 
+
 /* =========================================================
-   HIDE
+   HIDE SUGGESTIONS
 ========================================================= */
 
 function hideSuggestions(){
@@ -1923,6 +2058,7 @@ function hideSuggestions(){
   suggestionIndex = -1;
 
 }
+
 
 /* =========================================================
    COMPACT RESULT SUMMARY
@@ -2049,6 +2185,7 @@ function renderCompactSummary(
   `;
 
 }
+
 
 /* =========================================================
    RESULTS
@@ -2274,6 +2411,7 @@ function renderResults(results){
 
 }
 
+
 /* =========================================================
    PRODUCT TYPE
 ========================================================= */
@@ -2328,6 +2466,7 @@ function detectFrontendType(item){
   return 'Karta';
 
 }
+
 
 /* =========================================================
    SEARCH
@@ -2579,6 +2718,7 @@ async function search(){
 
 }
 
+
 /* =========================================================
    CLOSE AUTOCOMPLETE OUTSIDE
 ========================================================= */
@@ -2605,6 +2745,7 @@ document.addEventListener(
 
   }
 );
+
 
 /* =========================================================
    URL QUERY
