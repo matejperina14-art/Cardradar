@@ -14,12 +14,12 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 5.13
+# VERSION 5.14
 # CARDYX FOCUS
-# STABILITY + SPEED + REAL AUTOCOMPLETE
+# STABILITY + SPEED + REAL AUTOCOMPLETE + PRODUCT IMAGES
 # =========================================================
 
-VERSION = "5.13"
+VERSION = "5.14"
 
 app = Flask(__name__)
 
@@ -42,8 +42,6 @@ DB_PATH = os.path.join(
 CACHE_TTL = 30
 CACHE_MAX_ITEMS = 50
 
-# Autocomplete má kratšiu cache,
-# aby sa nové návrhy objavili rýchlo.
 SUGGESTION_CACHE_TTL = 30
 SUGGESTION_CACHE_MAX_ITEMS = 100
 
@@ -651,8 +649,6 @@ def add_suggestions_from_results(
             existing.values()
         )
 
-        # Držíme katalóg pod kontrolou.
-        # Najnovšie/praktickejšie návrhy sú na začiatku.
         new_catalog = (
             new_catalog[-300:]
         )
@@ -710,7 +706,6 @@ def make_suggestion_from_title(
         )
     )
 
-    # Najprv vytvoríme krátky a použiteľný query.
     parts = []
 
     if pokemon:
@@ -737,13 +732,9 @@ def make_suggestion_from_title(
         " ".join(parts)
     )
 
-    # Ak parser nedokáže title rozumne rozobrať,
-    # použijeme samotný názov.
     if not query:
         query = title
 
-    # Pri veľmi dlhých názvoch nechceme mať
-    # obrovský text v autocomplete.
     if len(query) > 120:
 
         query = title[:120].strip()
@@ -1957,6 +1948,187 @@ def cardyx_extract_title(
 
 
 # =========================================================
+# CARDYX IMAGE EXTRACTION
+# =========================================================
+
+def cardyx_extract_image(
+    anchor,
+    base_url="https://www.cardyx.sk/"
+):
+
+    """
+    Pokúsi sa vytiahnuť skutočný obrázok produktu
+    priamo zo search výsledku CardyX.
+
+    Priorita:
+    1. src
+    2. data-src
+    3. data-lazy-src
+    4. data-original
+    5. srcset
+    6. data-srcset
+    """
+
+    image = anchor.find(
+        "img"
+    )
+
+    # Ak img nie je priamo v anchor,
+    # skúsime ešte rodičovský blok.
+    if image is None:
+
+        current = anchor
+
+        for _ in range(3):
+
+            current = current.parent
+
+            if not current:
+                break
+
+            image = current.find(
+                "img"
+            )
+
+            if image is not None:
+                break
+
+    if image is None:
+        return ""
+
+    # -----------------------------------------------------
+    # Priame atribúty
+    # -----------------------------------------------------
+
+    attributes = [
+
+        "src",
+
+        "data-src",
+
+        "data-lazy-src",
+
+        "data-original",
+
+        "data-image",
+
+        "data-image-src",
+
+        "data-original-src",
+    ]
+
+    for attr in attributes:
+
+        value = clean_text(
+            image.get(
+                attr,
+                ""
+            )
+        )
+
+        if not value:
+            continue
+
+        # Preskočíme placeholdery.
+        if value.startswith(
+            "data:image/"
+        ):
+            continue
+
+        absolute = absolute_url(
+            base_url,
+            value
+        )
+
+        if absolute:
+
+            return absolute
+
+    # -----------------------------------------------------
+    # SRCSET
+    # -----------------------------------------------------
+
+    for attr in [
+        "srcset",
+        "data-srcset",
+    ]:
+
+        srcset = clean_text(
+            image.get(
+                attr,
+                ""
+            )
+        )
+
+        if not srcset:
+            continue
+
+        candidates = []
+
+        for part in srcset.split(","):
+
+            part = clean_text(
+                part
+            )
+
+            if not part:
+                continue
+
+            pieces = part.split()
+
+            if not pieces:
+                continue
+
+            url = pieces[0]
+
+            width = 0
+
+            if len(pieces) > 1:
+
+                match = re.search(
+                    r"(\d+)w",
+                    pieces[1]
+                )
+
+                if match:
+
+                    try:
+
+                        width = int(
+                            match.group(1)
+                        )
+
+                    except Exception:
+                        width = 0
+
+            absolute = absolute_url(
+                base_url,
+                url
+            )
+
+            if absolute:
+
+                candidates.append(
+                    (
+                        width,
+                        absolute
+                    )
+                )
+
+        if candidates:
+
+            candidates.sort(
+                key=lambda item:
+                item[0]
+            )
+
+            # Vyberieme najväčší dostupný obrázok.
+            return candidates[-1][1]
+
+    return ""
+
+
+# =========================================================
 # CARDYX PRODUCT BLOCK
 # =========================================================
 
@@ -2062,7 +2234,6 @@ def cardyx_search(
             ) * 1000
         )
 
-        # Aj cache hit môže doplniť autocomplete.
         add_suggestions_from_results(
             cached_results
         )
@@ -2114,6 +2285,12 @@ def cardyx_search(
             0,
 
         "accepted":
+            0,
+
+        "images_found":
+            0,
+
+        "images_missing":
             0,
 
         "elapsed_ms":
@@ -2284,6 +2461,18 @@ def cardyx_search(
 
                 continue
 
+            # =================================================
+            # IMAGE
+            # =================================================
+
+            image_url = cardyx_extract_image(
+                anchor
+            )
+
+            # =================================================
+            # PRODUCT BLOCK
+            # =================================================
+
             block_text = (
                 cardyx_find_product_block(
                     anchor
@@ -2428,6 +2617,22 @@ def cardyx_search(
                 continue
 
             # =================================================
+            # IMAGE COUNTER
+            # =================================================
+
+            if image_url:
+
+                debug[
+                    "images_found"
+                ] += 1
+
+            else:
+
+                debug[
+                    "images_missing"
+                ] += 1
+
+            # =================================================
             # ACCEPT
             # =================================================
 
@@ -2453,6 +2658,9 @@ def cardyx_search(
 
                 "link":
                     href,
+
+                "image":
+                    image_url,
             }
 
             results.append(
@@ -2482,6 +2690,11 @@ def cardyx_search(
                             2
                         ),
 
+                    "image":
+                        bool(
+                            image_url
+                        ),
+
                     "decision":
                         "accepted",
 
@@ -2495,9 +2708,9 @@ def cardyx_search(
             seen
         )
 
-        # =================================================
+        # =====================================================
         # DEDUPLICATE
-        # =================================================
+        # =====================================================
 
         unique = {}
 
@@ -2528,9 +2741,9 @@ def cardyx_search(
             unique.values()
         )
 
-        # =================================================
+        # =====================================================
         # SORT BY PRICE
-        # =================================================
+        # =====================================================
 
         results.sort(
             key=lambda item:
@@ -2938,8 +3151,6 @@ def suggestion_score(
     if q in subtitle:
         score += 10
 
-    # Kratšie konkrétne názvy dostanú
-    # mierne vyššiu prioritu.
     score += max(
         0,
         20 -
@@ -2976,9 +3187,6 @@ def load_real_cardyx_suggestions(
     if not search_query:
         return []
 
-    # Pri obyčajnom "pika" dostaneme
-    # "Pikachu", takže CardyX dostane
-    # zmysluplné vyhľadávanie.
     results = cardyx_search(
         search_query
     )
@@ -3009,7 +3217,6 @@ def load_real_cardyx_suggestions(
                 suggestion
             )
 
-    # Odstránenie duplicít.
     unique = {}
 
     for item in suggestions:
@@ -3098,7 +3305,6 @@ def api_suggestions():
         )
 
     except Exception:
-        # Autocomplete nesmie zhodiť stránku.
         pass
 
     # =====================================================
@@ -3356,7 +3562,6 @@ def api_search():
         return_debug=True
     )
 
-    # História nesmie zhodiť výsledok.
     save_history(
         original_query,
         results
@@ -3519,6 +3724,12 @@ def api_debug_cache():
                 _suggestion_cache
             )
 
+        with _suggestion_catalog_lock:
+
+            catalog_items = len(
+                SUGGESTION_CATALOG
+            )
+
         return jsonify({
 
             "status":
@@ -3548,9 +3759,7 @@ def api_debug_cache():
                 suggestion_items,
 
             "suggestion_catalog_items":
-                len(
-                    SUGGESTION_CATALOG
-                ),
+                catalog_items,
         })
 
 
