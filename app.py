@@ -2,7 +2,7 @@ import os
 import re
 import sqlite3
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -12,27 +12,25 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 6.5
+# Version 5.7
 # =========================================================
 
-VERSION = "6.5"
+VERSION = "5.7"
 
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
 
 CZK_PER_EUR = 24.4618
 
+DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
+
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/17.0 Mobile/15E148 Safari/604.1"
-    ),
-    "Accept-Language": (
-        "sk-SK,sk;q=0.9,cs;q=0.8,en;q=0.7"
-    ),
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+    )
 }
 
 
@@ -40,17 +38,9 @@ HEADERS = {
 # DATABASE
 # =========================================================
 
-def db():
-    conn = sqlite3.connect(
-        DB_PATH,
-        timeout=10
-    )
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db():
-    conn = db()
+
+    conn = sqlite3.connect(DB_PATH)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS price_history (
@@ -59,30 +49,8 @@ def init_db():
             shop TEXT,
             title TEXT,
             price_eur REAL,
+            link TEXT,
             checked_at TEXT
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS discovered_products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            shop TEXT,
-            country TEXT,
-            title TEXT,
-            url TEXT,
-            price_eur REAL,
-            condition TEXT,
-            discovered_at TEXT
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS suggestion_cache (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT UNIQUE,
-            normalized TEXT,
-            suggestion_type TEXT,
-            updated_at TEXT
         )
     """)
 
@@ -94,1148 +62,1656 @@ init_db()
 
 
 # =========================================================
-# BASIC HELPERS
+# INDEX FINDER
 # =========================================================
 
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
+def find_index():
 
+    candidates = [
+        os.path.join(BASE_DIR, "templates", "index.html"),
+        os.path.join(BASE_DIR, "Templates", "index.html"),
+        os.path.join(BASE_DIR, "index.html"),
+    ]
+
+    for path in candidates:
+
+        if os.path.isfile(path):
+            return path
+
+    return None
+
+
+# =========================================================
+# TEXT HELPERS
+# =========================================================
 
 def clean_text(value):
-    if not value:
-        return ""
 
-    value = str(value)
+    value = str(value or "")
+
     value = value.replace("\xa0", " ")
+
     value = re.sub(r"\s+", " ", value)
 
     return value.strip()
 
 
-def normalize_spaces(value):
-    return clean_text(value)
+def words(text):
 
+    text = clean_text(text).lower()
 
-def words(value):
-    return re.findall(
-        r"[a-z0-9áäčďéíľĺňóôŕšťúýž]+",
-        value.lower()
+    return set(
+        re.findall(
+            r"[a-z0-9]+",
+            text
+        )
     )
 
 
-def normalize_compare(value):
-    value = clean_text(value).lower()
+def normalize_spaces(text):
 
-    replacements = {
-        "á": "a",
-        "ä": "a",
-        "č": "c",
-        "ď": "d",
-        "é": "e",
-        "í": "i",
-        "ľ": "l",
-        "ĺ": "l",
-        "ň": "n",
-        "ó": "o",
-        "ô": "o",
-        "ŕ": "r",
-        "š": "s",
-        "ť": "t",
-        "ú": "u",
-        "ý": "y",
-        "ž": "z",
-    }
-
-    for old, new in replacements.items():
-        value = value.replace(old, new)
-
-    value = re.sub(
-        r"[^a-z0-9/]+",
+    return re.sub(
+        r"\s+",
         " ",
-        value
-    )
-
-    return normalize_spaces(value)
-
-
-def absolute_url(base, href):
-    """
-    Bezpecne vytvori absolutnu HTTP/HTTPS URL.
-    """
-
-    if not href:
-        return ""
-
-    href = clean_text(href)
-
-    if not href:
-        return ""
-
-    lowered = href.lower()
-
-    if lowered.startswith((
-        "javascript:",
-        "mailto:",
-        "tel:",
-        "data:",
-        "#",
-    )):
-        return ""
-
-    try:
-        url = urllib.parse.urljoin(
-            base,
-            href
-        )
-
-        parsed = urllib.parse.urlparse(
-            url
-        )
-
-        if parsed.scheme not in (
-            "http",
-            "https",
-        ):
-            return ""
-
-        if not parsed.netloc:
-            return ""
-
-        return url
-
-    except Exception:
-        return ""
+        clean_text(text)
+    ).strip()
 
 
 # =========================================================
-# HTTP GET
-# =========================================================
-
-def get(url, timeout=6):
-    """
-    Bezpecny HTTP request.
-
-    Connect timeout: 3 sekundy
-    Read timeout: timeout
-    """
-
-    try:
-        if not url:
-            return None
-
-        parsed = urllib.parse.urlparse(url)
-
-        if parsed.scheme not in (
-            "http",
-            "https",
-        ):
-            return None
-
-        if not parsed.netloc:
-            return None
-
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=(3, timeout),
-            allow_redirects=True,
-        )
-
-        if response.status_code >= 400:
-            return None
-
-        return response
-
-    except requests.RequestException:
-        return None
-
-    except Exception:
-        return None
-
-
-# =========================================================
-# ALIASES
+# SEARCH ALIASES
 # =========================================================
 
 SET_ALIASES = {
-    "sv1": "Scarlet & Violet Base",
-    "scarlet violet": "Scarlet & Violet Base",
 
-    "sv2": "Paldea Evolved",
-    "paldea evolved": "Paldea Evolved",
+    "sv8": "surging sparks",
+    "sv8a": "terastal festival",
+    "sv9": "journey together",
+    "sv9a": "destined rivals",
+    "sv10": "destined rivals",
+    "sv10.5": "destined rivals",
+    "sv11": "black bolt white flare",
+    "sv6": "twilight masquerade",
+    "sv7": "stellar crown",
+    "sv5": "temporal forces",
+    "sv4": "paradox rift",
+    "sv3": "obsidian flames",
+    "sv2": "paldea evolved",
+    "sv1": "scarlet violet base",
 
-    "sv3": "Obsidian Flames",
-    "obsidian flames": "Obsidian Flames",
+    "151": "pokemon 151",
+    "pokemon151": "pokemon 151",
+    "pokemon 151": "pokemon 151",
 
-    "sv4": "Paradox Rift",
-    "paradox rift": "Paradox Rift",
+    "prismatic": "prismatic evolutions",
+    "prismatic evo": "prismatic evolutions",
 
-    "sv5": "Temporal Forces",
-    "temporal forces": "Temporal Forces",
+    "surging": "surging sparks",
+    "sparks": "surging sparks",
 
-    "sv6": "Twilight Masquerade",
-    "twilight masquerade": "Twilight Masquerade",
+    "destined": "destined rivals",
+    "journey": "journey together",
 
-    "sv7": "Stellar Crown",
-    "stellar crown": "Stellar Crown",
+    "terastal": "terastal festival",
+    "terastal festival": "terastal festival",
 
-    "sv8": "Surging Sparks",
-    "surging sparks": "Surging Sparks",
+    "phantasmal": "phantasmal flames",
+    "phantasmal flames": "phantasmal flames",
 
-    "sv8a": "Terastal Festival",
-    "terastal festival": "Terastal Festival",
+    "mega brave": "mega evolution mega brave",
+    "mega evolution": "mega evolution",
 
-    "sv9": "Journey Together",
-    "journey together": "Journey Together",
+}
 
-    "sv9a": "Destined Rivals",
-    "destined rivals": "Destined Rivals",
 
-    "sv10": "Destined Rivals",
-    "sv10.5": "Destined Rivals",
+PRODUCT_ALIASES = {
 
-    "sv11": "Black Bolt White Flare",
+    "etb": "elite trainer box",
+    "elite trainer": "elite trainer box",
+    "elite trainer box": "elite trainer box",
 
-    "black bolt": "Black Bolt",
-    "white flare": "White Flare",
+    "booster box": "booster box",
+    "boosterbox": "booster box",
+    "bb": "booster box",
 
-    "151": "Pokémon 151",
-    "pokemon 151": "Pokémon 151",
+    "booster bundle": "booster bundle",
+    "bundle": "booster bundle",
 
-    "prismatic evolutions": "Prismatic Evolutions",
+    "collection box": "collection box",
+    "collection": "collection box",
 
-    "phantasmal flames": "Phantasmal Flames",
-    "pfl": "Phantasmal Flames",
+    "premium collection": "premium collection",
+    "premium box": "premium collection",
 
-    "paldean fates": "Paldean Fates",
+    "tin": "tin",
+    "tins": "tin",
 
-    "mega evolution": "Mega Evolution",
-    "me01": "Mega Evolution",
-    "me02": "Phantasmal Flames",
+    "blister": "blister",
+    "blister pack": "blister",
 
-    "perfect order": "Perfect Order",
-    "ascended heroes": "Ascended Heroes",
-    "pitch black": "Pitch Black",
-    "chaos rising": "Chaos Rising",
+    "box": "box",
+
 }
 
 
 POKEMON_ALIASES = {
+
     "pikachu": "Pikachu",
+    "pika": "Pikachu",
+
     "charizard": "Charizard",
-    "mega charizard x": "Mega Charizard X",
-    "mega charizard": "Mega Charizard",
+    "char": "Charizard",
 
     "umbreon": "Umbreon",
     "eevee": "Eevee",
-    "vaporeon": "Vaporeon",
-    "jolteon": "Jolteon",
-    "flareon": "Flareon",
-    "espeon": "Espeon",
-    "glaceon": "Glaceon",
-    "leafeon": "Leafeon",
-    "sylveon": "Sylveon",
 
     "mew": "Mew",
     "mewtwo": "Mewtwo",
+
     "gengar": "Gengar",
     "lucario": "Lucario",
+
     "greninja": "Greninja",
     "rayquaza": "Rayquaza",
+
     "gardevoir": "Gardevoir",
     "dragonite": "Dragonite",
+
     "gyarados": "Gyarados",
     "blastoise": "Blastoise",
     "venusaur": "Venusaur",
 
     "lugia": "Lugia",
-    "ho oh": "Ho-Oh",
+    "ho-oh": "Ho-Oh",
+    "hooh": "Ho-Oh",
 
     "arceus": "Arceus",
     "dialga": "Dialga",
     "palkia": "Palkia",
+
     "zekrom": "Zekrom",
     "reshiram": "Reshiram",
+
     "celebi": "Celebi",
-    "snorlax": "Snorlax",
-    "mimikyu": "Mimikyu",
-    "magikarp": "Magikarp",
-    "meowscarada": "Meowscarada",
-}
+    "jolteon": "Jolteon",
+    "vaporeon": "Vaporeon",
+    "flareon": "Flareon",
 
+    "espeon": "Espeon",
+    "sylveon": "Sylveon",
+    "leafeon": "Leafeon",
+    "glaceon": "Glaceon",
 
-PRODUCT_ALIASES = {
-    "etb": "Elite Trainer Box",
-    "elite trainer box": "Elite Trainer Box",
-
-    "booster box": "Booster Box",
-    "boosterbox": "Booster Box",
-    "booster display": "Booster Box",
-    "bb": "Booster Box",
-
-    "booster bundle": "Booster Bundle",
-    "bundle": "Booster Bundle",
-
-    "collection box": "Collection Box",
-    "collection": "Collection Box",
-
-    "premium collection": "Premium Collection",
-    "premium": "Premium Collection",
-
-    "ultra premium collection":
-        "Ultra Premium Collection",
-
-    "blister": "Blister",
-    "tin": "Tin",
-    "mini tin": "Mini Tin",
-
-    "box": "Box",
 }
 
 
 # =========================================================
-# MERCH FILTER
+# AUTOCOMPLETE CATALOG
 # =========================================================
 
-MERCH_WORDS = [
-    "plush",
-    "plys",
-    "plysak",
-    "plyšák",
-    "peluche",
+SUGGESTION_CATALOG = [
 
-    "figurka",
-    "figúrka",
-    "figure",
-    "figurine",
+    # -----------------------------------------------------
+    # POKEMON
+    # -----------------------------------------------------
 
-    "toy",
-    "hračka",
+    {
+        "title": "Pikachu",
+        "query": "Pikachu",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "shirt",
-    "tricko",
-    "tričko",
-    "tshirt",
-    "t shirt",
+    {
+        "title": "Pikachu ex",
+        "query": "Pikachu ex",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "hoodie",
-    "mikina",
+    {
+        "title": "Pikachu V",
+        "query": "Pikachu V",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "socks",
-    "ponozky",
-    "ponožky",
+    {
+        "title": "Pikachu VMAX",
+        "query": "Pikachu VMAX",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "cap",
-    "siltovka",
-    "šiltovka",
-    "hat",
-    "čiapka",
+    {
+        "title": "Charizard",
+        "query": "Charizard",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "mug",
-    "hrncek",
-    "hrnček",
-    "cup",
-    "pohar",
-    "pohár",
-    "glass",
+    {
+        "title": "Charizard ex",
+        "query": "Charizard ex",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "flasa",
-    "fľaša",
-    "bottle",
+    {
+        "title": "Charizard V",
+        "query": "Charizard V",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "puzzle",
+    {
+        "title": "Charizard VMAX",
+        "query": "Charizard VMAX",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "playmat",
-    "podlozka",
-    "podložka",
-    "mousepad",
+    {
+        "title": "Mega Charizard X ex",
+        "query": "Mega Charizard X ex",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "poster",
-    "sticker",
-    "samolep",
-    "samolepka",
+    {
+        "title": "Umbreon",
+        "query": "Umbreon",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "notebook",
-    "zošit",
-    "zosit",
+    {
+        "title": "Umbreon VMAX",
+        "query": "Umbreon VMAX",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "album",
-    "binder",
+    {
+        "title": "Mew",
+        "query": "Mew",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "sleeves",
-    "obaly",
-    "obal",
+    {
+        "title": "Mew ex",
+        "query": "Mew ex",
+        "subtitle": "Pokémon karta",
+        "type": "card",
+        "type_label": "Karta",
+    },
 
-    "deck box",
-    "deckbox",
+    {
+        "title": "Mewtwo",
+        "query": "Mewtwo",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "card holder",
-    "toploader",
+    {
+        "title": "Gengar",
+        "query": "Gengar",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "penny sleeve",
-    "protection",
+    {
+        "title": "Eevee",
+        "query": "Eevee",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "keychain",
-    "klucenka",
-    "kľúčenka",
+    {
+        "title": "Greninja",
+        "query": "Greninja",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "backpack",
-    "batoh",
+    {
+        "title": "Rayquaza",
+        "query": "Rayquaza",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "bag",
-    "taska",
-    "taška",
+    {
+        "title": "Gardevoir",
+        "query": "Gardevoir",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "wallet",
-    "puzdro",
-    "case",
+    {
+        "title": "Dragonite",
+        "query": "Dragonite",
+        "subtitle": "Pokémon",
+        "type": "pokemon",
+        "type_label": "Pokémon",
+    },
 
-    "merch",
-    "merchandise",
 
-    "dekoracia",
-    "dekorácia",
+    # -----------------------------------------------------
+    # SETS
+    # -----------------------------------------------------
 
-    "lampa",
-    "lamp",
+    {
+        "title": "Surging Sparks",
+        "query": "Surging Sparks",
+        "subtitle": "Pokémon set • SV8",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Surging Sparks Elite Trainer Box",
+        "query": "Surging Sparks ETB",
+        "subtitle": "Elite Trainer Box",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Pokémon 151",
+        "query": "Pokémon 151",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Pokémon 151 Elite Trainer Box",
+        "query": "Pokémon 151 ETB",
+        "subtitle": "Elite Trainer Box",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Prismatic Evolutions",
+        "query": "Prismatic Evolutions",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Prismatic Evolutions Elite Trainer Box",
+        "query": "Prismatic Evolutions ETB",
+        "subtitle": "Elite Trainer Box",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Terastal Festival",
+        "query": "Terastal Festival",
+        "subtitle": "Pokémon set • SV8a",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Terastal Festival Elite Trainer Box",
+        "query": "Terastal Festival ETB",
+        "subtitle": "Elite Trainer Box",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Destined Rivals",
+        "query": "Destined Rivals",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Journey Together",
+        "query": "Journey Together",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Twilight Masquerade",
+        "query": "Twilight Masquerade",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Stellar Crown",
+        "query": "Stellar Crown",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Temporal Forces",
+        "query": "Temporal Forces",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Obsidian Flames",
+        "query": "Obsidian Flames",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Mega Evolution",
+        "query": "Mega Evolution",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+    {
+        "title": "Phantasmal Flames",
+        "query": "Phantasmal Flames",
+        "subtitle": "Pokémon set",
+        "type": "set",
+        "type_label": "Set",
+    },
+
+
+    # -----------------------------------------------------
+    # PRODUCTS
+    # -----------------------------------------------------
+
+    {
+        "title": "Elite Trainer Box",
+        "query": "Elite Trainer Box",
+        "subtitle": "Pokémon produkt",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Booster Box",
+        "query": "Booster Box",
+        "subtitle": "Pokémon produkt",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Booster Bundle",
+        "query": "Booster Bundle",
+        "subtitle": "Pokémon produkt",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Collection Box",
+        "query": "Collection Box",
+        "subtitle": "Pokémon produkt",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Premium Collection",
+        "query": "Premium Collection",
+        "subtitle": "Pokémon produkt",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
+    {
+        "title": "Pokémon Tin",
+        "query": "Pokémon Tin",
+        "subtitle": "Pokémon produkt",
+        "type": "product",
+        "type_label": "Produkt",
+    },
+
 ]
 
-SEALED_BLOCK_WORDS = [
-    "case",
-    "10x",
-    "12x",
-    "6x",
-    "carton",
-]
-
 
 # =========================================================
-# QUERY PARSING
+# NORMALIZATION
 # =========================================================
 
-def detect_product_type(query):
-    q = normalize_compare(query)
+def normalize_query(query):
 
-    for alias in sorted(
-        PRODUCT_ALIASES.keys(),
-        key=len,
-        reverse=True
-    ):
-        if normalize_compare(alias) in q:
-            return PRODUCT_ALIASES[alias]
+    original = normalize_spaces(query)
 
-    return "Card"
+    if not original:
+        return {
+            "original": "",
+            "normalized": "",
+            "pokemon": "",
+            "set_name": "",
+            "product_name": "",
+            "product_type": "",
+            "card_number": "",
+        }
 
+    q = original.lower()
 
-def detect_set(query):
-    q = normalize_compare(query)
+    # -----------------------------------------------------
+    # CARD NUMBER
+    # -----------------------------------------------------
 
-    for alias in sorted(
-        SET_ALIASES.keys(),
-        key=len,
-        reverse=True
-    ):
-        if normalize_compare(alias) in q:
-            return SET_ALIASES[alias]
-
-    return ""
-
-
-def detect_pokemon(query):
-    q = normalize_compare(query)
-
-    for alias in sorted(
-        POKEMON_ALIASES.keys(),
-        key=len,
-        reverse=True
-    ):
-        if normalize_compare(alias) in q:
-            return POKEMON_ALIASES[alias]
-
-    return ""
-
-
-def parse_query(query):
-    original = clean_text(query)
-    q = normalize_compare(original)
+    number_match = re.search(
+        r"\b(\d{1,4})\s*/\s*(\d{1,4})\b",
+        q
+    )
 
     card_number = ""
 
-    match = re.search(
-        r"\b(\d{1,3}\s*/\s*\d{1,3})\b",
-        original
-    )
+    if number_match:
 
-    if match:
-        card_number = match.group(1).replace(
-            " ",
-            ""
+        card_number = (
+            f"{number_match.group(1)}/"
+            f"{number_match.group(2)}"
         )
 
-    product_type = detect_product_type(
-        original
-    )
 
-    set_name = detect_set(
-        original
-    )
+    # -----------------------------------------------------
+    # PRODUCT TYPE
+    # -----------------------------------------------------
 
-    pokemon = detect_pokemon(
-        original
-    )
+    product_type = ""
+
+    product_patterns = [
+        ("elite trainer box", r"\belite\s+trainer\s+box\b"),
+        ("elite trainer box", r"\betb\b"),
+        ("booster box", r"\bbooster\s*box\b"),
+        ("booster bundle", r"\bbooster\s*bundle\b"),
+        ("collection box", r"\bcollection\s+box\b"),
+        ("premium collection", r"\bpremium\s+collection\b"),
+        ("blister", r"\bblister(?:\s+pack)?\b"),
+        ("tin", r"\btins?\b"),
+    ]
+
+    for canonical, pattern in product_patterns:
+
+        if re.search(pattern, q):
+
+            product_type = canonical
+
+            q = re.sub(
+                pattern,
+                " ",
+                q
+            )
+
+            break
+
+
+    # -----------------------------------------------------
+    # SET
+    # -----------------------------------------------------
+
+    set_name = ""
+
+    # aliases first
+    for alias, canonical in sorted(
+        SET_ALIASES.items(),
+        key=lambda x: len(x[0]),
+        reverse=True
+    ):
+
+        pattern = r"\b" + re.escape(alias.lower()) + r"\b"
+
+        if re.search(pattern, q):
+
+            set_name = canonical
+
+            q = re.sub(
+                pattern,
+                " ",
+                q
+            )
+
+            break
+
+
+    # full set names
+    if not set_name:
+
+        known_sets = sorted(
+            set(
+                list(SET_ALIASES.values()) +
+                [
+                    "surging sparks",
+                    "pokemon 151",
+                    "prismatic evolutions",
+                    "terastal festival",
+                    "destined rivals",
+                    "journey together",
+                    "twilight masquerade",
+                    "stellar crown",
+                    "temporal forces",
+                    "obsidian flames",
+                    "mega evolution",
+                    "phantasmal flames",
+                ]
+            ),
+            key=len,
+            reverse=True
+        )
+
+        for candidate in known_sets:
+
+            pattern = r"\b" + re.escape(
+                candidate.lower()
+            ) + r"\b"
+
+            if re.search(pattern, q):
+
+                set_name = candidate
+
+                q = re.sub(
+                    pattern,
+                    " ",
+                    q
+                )
+
+                break
+
+
+    # -----------------------------------------------------
+    # POKEMON
+    # -----------------------------------------------------
+
+    pokemon = ""
+
+    for alias, canonical in sorted(
+        POKEMON_ALIASES.items(),
+        key=lambda x: len(x[0]),
+        reverse=True
+    ):
+
+        pattern = r"\b" + re.escape(alias.lower()) + r"\b"
+
+        if re.search(pattern, q):
+
+            pokemon = canonical
+
+            q = re.sub(
+                pattern,
+                " ",
+                q
+            )
+
+            break
+
+
+    # -----------------------------------------------------
+    # EX / V / VMAX / GX / VSTAR
+    # -----------------------------------------------------
 
     suffix = ""
 
-    for suffix_candidate in [
-        "vmax",
-        "vstar",
-        "ex",
-        "gx",
-        "v",
-    ]:
-        if re.search(
-            r"\b"
-            + re.escape(suffix_candidate)
-            + r"\b",
-            q
-        ):
-            suffix = suffix_candidate.upper()
-            break
+    suffix_match = re.search(
+        r"\b(vmax|vstar|ex|gx|v)\b",
+        q,
+        re.IGNORECASE
+    )
 
-    normalized_parts = []
+    if suffix_match:
+
+        suffix = suffix_match.group(1)
+
+        q = re.sub(
+            r"\b(vmax|vstar|ex|gx|v)\b",
+            " ",
+            q,
+            flags=re.IGNORECASE
+        )
+
+
+    # -----------------------------------------------------
+    # CLEAN REMAINING TEXT
+    # -----------------------------------------------------
+
+    q = re.sub(
+        r"\bpokemon\b",
+        " ",
+        q,
+        flags=re.IGNORECASE
+    )
+
+    q = normalize_spaces(q)
+
+
+    # -----------------------------------------------------
+    # BUILD NORMALIZED QUERY
+    # -----------------------------------------------------
+
+    parts = []
 
     if pokemon:
-        normalized_parts.append(
-            pokemon
-        )
+        parts.append(pokemon)
 
     if suffix:
-        normalized_parts.append(
-            suffix
-        )
+        parts.append(suffix.lower())
+
+    if q:
+        parts.append(q)
 
     if card_number:
-        normalized_parts.append(
-            card_number
-        )
+        parts.append(card_number)
 
     if set_name:
-        normalized_parts.append(
-            set_name
-        )
+        parts.append(set_name)
 
-    if product_type != "Card":
-        normalized_parts.append(
-            product_type
-        )
+    if product_type:
+        parts.append(product_type)
 
-    if not normalized_parts:
 
-        cleaned = q
-
-        for bad in [
-            "pokemon",
-            "pokémon",
-            "card",
-            "karta",
-            "full art",
-        ]:
-            cleaned = re.sub(
-                r"\b"
-                + re.escape(
-                    normalize_compare(bad)
-                )
-                + r"\b",
-                " ",
-                cleaned
-            )
-
-        cleaned = normalize_spaces(
-            cleaned
-        )
-
-        if cleaned:
-            normalized_parts.append(
-                cleaned
-            )
-
-    normalized_query = normalize_spaces(
-        " ".join(normalized_parts)
+    normalized = normalize_spaces(
+        " ".join(parts)
     )
+
+    # -----------------------------------------------------
+    # SPECIAL ETB / SET HANDLING
+    # -----------------------------------------------------
+
+    if product_type == "elite trainer box":
+
+        normalized_parts = []
+
+        if set_name:
+            normalized_parts.append(set_name)
+
+        if pokemon:
+            normalized_parts.append(pokemon)
+
+        if suffix:
+            normalized_parts.append(suffix.lower())
+
+        if card_number:
+            normalized_parts.append(card_number)
+
+        normalized_parts.append(
+            "elite trainer box"
+        )
+
+        normalized = normalize_spaces(
+            " ".join(normalized_parts)
+        )
+
 
     return {
         "original": original,
-        "normalized": normalized_query,
-        "product_type": product_type,
-        "set": set_name,
+        "normalized": normalized or original,
         "pokemon": pokemon,
+        "set_name": set_name,
+        "product_name": product_type,
+        "product_type": product_type,
         "card_number": card_number,
-        "suffix": suffix,
     }
 
 
 # =========================================================
-# PRODUCT CLASSIFICATION
+# CLASSIFY
 # =========================================================
 
-def contains_merch(title):
-    q = normalize_compare(title)
+def classify_query(parsed):
 
-    for word in MERCH_WORDS:
-        w = normalize_compare(word)
+    if parsed.get("product_type"):
+        return "sealed"
 
-        if not w:
-            continue
+    if parsed.get("set_name") and not parsed.get("pokemon"):
+        return "sealed"
 
-        if re.search(
-            r"\b"
-            + re.escape(w)
-            + r"\b",
-            q
-        ):
-            return True
-
-    return False
+    return "card"
 
 
-def is_sealed_title(title):
-    q = normalize_compare(title)
+# =========================================================
+# CARD NUMBER
+# =========================================================
 
-    sealed_words = [
-        "elite trainer box",
-        "booster box",
-        "booster bundle",
-        "collection box",
-        "premium collection",
-        "ultra premium collection",
-        "mini tin",
-        "tin",
-        "blister",
-        "display",
-    ]
+def card_number_from_query(query):
 
-    return any(
-        word in q
-        for word in sealed_words
+    match = re.search(
+        r"\b(\d{1,4})\s*/\s*(\d{1,4})\b",
+        query
+    )
+
+    if not match:
+        return ""
+
+    return (
+        f"{match.group(1)}/"
+        f"{match.group(2)}"
     )
 
 
-def is_card_title(title):
-    if not title:
-        return False
+# =========================================================
+# CARD MATCH
+# =========================================================
 
-    if contains_merch(title):
-        return False
+def card_matches_query(title, query):
 
-    if is_sealed_title(title):
-        return False
+    title_clean = clean_text(title).lower()
 
-    q = normalize_compare(title)
+    query_clean = clean_text(query).lower()
 
-    card_indicators = [
-        "pokemon tcg",
-        "pokemon card",
-        "pokemon karta",
-        "pokémon tcg",
-        "pokémon card",
-        "kusova karta",
-        "kusova pokemon karta",
-        "kusove karty",
-        "single card",
-        "trading card",
-        "tcg",
-    ]
+    parsed = normalize_query(query_clean)
 
-    if any(
-        indicator in q
-        for indicator in card_indicators
-    ):
+    important = []
+
+    if parsed.get("pokemon"):
+        important.append(
+            parsed["pokemon"].lower()
+        )
+
+    if parsed.get("card_number"):
+        important.append(
+            parsed["card_number"].lower()
+        )
+
+    if "ex" in query_clean.split():
+        important.append("ex")
+
+    if "vmax" in query_clean.split():
+        important.append("vmax")
+
+    if "vstar" in query_clean.split():
+        important.append("vstar")
+
+    if "gx" in query_clean.split():
+        important.append("gx")
+
+    if not important:
+
         return True
 
-    if re.search(
-        r"\b(psa|cgc|bgs|sgc)\b",
-        q
-    ):
-        return True
+    for item in important:
 
-    if re.search(
-        r"\b\d{1,3}\s*/\s*\d{1,3}\b",
-        title
-    ):
-        return True
+        if item not in title_clean:
+            return False
 
-    if re.search(
-        r"\b(vmax|vstar|gx|ex)\b",
-        q
-    ):
-        return True
-
-    pokemon_found = False
-
-    for name in POKEMON_ALIASES.values():
-        if normalize_compare(name) in q:
-            pokemon_found = True
-            break
-
-    return pokemon_found
+    return True
 
 
-def is_blocked_sealed(title):
-    q = normalize_compare(title)
+# =========================================================
+# SEALED MATCH
+# =========================================================
 
-    for block in SEALED_BLOCK_WORDS:
-        if re.search(
-            r"\b"
-            + re.escape(block)
-            + r"\b",
-            q
+def sealed_matches_query(title, query):
+
+    title_clean = clean_text(title).lower()
+
+    parsed = normalize_query(query)
+
+    set_name = parsed.get("set_name", "").lower()
+
+    product_type = parsed.get(
+        "product_type",
+        ""
+    ).lower()
+
+    if set_name:
+
+        set_words = words(set_name)
+
+        if not set_words.issubset(
+            words(title_clean)
         ):
-            return True
 
-    return False
+            return False
+
+
+    if product_type:
+
+        if product_type == "elite trainer box":
+
+            if (
+                "elite trainer box" not in title_clean
+                and "etb" not in title_clean
+            ):
+
+                return False
+
+        elif product_type not in title_clean:
+
+            return False
+
+
+    # Do not return cases when user asked for one box.
+    if (
+        product_type == "elite trainer box"
+        and re.search(
+            r"\b(case|10x|12x|6x)\b",
+            title_clean
+        )
+    ):
+
+        return False
+
+
+    return True
 
 
 # =========================================================
 # PRICE PARSER
 # =========================================================
 
-def parse_price(value):
-    if value is None:
+def parse_price(text):
+
+    if not text:
         return None
 
-    text = clean_text(value).lower()
+    text = clean_text(text)
 
-    text = text.replace(
-        "eur",
-        "€"
-    )
+    # EUR
+    eur_patterns = [
+        r"(\d{1,6}(?:[.,]\d{1,2})?)\s*€",
+        r"€\s*(\d{1,6}(?:[.,]\d{1,2})?)",
+    ]
 
-    text = text.replace(
-        "kč",
-        " czk"
-    )
+    for pattern in eur_patterns:
 
-    text = text.replace(
-        "kc",
-        " czk"
-    )
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
 
-    is_czk = (
-        "czk" in text
-        or "kč" in text
-        or " kc" in text
-    )
+        if match:
 
-    text = text.replace(
-        " ",
-        ""
-    )
+            value = match.group(1)
 
-    matches = re.findall(
-        r"\d{1,6}(?:[.,]\d{1,2})?",
-        text
-    )
-
-    if not matches:
-        return None
-
-    number = matches[-1]
-
-    if "," in number and "." in number:
-
-        if number.rfind(",") > number.rfind("."):
-            number = (
-                number
-                .replace(".", "")
-                .replace(",", ".")
-            )
-        else:
-            number = number.replace(
-                ",",
+            value = value.replace(
+                " ",
                 ""
             )
 
-    elif "," in number:
-        number = number.replace(
-            ",",
-            "."
-        )
+            if "," in value and "." in value:
 
-    try:
-        price = float(number)
+                if value.rfind(",") > value.rfind("."):
 
-    except ValueError:
-        return None
+                    value = value.replace(
+                        ".",
+                        ""
+                    )
 
-    if is_czk:
-        price = price / CZK_PER_EUR
+                    value = value.replace(
+                        ",",
+                        "."
+                    )
 
-    if price <= 0:
-        return None
+                else:
 
-    if price > 100000:
-        return None
+                    value = value.replace(
+                        ",",
+                        ""
+                    )
 
-    return round(
-        price,
-        2
-    )
+            else:
 
-
-# =========================================================
-# QUERY MATCHING
-# =========================================================
-
-def pokemon_matches(title, parsed):
-    t = normalize_compare(title)
-
-    if parsed["pokemon"]:
-
-        pokemon = normalize_compare(
-            parsed["pokemon"]
-        )
-
-        if pokemon not in t:
-            return False
-
-    if parsed["suffix"]:
-
-        suffix = normalize_compare(
-            parsed["suffix"]
-        )
-
-        if suffix not in t:
-            return False
-
-    if parsed["card_number"]:
-
-        number = parsed[
-            "card_number"
-        ].replace(
-            " ",
-            ""
-        )
-
-        normalized_title = t.replace(
-            " ",
-            ""
-        )
-
-        if number not in normalized_title:
-            return False
-
-    if parsed["set"]:
-
-        set_name = normalize_compare(
-            parsed["set"]
-        )
-
-        if set_name not in t:
-
-            alternatives = {
-                "pokemon 151": [
-                    "151",
-                    "sv 151",
-                    "scarlet violet 151",
-                ],
-
-                "mega evolution": [
-                    "mega evolution",
-                    "mega",
-                ],
-
-                "black bolt white flare": [
-                    "black bolt",
-                    "white flare",
-                ],
-            }
-
-            allowed = alternatives.get(
-                set_name,
-                []
-            )
-
-            if not any(
-                x in t
-                for x in allowed
-            ):
-                return False
-
-    return True
-
-
-def card_matches_query(title, query):
-    title_clean = clean_text(title)
-
-    if not title_clean:
-        return False
-
-    if contains_merch(title_clean):
-        return False
-
-    if is_sealed_title(title_clean):
-        return False
-
-    parsed = parse_query(query)
-
-    if parsed["product_type"] != "Card":
-        return False
-
-    if not is_card_title(title_clean):
-        return False
-
-    if not pokemon_matches(
-        title_clean,
-        parsed
-    ):
-        return False
-
-    if not (
-        parsed["pokemon"]
-        or parsed["suffix"]
-        or parsed["card_number"]
-        or parsed["set"]
-    ):
-
-        query_words = words(query)
-
-        title_normalized = normalize_compare(
-            title_clean
-        )
-
-        if query_words:
-
-            matches = sum(
-                1
-                for word in query_words
-                if normalize_compare(word)
-                in title_normalized
-            )
-
-            if matches == 0:
-                return False
-
-    return True
-
-
-def sealed_matches_query(title, query):
-    title_clean = clean_text(title)
-
-    if not title_clean:
-        return False
-
-    if contains_merch(title_clean):
-        return False
-
-    if not is_sealed_title(title_clean):
-        return False
-
-    if is_blocked_sealed(title_clean):
-        return False
-
-    t = normalize_compare(
-        title_clean
-    )
-
-    parsed = parse_query(query)
-
-    if parsed["product_type"] == "Card":
-
-        if not parsed["set"]:
-            return False
-
-    else:
-
-        product = normalize_compare(
-            parsed["product_type"]
-        )
-
-        product_variants = [
-            product
-        ]
-
-        if product == "elite trainer box":
-            product_variants.extend([
-                "etb",
-                "elite trainer box",
-            ])
-
-        elif product == "booster box":
-            product_variants.extend([
-                "booster box",
-                "boosterbox",
-                "display",
-            ])
-
-        elif product == "booster bundle":
-            product_variants.extend([
-                "booster bundle",
-            ])
-
-        elif product == "collection box":
-            product_variants.extend([
-                "collection box",
-            ])
-
-        elif product == "premium collection":
-            product_variants.extend([
-                "premium collection",
-            ])
-
-        if not any(
-            normalize_compare(x) in t
-            for x in product_variants
-        ):
-            return False
-
-    if parsed["set"]:
-
-        set_name = normalize_compare(
-            parsed["set"]
-        )
-
-        alternatives = {
-            "pokemon 151": [
-                "151",
-                "sv 151",
-            ],
-
-            "mega evolution": [
-                "mega evolution",
-            ],
-
-            "black bolt white flare": [
-                "black bolt",
-                "white flare",
-            ],
-        }
-
-        if set_name not in t:
-
-            allowed = alternatives.get(
-                set_name,
-                []
-            )
-
-            if not any(
-                x in t
-                for x in allowed
-            ):
-                return False
-
-    if parsed["pokemon"]:
-
-        pokemon = normalize_compare(
-            parsed["pokemon"]
-        )
-
-        if pokemon not in t:
-            return False
-
-    return True
-
-
-def result_matches_query(title, query):
-    parsed = parse_query(query)
-
-    if parsed["product_type"] == "Card":
-
-        if is_sealed_title(title):
-
-            if parsed["set"]:
-                return sealed_matches_query(
-                    title,
-                    query
+                value = value.replace(
+                    ",",
+                    "."
                 )
 
-            return False
+            try:
+                return float(value)
+            except:
+                pass
 
-        return card_matches_query(
-            title,
-            query
+
+    # CZK
+    czk_patterns = [
+        r"(\d{1,8}(?:[.,]\d{1,2})?)\s*(?:Kč|CZK)",
+        r"(?:Kč|CZK)\s*(\d{1,8}(?:[.,]\d{1,2})?)",
+    ]
+
+    for pattern in czk_patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
         )
 
-    return sealed_matches_query(
-        title,
-        query
+        if match:
+
+            value = match.group(1)
+
+            value = value.replace(
+                ",",
+                "."
+            )
+
+            try:
+
+                czk = float(value)
+
+                return czk / CZK_PER_EUR
+
+            except:
+                pass
+
+
+    return None
+
+
+# =========================================================
+# MERCH BLACKLIST
+# =========================================================
+
+MERCH_BLACKLIST = [
+
+    "plush",
+    "plyš",
+    "peluche",
+    "figúrka",
+    "figurka",
+    "figure",
+    "figurine",
+    "hrnček",
+    "hrnek",
+    "mug",
+    "tričko",
+    "tricko",
+    "shirt",
+    "mikina",
+    "hoodie",
+    "ponožky",
+    "ponozky",
+    "socks",
+    "puzzle",
+    "podložka",
+    "podlozka",
+    "playmat",
+    "album",
+    "binder",
+    "obal",
+    "sleeves",
+    "sleeve",
+    "keychain",
+    "kľúčenka",
+    "klucenka",
+    "batoh",
+    "backpack",
+    "taška",
+    "taska",
+    "poster",
+    "plagát",
+    "plagat",
+    "sticker",
+    "nálepka",
+    "nalepka",
+]
+
+
+def is_merch(title):
+
+    t = clean_text(title).lower()
+
+    return any(
+        word in t
+        for word in MERCH_BLACKLIST
     )
 
 
 # =========================================================
-# DATABASE SAVING
+# HTTP
 # =========================================================
 
-def save_discovered(
-    shop,
-    country,
-    title,
-    url,
-    price_eur,
-    condition="Nové",
-):
-    if not title:
-        return
-
-    if not url:
-        return
+def get(url, timeout=15):
 
     try:
 
-        conn = db()
-
-        conn.execute("""
-            INSERT INTO discovered_products
-            (
-                shop,
-                country,
-                title,
-                url,
-                price_eur,
-                condition,
-                discovered_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            shop,
-            country,
-            clean_text(title),
+        return requests.get(
             url,
-            price_eur,
-            condition,
-            now_iso(),
-        ))
+            headers=HEADERS,
+            timeout=timeout
+        )
 
-        conn.commit()
-        conn.close()
+    except Exception:
 
-    except sqlite3.Error:
-        pass
+        return None
 
 
-def save_history(query, results):
+# =========================================================
+# CARDYX
+# =========================================================
+
+def cardyx_search(query):
+
+    results = []
+
     try:
 
-        conn = db()
-        checked = now_iso()
+        url = (
+            "https://www.cardyx.sk/search"
+            "?q=" +
+            urllib.parse.quote(query)
+        )
 
-        for item in results:
+        response = get(url)
 
-            if item.get(
-                "price_eur"
-            ) is None:
+        if not response:
+            return results
+
+        if response.status_code != 200:
+            return results
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+
+        # Shopify search product links
+        links = soup.select(
+            'a[href*="/products/"]'
+        )
+
+        seen = set()
+
+
+        for a in links:
+
+            href = a.get("href")
+
+            if not href:
                 continue
 
-            conn.execute("""
-                INSERT INTO price_history
-                (
-                    query,
-                    shop,
-                    title,
-                    price_eur,
-                    checked_at
+            if href.startswith("/"):
+                href = (
+                    "https://www.cardyx.sk"
+                    + href
                 )
-                VALUES (?, ?, ?, ?, ?)
-            """, (
+
+            if href in seen:
+                continue
+
+            seen.add(href)
+
+            title = clean_text(
+                a.get_text(" ", strip=True)
+            )
+
+            if not title:
+                continue
+
+            # parent / surrounding product block
+            parent = a
+
+            for _ in range(5):
+
+                if parent.parent:
+                    parent = parent.parent
+
+            block_text = clean_text(
+                parent.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            price = parse_price(
+                block_text
+            )
+
+            if price is None:
+
+                # search nearby HTML
+                price = parse_price(
+                    a.parent.get_text(
+                        " ",
+                        strip=True
+                    )
+                    if a.parent
+                    else ""
+                )
+
+            if price is None:
+                continue
+
+            if is_merch(title):
+                continue
+
+
+            # ---------------------------------------------
+            # FILTER
+            # ---------------------------------------------
+
+            parsed = normalize_query(
+                query
+            )
+
+            kind = classify_query(
+                parsed
+            )
+
+            if kind == "card":
+
+                if not card_matches_query(
+                    title,
+                    query
+                ):
+                    continue
+
+            else:
+
+                if not sealed_matches_query(
+                    title,
+                    query
+                ):
+                    continue
+
+
+            results.append({
+                "title": title,
+                "shop": "CardyX",
+                "country": "SK",
+                "condition": "Nové",
+                "price_eur": round(
+                    price,
+                    2
+                ),
+                "link": href,
+            })
+
+
+    except Exception:
+
+        return results
+
+
+    # remove duplicates
+    unique = {}
+
+    for item in results:
+
+        key = (
+            item["title"].lower(),
+            item["price_eur"]
+        )
+
+        unique[key] = item
+
+
+    return list(
+        unique.values()
+    )
+
+
+# =========================================================
+# GENERIC SHOP SEARCH
+# =========================================================
+
+GENERIC_SHOPS = [
+
+    {
+        "name": "Veselý Drak",
+        "country": "CZ",
+        "url": "https://www.vesely-drak.cz/",
+    },
+
+    {
+        "name": "iHRYsko",
+        "country": "SK",
+        "url": "https://www.ihrysko.sk/",
+    },
+
+    {
+        "name": "Černý Rytíř",
+        "country": "CZ",
+        "url": "https://www.cernyrytir.cz/",
+    },
+
+]
+
+
+def generic_shop_search(shop, query):
+
+    results = []
+
+    # -----------------------------------------------------
+    # NOTE
+    # -----------------------------------------------------
+    # These shops are searched through their public search
+    # pages where possible. If a shop blocks automated
+    # requests, it is simply skipped.
+    # -----------------------------------------------------
+
+    try:
+
+        if shop["name"] == "Veselý Drak":
+
+            url = (
+                "https://www.vesely-drak.cz/"
+                "?s=" +
+                urllib.parse.quote(query)
+            )
+
+        elif shop["name"] == "iHRYsko":
+
+            url = (
+                "https://www.ihrysko.sk/"
+                "?s=" +
+                urllib.parse.quote(query)
+            )
+
+        elif shop["name"] == "Černý Rytíř":
+
+            url = (
+                "https://www.cernyrytir.cz/"
+                "?q=" +
+                urllib.parse.quote(query)
+            )
+
+        else:
+
+            return results
+
+
+        response = get(url)
+
+        if not response:
+            return results
+
+        if response.status_code != 200:
+            return results
+
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+
+        # -------------------------------------------------
+        # Find product links
+        # -------------------------------------------------
+
+        product_links = soup.find_all(
+            "a",
+            href=True
+        )
+
+
+        seen = set()
+
+
+        for a in product_links:
+
+            href = a.get("href")
+
+            if not href:
+                continue
+
+            title = clean_text(
+                a.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if not title:
+                continue
+
+            if len(title) < 4:
+                continue
+
+            if href in seen:
+                continue
+
+            seen.add(href)
+
+
+            # nearby text
+            parent = a.parent
+
+            block_text = ""
+
+            if parent:
+
+                block_text = clean_text(
+                    parent.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+            price = parse_price(
+                block_text
+            )
+
+            if price is None:
+
+                price = parse_price(
+                    title
+                )
+
+            if price is None:
+                continue
+
+            if is_merch(title):
+                continue
+
+
+            parsed = normalize_query(
+                query
+            )
+
+            kind = classify_query(
+                parsed
+            )
+
+            if kind == "card":
+
+                if not card_matches_query(
+                    title,
+                    query
+                ):
+                    continue
+
+            else:
+
+                if not sealed_matches_query(
+                    title,
+                    query
+                ):
+                    continue
+
+
+            if href.startswith("/"):
+
+                href = (
+                    shop["url"].rstrip("/")
+                    + href
+                )
+
+
+            results.append({
+                "title": title,
+                "shop": shop["name"],
+                "country": shop["country"],
+                "condition": "Nové",
+                "price_eur": round(
+                    price,
+                    2
+                ),
+                "link": href,
+            })
+
+
+            if len(results) >= 10:
+                break
+
+
+    except Exception:
+
+        return results
+
+
+    return results
+
+
+# =========================================================
+# SEARCH ALL SHOPS
+# =========================================================
+
+def search_all(query):
+
+    results = []
+
+
+    # CardyX
+    results.extend(
+        cardyx_search(query)
+    )
+
+
+    # Generic shops in parallel
+    with ThreadPoolExecutor(
+        max_workers=3
+    ) as executor:
+
+        futures = [
+            executor.submit(
+                generic_shop_search,
+                shop,
+                query
+            )
+            for shop in GENERIC_SHOPS
+        ]
+
+        for future in as_completed(
+            futures
+        ):
+
+            try:
+
+                results.extend(
+                    future.result()
+                )
+
+            except Exception:
+                pass
+
+
+    # -----------------------------------------------------
+    # Remove duplicates
+    # -----------------------------------------------------
+
+    unique = {}
+
+    for item in results:
+
+        key = (
+            clean_text(
+                item.get("shop")
+            ).lower(),
+            clean_text(
+                item.get("title")
+            ).lower(),
+            round(
+                float(
+                    item.get(
+                        "price_eur",
+                        0
+                    )
+                ),
+                2
+            )
+        )
+
+        unique[key] = item
+
+
+    results = list(
+        unique.values()
+    )
+
+
+    # -----------------------------------------------------
+    # Sort by price
+    # -----------------------------------------------------
+
+    results.sort(
+        key=lambda x: float(
+            x.get(
+                "price_eur",
+                999999
+            )
+        )
+    )
+
+
+    return results
+
+
+# =========================================================
+# SAVE HISTORY
+# =========================================================
+
+def save_history(
+    query,
+    results
+):
+
+    if not results:
+        return
+
+    conn = sqlite3.connect(
+        DB_PATH
+    )
+
+    now = datetime.utcnow().isoformat()
+
+    for item in results:
+
+        conn.execute(
+            """
+            INSERT INTO price_history
+            (
+                query,
+                shop,
+                title,
+                price_eur,
+                link,
+                checked_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
                 query,
                 item.get(
                     "shop",
@@ -1246,1291 +1722,234 @@ def save_history(query, results):
                     ""
                 ),
                 item.get(
-                    "price_eur"
+                    "price_eur",
+                    0
                 ),
-                checked,
-            ))
-
-        conn.commit()
-        conn.close()
-
-    except sqlite3.Error:
-        pass
-
-
-# =========================================================
-# CARDYX
-# =========================================================
-
-def cardyx_discover(query):
-
-    encoded = urllib.parse.quote_plus(
-        query
-    )
-
-    urls = [
-        "https://www.cardyx.sk/search?q="
-        + encoded,
-
-        "https://www.cardyx.sk/search?type=product&q="
-        + encoded,
-    ]
-
-    results = []
-    seen = set()
-
-    def fetch_cardyx(url):
-
-        try:
-
-            response = get(
-                url,
-                timeout=6
-            )
-
-            if not response:
-                return []
-
-            soup = BeautifulSoup(
-                response.text,
-                "html.parser"
-            )
-
-            local_results = []
-
-            links = soup.select(
-                'a[href*="/products/"]'
-            )
-
-            for link in links:
-
-                href = link.get(
-                    "href",
+                item.get(
+                    "link",
                     ""
-                )
-
-                if not href:
-                    continue
-
-                product_url = absolute_url(
-                    "https://www.cardyx.sk/",
-                    href
-                )
-
-                if not product_url:
-                    continue
-
-                title = clean_text(
-                    link.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-                if not title:
-
-                    image = link.find(
-                        "img"
-                    )
-
-                    if image:
-                        title = clean_text(
-                            image.get(
-                                "alt",
-                                ""
-                            )
-                        )
-
-                if not title:
-                    continue
-
-                price = None
-                parent = link
-
-                for _ in range(5):
-
-                    if not parent:
-                        break
-
-                    text_value = clean_text(
-                        parent.get_text(
-                            " ",
-                            strip=True
-                        )
-                    )
-
-                    price = parse_price(
-                        text_value
-                    )
-
-                    if price is not None:
-                        break
-
-                    parent = parent.parent
-
-                if price is None:
-
-                    price = parse_price(
-                        link.get(
-                            "data-price"
-                        )
-                    )
-
-                if price is None:
-                    continue
-
-                local_results.append({
-                    "shop": "CardyX",
-                    "country": "SK",
-                    "title": title,
-                    "url": product_url,
-                    "price_eur": price,
-                    "condition": "Nové",
-                })
-
-                if len(local_results) >= 50:
-                    break
-
-            return local_results
-
-        except Exception:
-            return []
-
-    # =====================================================
-    # CARDYX URLS PARALELNE
-    # =====================================================
-
-    executor = ThreadPoolExecutor(
-        max_workers=2
-    )
-
-    futures = []
-
-    try:
-
-        for url in urls:
-
-            futures.append(
-                executor.submit(
-                    fetch_cardyx,
-                    url
-                )
+                ),
+                now,
             )
+        )
 
-        for future in as_completed(
-            futures
-        ):
-
-            try:
-
-                data = future.result()
-
-                for item in data:
-
-                    product_url = item.get(
-                        "url"
-                    )
-
-                    if not product_url:
-                        continue
-
-                    if product_url in seen:
-                        continue
-
-                    seen.add(
-                        product_url
-                    )
-
-                    results.append(
-                        item
-                    )
-
-            except Exception:
-                continue
-
-    finally:
-
-        try:
-            executor.shutdown(
-                wait=False,
-                cancel_futures=True
-            )
-
-        except TypeError:
-            executor.shutdown(
-                wait=False
-            )
-
-    return results
+    conn.commit()
+    conn.close()
 
 
-def cardyx_search(query):
+# =========================================================
+# AUTOCOMPLETE SCORING
+# =========================================================
 
-    discovered = cardyx_discover(
+def suggestion_score(
+    item,
+    query
+):
+
+    q = clean_text(
         query
+    ).lower()
+
+    title = clean_text(
+        item.get(
+            "title",
+            ""
+        )
+    ).lower()
+
+    subtitle = clean_text(
+        item.get(
+            "subtitle",
+            ""
+        )
+    ).lower()
+
+    score = 0
+
+    # exact start
+    if title.startswith(q):
+
+        score += 100
+
+
+    # word start
+    if any(
+        word.startswith(q)
+        for word in title.split()
+    ):
+
+        score += 60
+
+
+    # query contained
+    if q in title:
+
+        score += 40
+
+
+    # subtitle
+    if q in subtitle:
+
+        score += 10
+
+
+    # shorter titles get slight preference
+    score += max(
+        0,
+        20 - len(title) // 10
     )
 
-    filtered = []
 
-    for item in discovered:
-
-        if not result_matches_query(
-            item["title"],
-            query
-        ):
-            continue
-
-        save_discovered(
-            item["shop"],
-            item["country"],
-            item["title"],
-            item["url"],
-            item["price_eur"],
-            item["condition"],
-        )
-
-        filtered.append(
-            item
-        )
-
-    return filtered
+    return score
 
 
 # =========================================================
-# SHOP CONFIGURATION
+# API SUGGESTIONS
 # =========================================================
 
-GENERIC_SHOPS = [
+@app.get("/api/suggestions")
+def api_suggestions():
 
-    {
-        "name": "Veselý Drak",
-        "country": "CZ",
-        "url": "https://www.vesely-drak.sk/",
-        "searches": [
-            "https://www.vesely-drak.sk/vyhledavani/?q={query}",
-            "https://www.vesely-drak.sk/vyhladavanie/?q={query}",
-            "https://www.vesely-drak.sk/?q={query}",
-        ],
-    },
-
-    {
-        "name": "iHRYsko",
-        "country": "SK",
-        "url": "https://www.ihrysko.sk/",
-        "searches": [
-            "https://www.ihrysko.sk/vyhladavanie/?search={query}",
-            "https://www.ihrysko.sk/vyhladavanie?search={query}",
-        ],
-    },
-
-    {
-        "name": "Černý Rytíř",
-        "country": "CZ",
-        "url": "https://www.cernyrytir.cz/",
-        "searches": [
-            "https://www.cernyrytir.cz/?q={query}",
-            "https://www.cernyrytir.cz/index.php?route=product/search&search={query}",
-        ],
-    },
-
-    {
-        "name": "Pokébol",
-        "country": "SK",
-        "url": "https://pokebol.sk/",
-        "searches": [
-            "https://pokebol.sk/search?q={query}",
-            "https://pokebol.sk/?s={query}",
-        ],
-    },
-
-    {
-        "name": "Pokéholik",
-        "country": "SK",
-        "url": "https://www.pokeholikk.sk/",
-        "searches": [
-            "https://www.pokeholikk.sk/search?q={query}",
-            "https://www.pokeholikk.sk/?s={query}",
-        ],
-    },
-
-    {
-        "name": "Beardex",
-        "country": "SK",
-        "url": "https://www.beardex.eu/",
-        "searches": [
-            "https://www.beardex.eu/?s={query}",
-            "https://www.beardex.eu/search?q={query}",
-        ],
-    },
-
-    {
-        "name": "Cardmania",
-        "country": "SK",
-        "url": "https://www.cardmania.sk/",
-        "searches": [
-            "https://www.cardmania.sk/?s={query}",
-            "https://www.cardmania.sk/search?q={query}",
-        ],
-    },
-
-    {
-        "name": "PokecTCG",
-        "country": "CZ",
-        "url": "https://pokectcg.cz/",
-        "searches": [
-            "https://pokectcg.cz/?s={query}",
-            "https://pokectcg.cz/search?q={query}",
-        ],
-    },
-
-    {
-        "name": "CardCave",
-        "country": "CZ",
-        "url": "https://www.cardcave.cz/",
-        "searches": [
-            "https://www.cardcave.cz/?s={query}",
-            "https://www.cardcave.cz/search?q={query}",
-        ],
-    },
-]
-
-
-# =========================================================
-# GENERIC SCRAPER
-# =========================================================
-
-PRODUCT_SELECTORS = [
-    "article",
-    ".product",
-    ".product-item",
-    ".product-box",
-    ".product-card",
-    ".product-item-box",
-    ".product-list-item",
-    "li.product",
-    "li.item",
-    ".item",
-    "[class*='product-item']",
-    "[class*='product-card']",
-    "[class*='product-box']",
-    ".woocommerce-loop-product__link",
-]
-
-
-TITLE_SELECTORS = [
-    ".product-title",
-    ".product-name",
-    ".product-title a",
-    ".name",
-    ".title",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-]
-
-
-PRICE_SELECTORS = [
-    ".price",
-    ".product-price",
-    ".price-final",
-    ".current-price",
-    ".sale-price",
-    ".price-new",
-    "[class*='price']",
-]
-
-
-def extract_title(block):
-
-    for selector in TITLE_SELECTORS:
-
-        element = block.select_one(
-            selector
-        )
-
-        if element:
-
-            text = clean_text(
-                element.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-            if len(text) >= 2:
-                return text
-
-    link = block.find(
-        "a",
-        href=True
-    )
-
-    if link:
-
-        text = clean_text(
-            link.get_text(
-                " ",
-                strip=True
-            )
-        )
-
-        if len(text) >= 2:
-            return text
-
-    image = block.find(
-        "img"
-    )
-
-    if image:
-
-        alt = clean_text(
-            image.get(
-                "alt",
-                ""
-            )
-        )
-
-        if len(alt) >= 2:
-            return alt
-
-    return ""
-
-
-def extract_price(block):
-
-    for selector in PRICE_SELECTORS:
-
-        elements = block.select(
-            selector
-        )
-
-        for element in elements:
-
-            price = parse_price(
-                element.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-            if price is not None:
-                return price
-
-    text = clean_text(
-        block.get_text(
-            " ",
-            strip=True
+    q = clean_text(
+        request.args.get(
+            "q",
+            ""
         )
     )
 
-    return parse_price(
-        text
-    )
+    if len(q) < 2:
 
+        return jsonify({
+            "query": q,
+            "suggestions": []
+        })
 
-def extract_product_from_block(
-    block,
-    shop,
-    country,
-    base_url,
-):
 
-    link = block.find(
-        "a",
-        href=True
-    )
+    q_lower = q.lower()
 
-    if not link:
-        return None
 
-    href = link.get(
-        "href",
-        ""
-    )
+    # -----------------------------------------------------
+    # Start with static catalog
+    # -----------------------------------------------------
 
-    if not href:
-        return None
+    candidates = []
 
-    title = extract_title(
-        block
-    )
 
-    if not title:
-        return None
+    for item in SUGGESTION_CATALOG:
 
-    price = extract_price(
-        block
-    )
-
-    if price is None:
-        return None
-
-    product_url = absolute_url(
-        base_url,
-        href
-    )
-
-    if not product_url:
-        return None
-
-    return {
-        "shop": shop,
-        "country": country,
-        "title": title,
-        "url": product_url,
-        "price_eur": price,
-        "condition": "Nové",
-    }
-
-
-def scrape_shop_url(
-    shop,
-    url,
-    query
-):
-
-    # =====================================================
-    # RYCHLY TIMEOUT PRE JEDEN SHOP
-    # =====================================================
-
-    response = get(
-        url,
-        timeout=5
-    )
-
-    if not response:
-        return []
-
-    try:
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-    except Exception:
-        return []
-
-    results = []
-    seen_urls = set()
-
-    # =====================================================
-    # PRODUCT BLOCKS
-    # =====================================================
-
-    for selector in PRODUCT_SELECTORS:
-
-        try:
-            blocks = soup.select(
-                selector
-            )
-        except Exception:
-            continue
-
-        for block in blocks:
-
-            try:
-
-                item = extract_product_from_block(
-                    block,
-                    shop["name"],
-                    shop["country"],
-                    shop["url"],
-                )
-
-            except Exception:
-                continue
-
-            if not item:
-                continue
-
-            product_url = item["url"]
-
-            if not product_url:
-                continue
-
-            if product_url in seen_urls:
-                continue
-
-            seen_urls.add(
-                product_url
-            )
-
-            try:
-
-                matches = result_matches_query(
-                    item["title"],
-                    query
-                )
-
-            except Exception:
-                matches = False
-
-            if not matches:
-                continue
-
-            results.append(
-                item
-            )
-
-            if len(results) >= 40:
-                return results
-
-    # =====================================================
-    # FALLBACK LINKS
-    # =====================================================
-
-    try:
-        links = soup.find_all(
-            "a",
-            href=True
-        )
-    except Exception:
-        links = []
-
-    for link in links:
-
-        try:
-
-            href = link.get(
-                "href",
-                ""
-            )
-
-            if not href:
-                continue
-
-            title = clean_text(
-                link.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-            if len(title) < 3:
-                continue
-
-            if contains_merch(title):
-                continue
-
-            parent = link
-            price = None
-
-            for _ in range(5):
-
-                if not parent:
-                    break
-
-                text_value = clean_text(
-                    parent.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-                price = parse_price(
-                    text_value
-                )
-
-                if price is not None:
-                    break
-
-                parent = parent.parent
-
-            if price is None:
-                continue
-
-            product_url = absolute_url(
-                shop["url"],
-                href
-            )
-
-            if not product_url:
-                continue
-
-            if product_url in seen_urls:
-                continue
-
-            if not result_matches_query(
-                title,
-                query
-            ):
-                continue
-
-            seen_urls.add(
-                product_url
-            )
-
-            results.append({
-                "shop": shop["name"],
-                "country": shop["country"],
-                "title": title,
-                "url": product_url,
-                "price_eur": price,
-                "condition": "Nové",
-            })
-
-            if len(results) >= 40:
-                break
-
-        except Exception:
-            continue
-
-    return results
-
-
-# =========================================================
-# GENERIC SHOP SEARCH
-# =========================================================
-
-def generic_shop_search(
-    shop,
-    query
-):
-
-    searches = shop.get(
-        "searches",
-        []
-    )
-
-    all_results = []
-    seen = set()
-
-    encoded = urllib.parse.quote_plus(
-        query
-    )
-
-    for template in searches:
-
-        try:
-
-            url = template.format(
-                query=encoded
-            )
-
-            results = scrape_shop_url(
-                shop,
-                url,
-                query
-            )
-
-            for item in results:
-
-                if not item.get(
-                    "url"
-                ):
-                    continue
-
-                key = (
-                    normalize_compare(
-                        item["title"]
-                    ),
-                    item["url"],
-                )
-
-                if key in seen:
-                    continue
-
-                seen.add(
-                    key
-                )
-
-                all_results.append(
-                    item
-                )
-
-        except Exception:
-            continue
-
-    for item in all_results:
-
-        save_discovered(
-            item["shop"],
-            item["country"],
-            item["title"],
-            item["url"],
-            item["price_eur"],
-            item["condition"],
-        )
-
-    return all_results
-
-
-# =========================================================
-# SHOP DISPATCHER
-# =========================================================
-
-def shop_search(
-    shop,
-    query
-):
-
-    try:
-
-        return generic_shop_search(
-            shop,
-            query
-        )
-
-    except Exception:
-
-        return []
-
-
-# =========================================================
-# RESULT DEDUPLICATION
-# =========================================================
-
-def deduplicate_results(results):
-
-    unique = {}
-    output = []
-
-    for item in results:
-
-        title = normalize_compare(
+        title = clean_text(
             item.get(
                 "title",
                 ""
             )
-        )
+        ).lower()
 
-        shop = normalize_compare(
+        subtitle = clean_text(
             item.get(
-                "shop",
+                "subtitle",
                 ""
             )
-        )
-
-        url = item.get(
-            "url",
-            ""
-        )
-
-        if not url:
-            continue
-
-        key = (
-            shop,
-            title,
-            url,
-        )
-
-        if key in unique:
-            continue
-
-        unique[key] = True
-
-        output.append(
-            item
-        )
-
-    return output
+        ).lower()
 
 
-# =========================================================
-# SEARCH ENGINE 6.5
-# =========================================================
-
-def search_all(query):
-
-    query = clean_text(query)
-
-    if not query:
-        return [], []
-
-    results = []
-    sources = []
-
-    # =====================================================
-    # CARDYX TASK
-    # =====================================================
-
-    def run_cardyx():
-
-        try:
-
-            data = cardyx_search(
-                query
-            )
-
-            return {
-                "shop": "CardyX",
-                "status": "ok",
-                "count": len(data),
-                "results": data,
-            }
-
-        except Exception as e:
-
-            return {
-                "shop": "CardyX",
-                "status": "error",
-                "count": 0,
-                "results": [],
-                "error": str(e),
-            }
-
-    # =====================================================
-    # GENERIC SHOP TASK
-    # =====================================================
-
-    def run_shop(shop):
-
-        try:
-
-            data = shop_search(
-                shop,
-                query
-            )
-
-            return {
-                "shop": shop["name"],
-                "status": "ok",
-                "count": len(data),
-                "results": data,
-            }
-
-        except Exception as e:
-
-            return {
-                "shop": shop["name"],
-                "status": "error",
-                "count": 0,
-                "results": [],
-                "error": str(e),
-            }
-
-    # =====================================================
-    # ALL SHOPS AT ONCE
-    # =====================================================
-
-    all_tasks = []
-
-    all_tasks.append(
-        (
-            "cardyx",
-            None
-        )
-    )
-
-    for shop in GENERIC_SHOPS:
-
-        all_tasks.append(
-            (
-                "shop",
-                shop
-            )
-        )
-
-    max_workers = min(
-        10,
-        len(all_tasks)
-    )
-
-    executor = ThreadPoolExecutor(
-        max_workers=max_workers
-    )
-
-    futures = {}
-
-    try:
-
-        for task_type, data in all_tasks:
-
-            if task_type == "cardyx":
-
-                future = executor.submit(
-                    run_cardyx
-                )
-
-            else:
-
-                future = executor.submit(
-                    run_shop,
-                    data
-                )
-
-            futures[future] = data
-
-        for future in as_completed(
-            futures
+        if (
+            q_lower in title
+            or q_lower in subtitle
+            or title.startswith(q_lower)
         ):
 
-            try:
+            candidates.append(
+                item.copy()
+            )
 
-                response = future.result()
 
-                source = {
-                    "shop":
-                        response["shop"],
+    # -----------------------------------------------------
+    # Add normalized interpretation
+    # -----------------------------------------------------
 
-                    "status":
-                        response["status"],
+    parsed = normalize_query(q)
 
-                    "count":
-                        response["count"],
-                }
+    normalized = parsed.get(
+        "normalized",
+        ""
+    )
 
-                if response.get(
-                    "error"
-                ):
-                    source["error"] = (
-                        response["error"]
-                    )
 
-                sources.append(
-                    source
+    if normalized:
+
+        normalized_lower = normalized.lower()
+
+
+        exists = any(
+            clean_text(
+                item.get(
+                    "query",
+                    ""
                 )
+            ).lower()
+            == normalized_lower
+            for item in candidates
+        )
 
-                if response.get(
-                    "results"
-                ):
 
-                    results.extend(
-                        response["results"]
-                    )
+        if not exists and normalized_lower != q_lower:
 
-            except Exception as e:
+            if parsed.get("product_type"):
 
-                data = futures.get(
-                    future
-                )
-
-                if isinstance(
-                    data,
-                    dict
-                ):
-
-                    shop_name = data.get(
-                        "name",
-                        "Unknown"
-                    )
-
-                else:
-
-                    shop_name = "CardyX"
-
-                sources.append({
-                    "shop":
-                        shop_name,
-
-                    "status":
-                        "error",
-
-                    "count":
-                        0,
-
-                    "error":
-                        str(e),
+                candidates.append({
+                    "title": normalized,
+                    "query": normalized,
+                    "subtitle": "Automaticky rozpoznaný produkt",
+                    "type": "product",
+                    "type_label": "Produkt",
                 })
 
-    finally:
+            elif parsed.get("pokemon"):
 
-        try:
+                candidates.append({
+                    "title": normalized,
+                    "query": normalized,
+                    "subtitle": "Automaticky rozpoznaná karta",
+                    "type": "card",
+                    "type_label": "Karta",
+                })
 
-            executor.shutdown(
-                wait=False,
-                cancel_futures=True
-            )
 
-        except TypeError:
+    # -----------------------------------------------------
+    # Score
+    # -----------------------------------------------------
 
-            executor.shutdown(
-                wait=False
-            )
-
-    # =====================================================
-    # FINAL FILTER
-    # =====================================================
-
-    clean_results = []
-
-    for item in results:
-
-        if not item.get(
-            "title"
-        ):
-            continue
-
-        if not item.get(
-            "url"
-        ):
-            continue
-
-        if item.get(
-            "price_eur"
-        ) is None:
-            continue
-
-        try:
-
-            matches = result_matches_query(
-                item["title"],
-                query
-            )
-
-        except Exception:
-
-            matches = False
-
-        if not matches:
-            continue
-
-        clean_results.append(
-            item
-        )
-
-    # =====================================================
-    # DEDUPLICATION
-    # =====================================================
-
-    results = deduplicate_results(
-        clean_results
+    candidates.sort(
+        key=lambda item:
+        suggestion_score(
+            item,
+            q
+        ),
+        reverse=True
     )
 
-    # =====================================================
-    # CHEAPEST FIRST
-    # =====================================================
 
-    results.sort(
-        key=lambda x: (
-            x.get(
-                "price_eur"
-            )
-            if x.get(
-                "price_eur"
-            ) is not None
-            else 999999
-        )
-    )
-
-    # =====================================================
-    # SOURCE SORT
-    # =====================================================
-
-    sources.sort(
-        key=lambda x: x["shop"]
-    )
-
-    return results, sources
-
-
-# =========================================================
-# SUGGESTIONS
-# =========================================================
-
-STATIC_SUGGESTIONS = [
-    "Pikachu",
-    "Charizard",
-    "Mega Charizard X",
-    "Umbreon",
-    "Eevee",
-    "Mew",
-    "Mewtwo",
-    "Gengar",
-    "Lucario",
-    "Greninja",
-    "Rayquaza",
-    "Gardevoir",
-    "Dragonite",
-    "Gyarados",
-    "Blastoise",
-    "Venusaur",
-    "Lugia",
-    "Ho-Oh",
-    "Arceus",
-    "Dialga",
-    "Palkia",
-    "Zekrom",
-    "Reshiram",
-    "Celebi",
-
-    "Pokémon 151",
-    "Prismatic Evolutions",
-    "Surging Sparks",
-    "Destined Rivals",
-    "Journey Together",
-    "Mega Evolution",
-    "Phantasmal Flames",
-    "Terastal Festival",
-    "Black Bolt",
-    "White Flare",
-    "Perfect Order",
-    "Ascended Heroes",
-    "Pitch Black",
-    "Chaos Rising",
-
-    "Elite Trainer Box",
-    "Booster Box",
-    "Booster Bundle",
-    "Collection Box",
-    "Premium Collection",
-]
-
-
-def get_suggestions(query):
-
-    q = normalize_compare(
-        query
-    )
-
-    if not q:
-        return STATIC_SUGGESTIONS[:12]
-
-    suggestions = []
-
-    for item in STATIC_SUGGESTIONS:
-
-        if q in normalize_compare(
-            item
-        ):
-
-            suggestions.append(
-                item
-            )
-
-    try:
-
-        conn = db()
-
-        rows = conn.execute("""
-            SELECT DISTINCT title
-            FROM discovered_products
-            WHERE title IS NOT NULL
-            ORDER BY discovered_at DESC
-            LIMIT 300
-        """).fetchall()
-
-        conn.close()
-
-    except sqlite3.Error:
-
-        rows = []
-
-    for row in rows:
-
-        title = clean_text(
-            row["title"]
-        )
-
-        if q in normalize_compare(
-            title
-        ):
-
-            suggestions.append(
-                title
-            )
+    # -----------------------------------------------------
+    # Deduplicate
+    # -----------------------------------------------------
 
     output = []
+
     seen = set()
 
-    for item in suggestions:
 
-        key = normalize_compare(
-            item
-        )
+    for item in candidates:
+
+        key = clean_text(
+            item.get(
+                "query",
+                item.get(
+                    "title",
+                    ""
+                )
+            )
+        ).lower()
+
 
         if not key:
             continue
@@ -2538,434 +1957,139 @@ def get_suggestions(query):
         if key in seen:
             continue
 
-        seen.add(
-            key
-        )
+        seen.add(key)
 
-        output.append(
-            item
-        )
+        output.append(item)
 
-        if len(output) >= 20:
+
+        if len(output) >= 8:
             break
 
-    return output
-
-
-# =========================================================
-# API - SUGGESTIONS
-# =========================================================
-
-@app.route(
-    "/api/suggestions"
-)
-def api_suggestions():
-
-    query = request.args.get(
-        "q",
-        "",
-        type=str
-    )
 
     return jsonify({
-        "query": query,
-        "suggestions":
-            get_suggestions(
-                query
-            ),
+        "query": q,
+        "normalized_query": normalized,
+        "suggestions": output
     })
 
 
 # =========================================================
-# API - PARSE
+# API PARSE
 # =========================================================
 
-@app.route(
-    "/api/parse"
-)
+@app.get("/api/parse")
 def api_parse():
 
-    query = request.args.get(
+    q = request.args.get(
         "q",
-        "",
-        type=str
+        ""
     )
 
-    parsed = parse_query(
-        query
+    parsed = normalize_query(q)
+
+    parsed["type"] = classify_query(
+        parsed
     )
 
-    return jsonify({
-        "query": query,
-
-        "normalized":
-            parsed["normalized"],
-
-        "normalized_query":
-            parsed["normalized"],
-
-        "product_type":
-            parsed["product_type"],
-
-        "set":
-            parsed["set"],
-
-        "pokemon":
-            parsed["pokemon"],
-
-        "card_number":
-            parsed["card_number"],
-
-        "suffix":
-            parsed["suffix"],
-    })
+    return jsonify(parsed)
 
 
 # =========================================================
-# API - SEARCH
+# API SEARCH
 # =========================================================
 
-@app.route(
-    "/api/search"
-)
+@app.get("/api/search")
 def api_search():
 
-    original_query = request.args.get(
-        "q",
-        "",
-        type=str
+    original_query = clean_text(
+        request.args.get(
+            "q",
+            ""
+        )
     )
 
-    original_query = clean_text(
-        original_query
-    )
 
     if not original_query:
 
         return jsonify({
-            "query": "",
-            "normalized_query": "",
-            "results": [],
-            "sources": [],
-            "summary": {
-                "count": 0,
-                "lowest": None,
-                "average": None,
-            },
-        })
-
-    try:
-
-        parsed = parse_query(
-            original_query
-        )
-
-        normalized_query = (
-            parsed["normalized"]
-            or original_query
-        )
-
-        results, sources = search_all(
-            normalized_query
-        )
-
-        save_history(
-            original_query,
-            results
-        )
-
-        prices = [
-            x["price_eur"]
-            for x in results
-            if x.get(
-                "price_eur"
-            ) is not None
-        ]
-
-        lowest = (
-            round(
-                min(prices),
-                2
-            )
-            if prices
-            else None
-        )
-
-        average = (
-            round(
-                sum(prices)
-                / len(prices),
-                2
-            )
-            if prices
-            else None
-        )
-
-        return jsonify({
-
-            "query":
-                original_query,
-
-            "normalized_query":
-                normalized_query,
-
-            "normalized":
-                normalized_query,
-
-            "parsed": {
-
-                "product_type":
-                    parsed["product_type"],
-
-                "set":
-                    parsed["set"],
-
-                "pokemon":
-                    parsed["pokemon"],
-
-                "card_number":
-                    parsed["card_number"],
-
-                "suffix":
-                    parsed["suffix"],
-            },
-
-            "results":
-                results,
-
-            "sources":
-                sources,
-
-            "summary": {
-
-                "count":
-                    len(results),
-
-                "lowest":
-                    lowest,
-
-                "average":
-                    average,
-            },
-
-            "czk_per_eur":
-                CZK_PER_EUR,
-
-            "checked_at":
-                now_iso(),
-
-        })
-
-    except Exception as e:
-
-        return jsonify({
-
-            "query":
-                original_query,
-
-            "normalized_query":
-                "",
-
-            "results":
-                [],
-
-            "sources":
-                [],
-
-            "summary": {
-
-                "count":
-                    0,
-
-                "lowest":
-                    None,
-
-                "average":
-                    None,
-            },
-
-            "error":
-                str(e),
-
-            "error_type":
-                type(e).__name__,
-
-        }), 500
+            "error": "Chýba vyhľadávanie."
+        }), 400
 
 
-# =========================================================
-# API - PRODUCTS
-# =========================================================
-
-@app.route(
-    "/api/products"
-)
-def api_products():
-
-    limit = request.args.get(
-        "limit",
-        100,
-        type=int
+    parsed = normalize_query(
+        original_query
     )
 
-    limit = max(
-        1,
-        min(
-            limit,
-            500
+
+    normalized_query = parsed.get(
+        "normalized",
+        original_query
+    )
+
+
+    results = search_all(
+        normalized_query
+    )
+
+
+    save_history(
+        original_query,
+        results
+    )
+
+
+    info = {
+        "title": normalized_query,
+        "subtitle": "",
+        "image": "",
+    }
+
+
+    if parsed.get("set_name"):
+
+        info["subtitle"] = (
+            "Set: " +
+            parsed["set_name"]
         )
-    )
 
-    conn = db()
+    elif parsed.get("pokemon"):
 
-    rows = conn.execute("""
-        SELECT
-            shop,
-            country,
-            title,
-            url,
-            price_eur,
-            condition,
-            discovered_at
-        FROM discovered_products
-        ORDER BY discovered_at DESC
-        LIMIT ?
-    """, (
-        limit,
-    )).fetchall()
-
-    conn.close()
-
-    return jsonify([
-        dict(row)
-        for row in rows
-    ])
+        info["subtitle"] = (
+            "Pokémon: " +
+            parsed["pokemon"]
+        )
 
 
-# =========================================================
-# API - PRICE HISTORY
-# =========================================================
+    return jsonify({
 
-@app.route(
-    "/api/history"
-)
-def api_history():
+        "query": original_query,
 
-    query = request.args.get(
-        "q",
-        "",
-        type=str
-    )
+        "normalized_query":
+            normalized_query,
 
-    conn = db()
+        "parsed":
+            parsed,
 
-    if query:
+        "results":
+            results,
 
-        rows = conn.execute("""
-            SELECT
-                query,
-                shop,
-                title,
-                price_eur,
-                checked_at
-            FROM price_history
-            WHERE query = ?
-            ORDER BY checked_at DESC
-            LIMIT 200
-        """, (
-            query,
-        )).fetchall()
+        "czk_per_eur":
+            CZK_PER_EUR,
 
-    else:
+        "info":
+            info,
 
-        rows = conn.execute("""
-            SELECT
-                query,
-                shop,
-                title,
-                price_eur,
-                checked_at
-            FROM price_history
-            ORDER BY checked_at DESC
-            LIMIT 200
-        """).fetchall()
-
-    conn.close()
-
-    return jsonify([
-        dict(row)
-        for row in rows
-    ])
-
-
-# =========================================================
-# INDEX FINDER
-# =========================================================
-
-def find_index():
-
-    possible_paths = [
-
-        os.path.join(
-            BASE_DIR,
-            "templates",
-            "index.html"
-        ),
-
-        os.path.join(
-            BASE_DIR,
-            "Templates",
-            "index.html"
-        ),
-
-        os.path.join(
-            BASE_DIR,
-            "index.html"
-        ),
-    ]
-
-    for path in possible_paths:
-
-        if os.path.isfile(
-            path
-        ):
-
-            return True, path
-
-    return (
-        False,
-        possible_paths[0]
-    )
+    })
 
 
 # =========================================================
 # HEALTH
 # =========================================================
 
-@app.route(
-    "/health"
-)
+@app.get("/health")
 def health():
 
-    conn = db()
-
-    try:
-
-        discovered = conn.execute("""
-            SELECT COUNT(*) AS count
-            FROM discovered_products
-        """).fetchone()["count"]
-
-        history = conn.execute("""
-            SELECT COUNT(*) AS count
-            FROM price_history
-        """).fetchone()["count"]
-
-    finally:
-
-        conn.close()
-
-    exists, path = find_index()
+    index_path = find_index()
 
     return jsonify({
 
@@ -2982,85 +2106,63 @@ def health():
             BASE_DIR,
 
         "index_exists":
-            exists,
+            bool(index_path),
 
         "index_path":
-            path,
-
-        "discovered_products":
-            discovered,
-
-        "price_history":
-            history,
-
-        "shops":
-            10,
+            index_path,
 
     })
 
 
 # =========================================================
-# FRONTEND
+# HOME
 # =========================================================
 
-@app.route("/")
-def index():
+@app.get("/")
+def home():
 
-    exists, path = find_index()
+    index_path = find_index()
 
-    if exists:
+    if not index_path:
 
-        try:
+        return Response(
+            """
+            <h1>CardRadar</h1>
+            <p>index.html nebol nájdený.</p>
+            """,
+            status=500,
+            mimetype="text/html"
+        )
 
-            with open(
-                path,
-                "r",
-                encoding="utf-8"
-            ) as f:
 
-                html = f.read()
+    try:
+
+        with open(
+            index_path,
+            "r",
+            encoding="utf-8"
+        ) as f:
 
             return Response(
-                html,
+                f.read(),
                 mimetype="text/html"
             )
 
-        except Exception as e:
+    except Exception as e:
 
-            return Response(
+        return Response(
+            (
                 "<h1>CardRadar</h1>"
-                "<p>"
-                "Chyba pri načítaní "
-                "index.html:"
-                "</p>"
-                f"<pre>{clean_text(e)}</pre>",
-                status=500,
-                mimetype="text/html",
-            )
-
-    return Response(
-        """
-        <!doctype html>
-        <html lang="sk">
-        <head>
-            <meta charset="utf-8">
-            <title>CardRadar</title>
-        </head>
-        <body>
-            <h1>CardRadar</h1>
-            <p>
-                index.html sa nenašiel.
-            </p>
-        </body>
-        </html>
-        """,
-        status=404,
-        mimetype="text/html",
-    )
+                "<p>Chyba pri načítaní stránky.</p>"
+                f"<pre>{e}</pre>"
+            ),
+            status=500,
+            mimetype="text/html"
+        )
 
 
 # =========================================================
-# START
+# RUN
 # =========================================================
 
 if __name__ == "__main__":
@@ -3068,7 +2170,7 @@ if __name__ == "__main__":
     port = int(
         os.environ.get(
             "PORT",
-            5000
+            "10000"
         )
     )
 
