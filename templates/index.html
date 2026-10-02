@@ -309,6 +309,10 @@ button.primary:disabled{
   font-size:12px;
 }
 
+/* =========================================================
+   OFFER ROW
+========================================================= */
+
 .offer{
   display:flex;
   justify-content:space-between;
@@ -321,6 +325,68 @@ button.primary:disabled{
 .offer:last-child{
   border-bottom:0;
 }
+
+/* =========================================================
+   PRODUCT IMAGE
+========================================================= */
+
+.offer-image-wrap{
+  width:88px;
+  height:108px;
+  flex:none;
+  border-radius:10px;
+  overflow:hidden;
+  background:#0f172a;
+  border:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+
+.offer-image-link{
+  width:100%;
+  height:100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  text-decoration:none;
+}
+
+.offer-image{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  display:block;
+  padding:5px;
+  transition:
+    transform .15s ease;
+}
+
+.offer-image-link:hover .offer-image{
+  transform:scale(1.04);
+}
+
+.offer-image-placeholder{
+  width:100%;
+  height:100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-direction:column;
+  gap:5px;
+  color:var(--sub);
+  font-size:11px;
+  text-align:center;
+}
+
+.offer-image-placeholder-icon{
+  font-size:26px;
+  opacity:.75;
+}
+
+/* =========================================================
+   OFFER MAIN
+========================================================= */
 
 .offer-main{
   min-width:0;
@@ -339,6 +405,10 @@ button.primary:disabled{
   flex-wrap:wrap;
   gap:4px;
 }
+
+/* =========================================================
+   OFFER PRICE
+========================================================= */
 
 .offer-price{
   flex:none;
@@ -444,14 +514,27 @@ button.primary:disabled{
   }
 
   .offer{
-    align-items:flex-start;
-    flex-direction:column;
+    display:grid;
+    grid-template-columns:76px minmax(0,1fr);
+    gap:11px;
+    align-items:start;
+  }
+
+  .offer-image-wrap{
+    width:76px;
+    height:96px;
+  }
+
+  .offer-main{
+    min-width:0;
   }
 
   .offer-price{
+    grid-column:1 / -1;
     width:100%;
     text-align:left;
     min-width:0;
+    padding-left:87px;
   }
 
   .price{
@@ -574,7 +657,7 @@ button.primary:disabled{
 
 /* =========================================================
    CARD RADAR FRONTEND
-   VERSION 5.16
+   VERSION 5.17
 ========================================================= */
 
 /* =========================================================
@@ -806,6 +889,151 @@ function esc(s){
       "'":'&#039;'
     }[m])
   );
+
+}
+
+/* =========================================================
+   RESULT IMAGE
+========================================================= */
+
+function getResultImage(item){
+
+  if(!item){
+    return '';
+  }
+
+  const fields = [
+    'image',
+    'image_url',
+    'imageUrl',
+    'thumbnail',
+    'thumbnail_url',
+    'thumbnailUrl'
+  ];
+
+  for(
+    const field
+    of fields
+  ){
+
+    const value =
+      item[field];
+
+    if(
+      value !== undefined &&
+      value !== null &&
+      String(value).trim()
+    ){
+
+      return String(value).trim();
+
+    }
+
+  }
+
+  return '';
+
+}
+
+function renderResultImage(item){
+
+  const imageUrl =
+    getResultImage(item);
+
+  const title =
+    esc(
+      item?.title ||
+      'Pokémon produkt'
+    );
+
+  const link =
+    item?.link
+      ? esc(item.link)
+      : '';
+
+  if(!imageUrl){
+
+    return `
+      <div class="offer-image-wrap">
+
+        <div class="offer-image-placeholder">
+
+          <div class="offer-image-placeholder-icon">
+            🃏
+          </div>
+
+          <div>
+            Obrázok<br>
+            nie je dostupný
+          </div>
+
+        </div>
+
+      </div>
+    `;
+
+  }
+
+  const imageHtml = `
+    <img
+      class="offer-image"
+      src="${esc(imageUrl)}"
+      alt="${title}"
+      loading="lazy"
+      onerror="this.style.display='none';this.parentElement.querySelector('.image-fallback').style.display='flex';"
+    >
+  `;
+
+  const fallbackHtml = `
+    <div
+      class="offer-image-placeholder image-fallback"
+      style="display:none;"
+    >
+
+      <div class="offer-image-placeholder-icon">
+        🃏
+      </div>
+
+      <div>
+        Obrázok<br>
+        nedostupný
+      </div>
+
+    </div>
+  `;
+
+  if(link){
+
+    return `
+      <div class="offer-image-wrap">
+
+        <a
+          class="offer-image-link"
+          href="${link}"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+
+          ${imageHtml}
+
+          ${fallbackHtml}
+
+        </a>
+
+      </div>
+    `;
+
+  }
+
+  return `
+    <div class="offer-image-wrap">
+
+      ${imageHtml}
+
+      ${fallbackHtml}
+
+    </div>
+  `;
 
 }
 
@@ -1947,6 +2175,8 @@ function renderResults(results){
 
             <div class="offer">
 
+              ${renderResultImage(x)}
+
               <div class="offer-main">
 
                 <div class="offer-title">
@@ -2249,15 +2479,6 @@ async function search(){
 
     }
 
-    /*
-     * Žiadny veľký preview panel.
-     * Žiadne "Pikachu: Pokémon Pikachu".
-     * Žiadny veľký status panel.
-     *
-     * Výsledky zobrazíme priamo
-     * pod vyhľadávaním.
-     */
-
     stage =
       'spracovanie normalizácie';
 
@@ -2288,11 +2509,6 @@ async function search(){
       ? d.results
       : [];
 
-    /*
-     * Kompaktný riadok namiesto
-     * veľkého informačného panelu.
-     */
-
     status.innerHTML =
       renderCompactSummary(
         normalized || q,
@@ -2306,11 +2522,6 @@ async function search(){
     renderResults(
       resultData
     );
-
-    /*
-     * Posledná poistka:
-     * autocomplete musí zostať zavreté.
-     */
 
     hideSuggestions();
 
