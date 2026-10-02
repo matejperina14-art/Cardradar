@@ -1,7 +1,6 @@
 import os
 import re
 import sqlite3
-import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote, urljoin
@@ -70,24 +69,25 @@ def parse_price(text):
         return None
     text = text.replace("\xa0", " ").strip()
     patterns = [
-        r"(\d[\d\s.]*)\s*(?:€|EUR)",
-        r"(\d[\d\s.]*)\s*(?:Kč|CZK)",
+        r"(\d[\d\s.,]*)\s*(?:€|EUR)",
+        r"(\d[\d\s.,]*)\s*(?:Kč|CZK)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.I)
         if m:
-            raw = m.group(1).replace(" ", "").replace(".", "")
+            raw = m.group(1).replace(" ", "").replace(".", "").replace(",", ".")
             try:
-                value = float(raw.replace(",", "."))
+                # Ošetrenie pre prípad viacerých desatinných bodiek/čiarkok
+                if raw.count('.') > 1:
+                    parts = raw.split('.')
+                    raw = "".join(parts[:-1]) + "." + parts[-1]
+                
+                value = float(raw)
                 if "Kč" in m.group(0) or "CZK" in m.group(0):
                     return value / get_czk_rate()
                 return value
             except ValueError:
                 pass
-    # fallback for decimal euro formats
-    m = re.search(r"(\d+(?:[,.]\d{1,2})?)\s*€", text)
-    if m:
-        return float(m.group(1).replace(",", "."))
     return None
 
 def get_czk_rate():
@@ -124,20 +124,30 @@ def extract_candidates(html, base_url, query):
     qwords = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", query) if len(w) > 2]
     candidates = []
 
-    # Look through links/cards/product containers and inspect their visible text.
+    # Zoznam slov, ktoré chceme ignorovať (plyšáky, oblečenie, doplnky atď.)
+    exclude_words = ["plyšák", "plyšová", "plush", "tričko", "tricko", "figúrka", "figurka", "hrnček", "obal", "sleeves", "deck box", "odznak"]
+
     nodes = soup.find_all(["a", "article", "li", "div"])
     seen = set()
     for node in nodes:
         text = " ".join(node.stripped_strings)
-        if len(text) < 10 or len(text) > 500:
+        if len(text) < 10 or len(text) > 600:
             continue
         low = text.lower()
+        
+        # Preskočiť, ak produkt obsahuje nežiaduci výraz (plyšák a pod.)
+        if any(bad in low for bad in exclude_words):
+            continue
+
         score = sum(1 for w in qwords if w in low)
         if score == 0:
             continue
+            
         price = parse_price(text)
-        if price is None or price <= 0 or price > 100000:
+        # Nastavený reálny cenový strop (napr. karta málokedy stojí viac ako 2500 € v bežnom obchode)
+        if price is None or price <= 0 or price > 2500:
             continue
+            
         link = node if node.name == "a" and node.get("href") else node.find("a", href=True)
         if not link:
             continue
@@ -145,13 +155,14 @@ def extract_candidates(html, base_url, query):
         if href in seen:
             continue
         seen.add(href)
+        
         title = " ".join(link.stripped_strings) or text[:160]
-        # Prefer nearby heading/title text if available.
         for tag in node.find_all(["h1","h2","h3","h4","strong"], limit=2):
             t = " ".join(tag.stripped_strings)
             if len(t) >= 3:
                 title = t
                 break
+                
         candidates.append({
             "title": title[:220],
             "price_eur": round(price, 2),
