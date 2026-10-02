@@ -3,6 +3,7 @@ import re
 import sqlite3
 import urllib.parse
 import time
+import json
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -13,10 +14,10 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 5.8
+# VERSION 5.9
 # =========================================================
 
-VERSION = "5.8"
+VERSION = "5.9"
 
 app = Flask(__name__)
 
@@ -24,7 +25,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CZK_PER_EUR = 24.4618
 
-DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
+DB_PATH = os.path.join(
+    BASE_DIR,
+    "cardradar.db"
+)
 
 HEADERS = {
     "User-Agent": (
@@ -38,7 +42,9 @@ HEADERS = {
         "application/xml;q=0.9,image/avif,image/webp,"
         "*/*;q=0.8"
     ),
-    "Accept-Language": "cs-CZ,sk-SK;q=0.9,en;q=0.8",
+    "Accept-Language": (
+        "cs-CZ,sk-SK;q=0.9,en;q=0.8"
+    ),
 }
 
 
@@ -76,9 +82,20 @@ init_db()
 def find_index():
 
     candidates = [
-        os.path.join(BASE_DIR, "templates", "index.html"),
-        os.path.join(BASE_DIR, "Templates", "index.html"),
-        os.path.join(BASE_DIR, "index.html"),
+        os.path.join(
+            BASE_DIR,
+            "templates",
+            "index.html"
+        ),
+        os.path.join(
+            BASE_DIR,
+            "Templates",
+            "index.html"
+        ),
+        os.path.join(
+            BASE_DIR,
+            "index.html"
+        ),
     ]
 
     for path in candidates:
@@ -97,16 +114,25 @@ def clean_text(value):
 
     value = str(value or "")
 
-    value = value.replace("\xa0", " ")
+    value = value.replace(
+        "\xa0",
+        " "
+    )
 
-    value = re.sub(r"\s+", " ", value)
+    value = re.sub(
+        r"\s+",
+        " ",
+        value
+    )
 
     return value.strip()
 
 
 def words(text):
 
-    text = clean_text(text).lower()
+    text = clean_text(
+        text
+    ).lower()
 
     return set(
         re.findall(
@@ -167,7 +193,6 @@ SET_ALIASES = {
 
     "mega brave": "mega evolution mega brave",
     "mega evolution": "mega evolution",
-
 }
 
 
@@ -197,7 +222,6 @@ PRODUCT_ALIASES = {
     "blister pack": "blister",
 
     "box": "box",
-
 }
 
 
@@ -248,7 +272,6 @@ POKEMON_ALIASES = {
     "sylveon": "Sylveon",
     "leafeon": "Leafeon",
     "glaceon": "Glaceon",
-
 }
 
 
@@ -265,9 +288,12 @@ SUGGESTION_CATALOG = []
 
 def normalize_query(query):
 
-    original = normalize_spaces(query)
+    original = normalize_spaces(
+        query
+    )
 
     if not original:
+
         return {
             "original": "",
             "normalized": "",
@@ -297,19 +323,54 @@ def normalize_query(query):
     product_type = ""
 
     product_patterns = [
-        ("elite trainer box", r"\belite\s+trainer\s+box\b"),
-        ("elite trainer box", r"\betb\b"),
-        ("booster box", r"\bbooster\s*box\b"),
-        ("booster bundle", r"\bbooster\s*bundle\b"),
-        ("collection box", r"\bcollection\s+box\b"),
-        ("premium collection", r"\bpremium\s+collection\b"),
-        ("blister", r"\bblister(?:\s+pack)?\b"),
-        ("tin", r"\btins?\b"),
+
+        (
+            "elite trainer box",
+            r"\belite\s+trainer\s+box\b"
+        ),
+
+        (
+            "elite trainer box",
+            r"\betb\b"
+        ),
+
+        (
+            "booster box",
+            r"\bbooster\s*box\b"
+        ),
+
+        (
+            "booster bundle",
+            r"\bbooster\s*bundle\b"
+        ),
+
+        (
+            "collection box",
+            r"\bcollection\s+box\b"
+        ),
+
+        (
+            "premium collection",
+            r"\bpremium\s+collection\b"
+        ),
+
+        (
+            "blister",
+            r"\bblister(?:\s+pack)?\b"
+        ),
+
+        (
+            "tin",
+            r"\btins?\b"
+        ),
     ]
 
     for canonical, pattern in product_patterns:
 
-        if re.search(pattern, q):
+        if re.search(
+            pattern,
+            q
+        ):
 
             product_type = canonical
 
@@ -335,7 +396,10 @@ def normalize_query(query):
             r"\b"
         )
 
-        if re.search(pattern, q):
+        if re.search(
+            pattern,
+            q
+        ):
 
             set_name = canonical
 
@@ -351,7 +415,10 @@ def normalize_query(query):
 
         known_sets = sorted(
             set(
-                list(SET_ALIASES.values()) +
+                list(
+                    SET_ALIASES.values()
+                )
+                +
                 [
                     "surging sparks",
                     "pokemon 151",
@@ -375,11 +442,16 @@ def normalize_query(query):
 
             pattern = (
                 r"\b" +
-                re.escape(candidate.lower()) +
+                re.escape(
+                    candidate.lower()
+                ) +
                 r"\b"
             )
 
-            if re.search(pattern, q):
+            if re.search(
+                pattern,
+                q
+            ):
 
                 set_name = candidate
 
@@ -405,7 +477,10 @@ def normalize_query(query):
             r"\b"
         )
 
-        if re.search(pattern, q):
+        if re.search(
+            pattern,
+            q
+        ):
 
             pokemon = canonical
 
@@ -427,7 +502,9 @@ def normalize_query(query):
 
     if suffix_match:
 
-        suffix = suffix_match.group(1)
+        suffix = (
+            suffix_match.group(1)
+        )
 
         q = re.sub(
             r"\b(vmax|vstar|ex|gx|v)\b",
@@ -451,19 +528,27 @@ def normalize_query(query):
         parts.append(pokemon)
 
     if suffix:
-        parts.append(suffix.lower())
+        parts.append(
+            suffix.lower()
+        )
 
     if q:
         parts.append(q)
 
     if card_number:
-        parts.append(card_number)
+        parts.append(
+            card_number
+        )
 
     if set_name:
-        parts.append(set_name)
+        parts.append(
+            set_name
+        )
 
     if product_type:
-        parts.append(product_type)
+        parts.append(
+            product_type
+        )
 
     normalized = normalize_spaces(
         " ".join(parts)
@@ -474,10 +559,14 @@ def normalize_query(query):
         normalized_parts = []
 
         if set_name:
-            normalized_parts.append(set_name)
+            normalized_parts.append(
+                set_name
+            )
 
         if pokemon:
-            normalized_parts.append(pokemon)
+            normalized_parts.append(
+                pokemon
+            )
 
         if suffix:
             normalized_parts.append(
@@ -494,12 +583,16 @@ def normalize_query(query):
         )
 
         normalized = normalize_spaces(
-            " ".join(normalized_parts)
+            " ".join(
+                normalized_parts
+            )
         )
 
     return {
         "original": original,
-        "normalized": normalized or original,
+        "normalized": (
+            normalized or original
+        ),
         "pokemon": pokemon,
         "set_name": set_name,
         "product_name": product_type,
@@ -514,7 +607,9 @@ def normalize_query(query):
 
 def classify_query(parsed):
 
-    if parsed.get("product_type"):
+    if parsed.get(
+        "product_type"
+    ):
         return "sealed"
 
     if (
@@ -527,12 +622,14 @@ def classify_query(parsed):
 
 
 # =========================================================
-# CARD NUMBER HELPERS
+# CARD NUMBER
 # =========================================================
 
 def normalize_card_number(value):
 
-    value = clean_text(value)
+    value = clean_text(
+        value
+    )
 
     match = re.search(
         r"\b(\d{1,4})\s*/\s*(\d{1,4})\b",
@@ -550,11 +647,13 @@ def normalize_card_number(value):
 
 def card_number_from_query(query):
 
-    return normalize_card_number(query)
+    return normalize_card_number(
+        query
+    )
 
 
 # =========================================================
-# ADVANCED CARD MATCHING
+# CARD MATCHING
 # =========================================================
 
 def card_matches_query(
@@ -606,16 +705,14 @@ def card_matches_query(
         query
     ).lower()
 
-    # -----------------------------------------------------
-    # POKEMON
-    # -----------------------------------------------------
-
     if pokemon:
 
         pokemon_found = (
             re.search(
                 r"\b" +
-                re.escape(pokemon) +
+                re.escape(
+                    pokemon
+                ) +
                 r"\b",
                 searchable,
                 re.IGNORECASE
@@ -626,10 +723,6 @@ def card_matches_query(
         if not pokemon_found:
             return False
 
-    # -----------------------------------------------------
-    # CARD NUMBER
-    # -----------------------------------------------------
-
     if card_number:
 
         normalized_searchable = re.sub(
@@ -639,24 +732,18 @@ def card_matches_query(
         )
 
         normalized_card_number = (
-            card_number
-            .replace(" ", "")
+            card_number.replace(
+                " ",
+                ""
+            )
         )
 
         if normalized_card_number not in (
             normalized_searchable
         ):
-
             return False
 
-    # -----------------------------------------------------
-    # SET
-    # -----------------------------------------------------
-
     if set_name:
-
-        # Exact set words are preferred,
-        # but allow common abbreviations.
 
         set_words = words(
             set_name
@@ -672,7 +759,9 @@ def card_matches_query(
 
             if canonical.lower() == set_name:
 
-                abbreviation = alias.lower()
+                abbreviation = (
+                    alias.lower()
+                )
 
                 break
 
@@ -689,10 +778,6 @@ def card_matches_query(
         if not set_found:
             return False
 
-    # -----------------------------------------------------
-    # CARD VARIANTS
-    # -----------------------------------------------------
-
     suffix_match = re.search(
         r"\b(vmax|vstar|ex|gx|v)\b",
         original_lower
@@ -700,7 +785,9 @@ def card_matches_query(
 
     if suffix_match:
 
-        suffix = suffix_match.group(1)
+        suffix = (
+            suffix_match.group(1)
+        )
 
         if not re.search(
             r"\b" +
@@ -768,7 +855,9 @@ def sealed_matches_query(
 
             if canonical.lower() == set_name:
 
-                abbreviation = alias.lower()
+                abbreviation = (
+                    alias.lower()
+                )
 
                 break
 
@@ -785,7 +874,9 @@ def sealed_matches_query(
 
     if product_type:
 
-        if product_type == "elite trainer box":
+        if product_type == (
+            "elite trainer box"
+        ):
 
             if not (
                 "elite trainer box"
@@ -802,7 +893,8 @@ def sealed_matches_query(
             return False
 
     if (
-        product_type == "elite trainer box"
+        product_type ==
+        "elite trainer box"
         and re.search(
             r"\b(case|10x|12x|6x)\b",
             searchable
@@ -814,7 +906,7 @@ def sealed_matches_query(
 
 
 # =========================================================
-# PRICE PARSER
+# PRICE
 # =========================================================
 
 def parse_price(text):
@@ -822,10 +914,14 @@ def parse_price(text):
     if not text:
         return None
 
-    text = clean_text(text)
+    text = clean_text(
+        text
+    )
 
     eur_patterns = [
+
         r"(\d{1,6}(?:[.,]\d{1,2})?)\s*€",
+
         r"€\s*(\d{1,6}(?:[.,]\d{1,2})?)",
     ]
 
@@ -888,7 +984,9 @@ def parse_price(text):
                 pass
 
     czk_patterns = [
+
         r"(\d{1,8}(?:[.,]\d{1,2})?)\s*(?:Kč|CZK)",
+
         r"(?:Kč|CZK)\s*(\d{1,8}(?:[.,]\d{1,2})?)",
     ]
 
@@ -911,7 +1009,9 @@ def parse_price(text):
 
             try:
 
-                czk = float(value)
+                czk = float(
+                    value
+                )
 
                 return (
                     czk /
@@ -925,7 +1025,7 @@ def parse_price(text):
 
 
 # =========================================================
-# MERCH BLACKLIST
+# MERCH / NON CARD FILTER
 # =========================================================
 
 MERCH_BLACKLIST = [
@@ -938,6 +1038,11 @@ MERCH_BLACKLIST = [
     "figurka",
     "figure",
     "figurine",
+
+    "funko",
+    "funko pop",
+    "pop!",
+    "pop vinyl",
 
     "hrnček",
     "hrnek",
@@ -984,26 +1089,620 @@ MERCH_BLACKLIST = [
     "sticker",
     "nálepka",
     "nalepka",
+
+    "sluchátka",
+    "sluchatka",
+    "headphones",
+    "earphones",
+
+    "hračka",
+    "hracka",
+    "toy",
+    "toys",
+
+    "lampa",
+    "lamp",
+
+    "fľaša",
+    "flasa",
+    "bottle",
+
+    "peňaženka",
+    "penezenka",
+    "wallet",
+
+    "puzdro",
+    "pouzdro",
+    "case",
+
+    "čepice",
+    "cepice",
+    "cap",
+
+    "deka",
+    "blanket",
+
+    "polštář",
+    "polstar",
+    "vankúš",
+    "vankus",
 ]
 
 
-def is_merch(title):
+def is_merch(
+    title,
+    extra_text=""
+):
 
-    t = clean_text(
-        title
+    searchable = (
+        clean_text(title) +
+        " " +
+        clean_text(extra_text)
     ).lower()
 
     return any(
-        word in t
+        word in searchable
         for word in MERCH_BLACKLIST
     )
+
+
+# =========================================================
+# VESLEY DRAK URL FILTER
+# =========================================================
+
+VESLEY_BLOCKED_PATHS = [
+
+    "/kosik",
+    "/cart",
+    "/checkout",
+    "/login",
+    "/registrace",
+    "/registracia",
+    "/kontakt",
+    "/blog",
+    "/novinky",
+    "/clanky",
+    "/category/",
+    "/kategorie/",
+    "/znacky/",
+    "/vyrobci/",
+    "/produkty/pokemon-karty/",
+]
+
+
+def is_vesely_product_url(url):
+
+    parsed = urllib.parse.urlparse(
+        url
+    )
+
+    host = (
+        parsed.netloc
+        or ""
+    ).lower()
+
+    path = (
+        parsed.path
+        or ""
+    ).lower()
+
+    if (
+        "vesely-drak.cz"
+        not in host
+    ):
+        return False
+
+    if not path.startswith(
+        "/produkty/"
+    ):
+        return False
+
+    for blocked in (
+        VESLEY_BLOCKED_PATHS
+    ):
+
+        if path == blocked:
+            return False
+
+        if path.startswith(
+            blocked
+        ):
+
+            # Special case:
+            # /produkty/pokemon-karty/
+            # can contain real products,
+            # therefore only block exact category.
+            if blocked == (
+                "/produkty/pokemon-karty/"
+            ):
+                if path == blocked:
+                    return False
+                continue
+
+            return False
+
+    parts = [
+        x for x in path.split("/")
+        if x
+    ]
+
+    # Product URLs normally contain more
+    # than just /produkty/category/
+    if len(parts) < 3:
+        return False
+
+    return True
+
+
+# =========================================================
+# JSON-LD HELPERS
+# =========================================================
+
+def extract_jsonld(
+    soup
+):
+
+    objects = []
+
+    for script in soup.find_all(
+        "script",
+        type="application/ld+json"
+    ):
+
+        raw = script.string
+
+        if not raw:
+            raw = script.get_text(
+                strip=True
+            )
+
+        if not raw:
+            continue
+
+        try:
+
+            data = json.loads(
+                raw
+            )
+
+        except Exception:
+            continue
+
+        if isinstance(
+            data,
+            list
+        ):
+
+            objects.extend(
+                data
+            )
+
+        elif isinstance(
+            data,
+            dict
+        ):
+
+            if isinstance(
+                data.get("@graph"),
+                list
+            ):
+
+                objects.extend(
+                    data["@graph"]
+                )
+
+            else:
+
+                objects.append(
+                    data
+                )
+
+    return objects
+
+
+def jsonld_product_data(
+    soup
+):
+
+    title = ""
+    price = None
+    description = ""
+
+    objects = extract_jsonld(
+        soup
+    )
+
+    for obj in objects:
+
+        if not isinstance(
+            obj,
+            dict
+        ):
+            continue
+
+        obj_type = str(
+            obj.get(
+                "@type",
+                ""
+            )
+        ).lower()
+
+        if (
+            "product"
+            not in obj_type
+        ):
+            continue
+
+        if not title:
+
+            title = clean_text(
+                obj.get(
+                    "name",
+                    ""
+                )
+            )
+
+        if not description:
+
+            description = clean_text(
+                obj.get(
+                    "description",
+                    ""
+                )
+            )
+
+        offers = obj.get(
+            "offers"
+        )
+
+        if isinstance(
+            offers,
+            dict
+        ):
+
+            price_value = offers.get(
+                "price"
+            )
+
+            if price_value:
+
+                try:
+
+                    currency = clean_text(
+                        offers.get(
+                            "priceCurrency",
+                            ""
+                        )
+                    ).upper()
+
+                    if currency == "CZK":
+
+                        price = (
+                            float(
+                                price_value
+                            )
+                            /
+                            CZK_PER_EUR
+                        )
+
+                    elif currency == "EUR":
+
+                        price = float(
+                            price_value
+                        )
+
+                except:
+                    pass
+
+        break
+
+    return {
+        "title": title,
+        "price_eur": price,
+        "description": description,
+    }
+
+
+# =========================================================
+# VESLEY DETAIL PARSER
+# =========================================================
+
+def parse_vesely_product_page(
+    url,
+    html
+):
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
+
+    json_data = jsonld_product_data(
+        soup
+    )
+
+    title = json_data.get(
+        "title",
+        ""
+    )
+
+    if not title:
+
+        h1 = soup.find(
+            "h1"
+        )
+
+        if h1:
+
+            title = clean_text(
+                h1.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+    if not title:
+
+        meta_title = soup.find(
+            "meta",
+            attrs={
+                "property": "og:title"
+            }
+        )
+
+        if meta_title:
+
+            title = clean_text(
+                meta_title.get(
+                    "content",
+                    ""
+                )
+            )
+
+    price = json_data.get(
+        "price_eur"
+    )
+
+    # -----------------------------------------------------
+    # PRODUCT TEXT
+    # -----------------------------------------------------
+
+    body_text = clean_text(
+        soup.get_text(
+            " ",
+            strip=True
+        )
+    )
+
+    description = json_data.get(
+        "description",
+        ""
+    )
+
+    # -----------------------------------------------------
+    # META DESCRIPTION
+    # -----------------------------------------------------
+
+    meta_description = soup.find(
+        "meta",
+        attrs={
+            "name": "description"
+        }
+    )
+
+    if meta_description:
+
+        description = (
+            description +
+            " " +
+            clean_text(
+                meta_description.get(
+                    "content",
+                    ""
+                )
+            )
+        )
+
+    description = normalize_spaces(
+        description
+    )
+
+    # -----------------------------------------------------
+    # PRICE FALLBACK
+    # -----------------------------------------------------
+
+    if price is None:
+
+        # First try obvious price elements.
+        price_selectors = [
+            ".price",
+            ".product-price",
+            ".price-final",
+            ".price-without-vat",
+            "[itemprop='price']",
+        ]
+
+        for selector in price_selectors:
+
+            for element in soup.select(
+                selector
+            ):
+
+                candidate = (
+                    element.get(
+                        "content",
+                        ""
+                    )
+                    or
+                    element.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                parsed = parse_price(
+                    candidate
+                )
+
+                if parsed is not None:
+
+                    # If itemprop=price,
+                    # currency may be CZK.
+                    if (
+                        element.get(
+                            "itemprop"
+                        )
+                        == "price"
+                    ):
+
+                        currency_element = (
+                            element.find_parent(
+                                attrs={
+                                    "itemtype":
+                                    re.compile(
+                                        "Product",
+                                        re.I
+                                    )
+                                }
+                            )
+                        )
+
+                        if currency_element:
+
+                            currency_text = (
+                                currency_element.get_text(
+                                    " ",
+                                    strip=True
+                                )
+                            )
+
+                            if (
+                                "Kč"
+                                in
+                                currency_text
+                            ):
+
+                                parsed = (
+                                    parsed /
+                                    CZK_PER_EUR
+                                )
+
+                    price = parsed
+
+                    break
+
+            if price is not None:
+                break
+
+    if price is None:
+
+        # Last resort:
+        # use body text, but ONLY on the
+        # detail page, never the search page.
+        price = parse_price(
+            body_text
+        )
+
+    # -----------------------------------------------------
+    # STRUCTURED PRODUCT ATTRIBUTES
+    # -----------------------------------------------------
+
+    attributes = []
+
+    for table in soup.find_all(
+        [
+            "table",
+            "dl"
+        ]
+    ):
+
+        text = clean_text(
+            table.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if (
+            "edice"
+            in text.lower()
+            or
+            "druh produktu"
+            in text.lower()
+            or
+            "jazyk"
+            in text.lower()
+        ):
+
+            attributes.append(
+                text
+            )
+
+    # Also inspect common labels.
+    for element in soup.find_all(
+        string=re.compile(
+            r"Edice|Druh produktu|Jazyk|Výrobce",
+            re.I
+        )
+    ):
+
+        parent = element.parent
+
+        if parent:
+
+            attributes.append(
+                clean_text(
+                    parent.parent.get_text(
+                        " ",
+                        strip=True
+                    )
+                    if parent.parent
+                    else parent.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+            )
+
+    attributes_text = normalize_spaces(
+        " ".join(
+            attributes
+        )
+    )
+
+    # -----------------------------------------------------
+    # FINAL SEARCHABLE DATA
+    # -----------------------------------------------------
+
+    searchable = normalize_spaces(
+        " ".join(
+            [
+                title,
+                description,
+                attributes_text,
+                body_text,
+            ]
+        )
+    )
+
+    return {
+        "title": title,
+        "price_eur": price,
+        "description": description,
+        "attributes": attributes_text,
+        "body_text": body_text,
+        "searchable": searchable,
+    }
 
 
 # =========================================================
 # HTTP
 # =========================================================
 
-def fetch(url, timeout=20):
+def fetch(
+    url,
+    timeout=20
+):
 
     start = time.monotonic()
 
@@ -1031,13 +1730,16 @@ def fetch(url, timeout=20):
         debug["elapsed_ms"] = round(
             (
                 time.monotonic()
-                - start
+                -
+                start
             ) * 1000
         )
 
         if response.status_code != 200:
 
-            debug["status"] = "http_error"
+            debug["status"] = (
+                "http_error"
+            )
 
             debug["error"] = (
                 f"HTTP {response.status_code}"
@@ -1045,7 +1747,9 @@ def fetch(url, timeout=20):
 
             return None, debug
 
-        debug["status"] = "http_ok"
+        debug["status"] = (
+            "http_ok"
+        )
 
         return response, debug
 
@@ -1054,11 +1758,14 @@ def fetch(url, timeout=20):
         debug["elapsed_ms"] = round(
             (
                 time.monotonic()
-                - start
+                -
+                start
             ) * 1000
         )
 
-        debug["status"] = "timeout"
+        debug["status"] = (
+            "timeout"
+        )
 
         debug["error"] = (
             "Request timeout"
@@ -1071,18 +1778,24 @@ def fetch(url, timeout=20):
         debug["elapsed_ms"] = round(
             (
                 time.monotonic()
-                - start
+                -
+                start
             ) * 1000
         )
 
-        debug["status"] = "request_error"
+        debug["status"] = (
+            "request_error"
+        )
 
         debug["error"] = str(e)
 
         return None, debug
 
 
-def get(url, timeout=20):
+def get(
+    url,
+    timeout=20
+):
 
     response, _ = fetch(
         url,
@@ -1111,7 +1824,9 @@ def absolute_url(
     ):
         return ""
 
-    if href.startswith("#"):
+    if href.startswith(
+        "#"
+    ):
         return ""
 
     return urllib.parse.urljoin(
@@ -1150,7 +1865,9 @@ def cardyx_search(
         url = (
             "https://www.cardyx.sk/search"
             "?q=" +
-            urllib.parse.quote(query)
+            urllib.parse.quote(
+                query
+            )
         )
 
         debug["url"] = url
@@ -1160,19 +1877,35 @@ def cardyx_search(
         )
 
         debug["http_status"] = (
-            http_debug["http_status"]
+            http_debug[
+                "http_status"
+            ]
         )
 
         if not response:
 
             debug.update({
-                "status": http_debug["status"],
-                "error": http_debug["error"],
-                "elapsed_ms": http_debug["elapsed_ms"],
+                "status":
+                    http_debug[
+                        "status"
+                    ],
+
+                "error":
+                    http_debug[
+                        "error"
+                    ],
+
+                "elapsed_ms":
+                    http_debug[
+                        "elapsed_ms"
+                    ],
             })
 
             if return_debug:
-                return results, debug
+                return (
+                    results,
+                    debug
+                )
 
             return results
 
@@ -1193,7 +1926,9 @@ def cardyx_search(
 
         for a in links:
 
-            href = a.get("href")
+            href = a.get(
+                "href"
+            )
 
             if not href:
                 continue
@@ -1209,7 +1944,9 @@ def cardyx_search(
             if href in seen:
                 continue
 
-            seen.add(href)
+            seen.add(
+                href
+            )
 
             title = clean_text(
                 a.get_text(
@@ -1253,7 +1990,9 @@ def cardyx_search(
             if price is None:
                 continue
 
-            if is_merch(title):
+            if is_merch(
+                title
+            ):
                 continue
 
             parsed = normalize_query(
@@ -1325,17 +2064,23 @@ def cardyx_search(
             "parser_error"
         )
 
-        debug["error"] = str(e)
+        debug["error"] = str(
+            e
+        )
 
     debug["elapsed_ms"] = round(
         (
             time.monotonic()
-            - start
+            -
+            start
         ) * 1000
     )
 
     if return_debug:
-        return results, debug
+        return (
+            results,
+            debug
+        )
 
     return results
 
@@ -1356,7 +2101,7 @@ GENERIC_SHOPS = [
 
 
 # =========================================================
-# VESelý DRAK
+# VESLEY DRAK
 # =========================================================
 
 def vesely_drak_search(
@@ -1367,33 +2112,76 @@ def vesely_drak_search(
     results = []
 
     debug = {
-        "shop": "Veselý Drak",
-        "query": query,
-        "url": "",
-        "status": "starting",
-        "http_status": None,
-        "results": 0,
-        "links_scanned": 0,
-        "candidates": 0,
-        "merch_filtered": 0,
-        "match_filtered": 0,
-        "products_with_price": 0,
-        "elapsed_ms": 0,
-        "error": "",
+
+        "shop":
+            "Veselý Drak",
+
+        "query":
+            query,
+
+        "url":
+            "",
+
+        "status":
+            "starting",
+
+        "http_status":
+            None,
+
+        "results":
+            0,
+
+        "links_scanned":
+            0,
+
+        "product_links_found":
+            0,
+
+        "candidates":
+            0,
+
+        "detail_pages_checked":
+            0,
+
+        "detail_pages_ok":
+            0,
+
+        "products_with_price":
+            0,
+
+        "merch_filtered":
+            0,
+
+        "match_filtered":
+            0,
+
+        "detail_errors":
+            0,
+
+        "elapsed_ms":
+            0,
+
+        "error":
+            "",
+
+        "sample_decisions":
+            [],
     }
 
     start = time.monotonic()
 
     try:
 
-        # -------------------------------------------------
-        # 1. STORE SEARCH
-        # -------------------------------------------------
+        # =================================================
+        # 1. SEARCH PAGE
+        # =================================================
 
         url = (
             "https://www.vesely-drak.cz/"
             "?s=" +
-            urllib.parse.quote(query)
+            urllib.parse.quote(
+                query
+            )
         )
 
         debug["url"] = url
@@ -1403,19 +2191,36 @@ def vesely_drak_search(
         )
 
         debug["http_status"] = (
-            http_debug["http_status"]
+            http_debug[
+                "http_status"
+            ]
         )
 
         if not response:
 
             debug.update({
-                "status": http_debug["status"],
-                "error": http_debug["error"],
-                "elapsed_ms": http_debug["elapsed_ms"],
+
+                "status":
+                    http_debug[
+                        "status"
+                    ],
+
+                "error":
+                    http_debug[
+                        "error"
+                    ],
+
+                "elapsed_ms":
+                    http_debug[
+                        "elapsed_ms"
+                    ],
             })
 
             if return_debug:
-                return results, debug
+                return (
+                    results,
+                    debug
+                )
 
             return results
 
@@ -1423,13 +2228,6 @@ def vesely_drak_search(
             response.text,
             "html.parser"
         )
-
-        # -------------------------------------------------
-        # 2. FIND PRODUCT LINKS
-        #
-        # We deliberately do NOT require a specific
-        # CSS class here. The site can change classes.
-        # -------------------------------------------------
 
         all_links = soup.find_all(
             "a",
@@ -1440,19 +2238,13 @@ def vesely_drak_search(
             all_links
         )
 
-        seen = set()
+        # =================================================
+        # 2. COLLECT ONLY REAL PRODUCT URLS
+        # =================================================
 
-        parsed_query = normalize_query(
-            query
-        )
+        product_urls = []
 
-        kind = classify_query(
-            parsed_query
-        )
-
-        # -------------------------------------------------
-        # 3. INSPECT LINKS
-        # -------------------------------------------------
+        seen_urls = set()
 
         for a in all_links:
 
@@ -1471,166 +2263,346 @@ def vesely_drak_search(
             if not href:
                 continue
 
-            # We only want product-like links.
-            # Skip navigation/category/search/cart/etc.
-            href_lower = href.lower()
-
-            blocked_url_parts = [
-                "/kosik",
-                "/cart",
-                "/checkout",
-                "/login",
-                "/registrace",
-                "/registracia",
-                "/kontakt",
-                "/blog",
-                "/novinky",
-                "/category",
-                "/kategorie",
-                "?s=",
-                "&s=",
-            ]
-
-            if any(
-                part in href_lower
-                for part in blocked_url_parts
+            if not is_vesely_product_url(
+                href
             ):
                 continue
 
-            # -------------------------------------------------
-            # TITLE
-            # -------------------------------------------------
+            href_key = href.lower()
 
-            title = clean_text(
-                a.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-            if not title:
+            if href_key in seen_urls:
                 continue
 
-            if len(title) < 3:
-                continue
-
-            # Avoid obvious menu/navigation text.
-            if len(title) > 250:
-                continue
-
-            # -------------------------------------------------
-            # PRODUCT BLOCK
-            # -------------------------------------------------
-
-            parent = a
-
-            for _ in range(5):
-
-                if not parent.parent:
-                    break
-
-                parent = parent.parent
-
-                parent_text = clean_text(
-                    parent.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-                # A reasonable product card normally
-                # contains a price or product text.
-                if (
-                    "Kč" in parent_text
-                    or "CZK" in parent_text
-                    or "€" in parent_text
-                ):
-                    break
-
-            block_text = clean_text(
-                parent.get_text(
-                    " ",
-                    strip=True
-                )
+            seen_urls.add(
+                href_key
             )
 
-            # -------------------------------------------------
-            # PRICE
-            # -------------------------------------------------
-
-            price = parse_price(
-                block_text
+            product_urls.append(
+                href
             )
 
-            if price is None:
+        debug[
+            "product_links_found"
+        ] = len(
+            product_urls
+        )
 
-                price = parse_price(
-                    title
-                )
+        parsed_query = normalize_query(
+            query
+        )
 
-            if price is None:
-                continue
+        kind = classify_query(
+            parsed_query
+        )
 
-            debug[
-                "products_with_price"
-            ] += 1
+        # =================================================
+        # 3. OPEN PRODUCT DETAILS
+        # =================================================
 
-            # -------------------------------------------------
-            # DUPLICATES
-            # -------------------------------------------------
+        for product_url in product_urls:
 
-            unique_key = (
-                href.lower(),
-                title.lower()
-            )
-
-            if unique_key in seen:
-                continue
-
-            seen.add(
-                unique_key
-            )
-
-            # -------------------------------------------------
-            # CANDIDATE
-            # -------------------------------------------------
+            if len(results) >= 30:
+                break
 
             debug[
                 "candidates"
             ] += 1
 
-            # -------------------------------------------------
-            # MERCH FILTER
-            # -------------------------------------------------
+            detail_response, detail_debug = (
+                fetch(
+                    product_url,
+                    timeout=15
+                )
+            )
+
+            debug[
+                "detail_pages_checked"
+            ] += 1
+
+            if not detail_response:
+
+                debug[
+                    "detail_errors"
+                ] += 1
+
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "error",
+
+                        "reason":
+                            detail_debug[
+                                "error"
+                            ],
+                    })
+
+                continue
+
+            debug[
+                "detail_pages_ok"
+            ] += 1
+
+            try:
+
+                data = (
+                    parse_vesely_product_page(
+                        product_url,
+                        detail_response.text
+                    )
+                )
+
+            except Exception as e:
+
+                debug[
+                    "detail_errors"
+                ] += 1
+
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "parser_error",
+
+                        "reason":
+                            str(e),
+                    })
+
+                continue
+
+            title = clean_text(
+                data.get(
+                    "title",
+                    ""
+                )
+            )
+
+            price = data.get(
+                "price_eur"
+            )
+
+            searchable = clean_text(
+                data.get(
+                    "searchable",
+                    ""
+                )
+            )
+
+            description = clean_text(
+                data.get(
+                    "description",
+                    ""
+                )
+            )
+
+            attributes = clean_text(
+                data.get(
+                    "attributes",
+                    ""
+                )
+            )
+
+            if not title:
+
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "filtered",
+
+                        "reason":
+                            "missing_title",
+                    })
+
+                continue
+
+            # ---------------------------------------------
+            # MERCH
+            # ---------------------------------------------
 
             if is_merch(
-                title
+                title,
+                description
             ):
 
                 debug[
                     "merch_filtered"
                 ] += 1
 
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "title":
+                            title,
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "merch",
+
+                        "reason":
+                            "merch_blacklist",
+                    })
+
                 continue
 
-            # -------------------------------------------------
-            # MATCHING
-            #
-            # IMPORTANT:
-            # Search is performed over BOTH title and
-            # the surrounding product block.
-            #
-            # This allows cases where the product title
-            # is weak but the surrounding product data
-            # contains Pikachu / set / card number.
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # PRODUCT TYPE / CATEGORY SAFETY
+            # ---------------------------------------------
+
+            lower_all = (
+                (
+                    title +
+                    " " +
+                    description +
+                    " " +
+                    attributes
+                ).lower()
+            )
+
+            obvious_non_tcg = [
+
+                "fotbalové karty",
+                "fotbalove karty",
+
+                "nba basketbal",
+                "basketbalové karty",
+                "basketbalove karty",
+
+                "marvel karty",
+
+                "nfl karty",
+
+                "hokejové karty",
+                "hokejove karty",
+
+                "baseballové karty",
+                "baseballove karty",
+
+                "one piece card game",
+            ]
+
+            if any(
+                x in lower_all
+                for x in obvious_non_tcg
+            ):
+
+                debug[
+                    "match_filtered"
+                ] += 1
+
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "title":
+                            title,
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "filtered",
+
+                        "reason":
+                            "non_pokemon_tcg",
+                    })
+
+                continue
+
+            # ---------------------------------------------
+            # PRICE
+            # ---------------------------------------------
+
+            if price is None:
+
+                debug[
+                    "detail_errors"
+                ] += 1
+
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "title":
+                            title,
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "filtered",
+
+                        "reason":
+                            "no_price",
+                    })
+
+                continue
+
+            debug[
+                "products_with_price"
+            ] += 1
+
+            # ---------------------------------------------
+            # QUERY MATCH
+            # ---------------------------------------------
 
             if kind == "card":
 
                 matched = card_matches_query(
                     title,
                     query,
-                    block_text
+                    searchable
                 )
 
             else:
@@ -1638,7 +2610,7 @@ def vesely_drak_search(
                 matched = sealed_matches_query(
                     title,
                     query,
-                    block_text
+                    searchable
                 )
 
             if not matched:
@@ -1647,40 +2619,104 @@ def vesely_drak_search(
                     "match_filtered"
                 ] += 1
 
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "title":
+                            title,
+
+                        "url":
+                            product_url,
+
+                        "decision":
+                            "filtered",
+
+                        "reason":
+                            "query_not_matched",
+                    })
+
                 continue
 
-            # -------------------------------------------------
+            # ---------------------------------------------
             # RESULT
-            # -------------------------------------------------
+            # ---------------------------------------------
 
             results.append({
-                "title": title,
-                "shop": "Veselý Drak",
-                "country": "CZ",
-                "condition": "Nové",
-                "price_eur": round(
-                    price,
-                    2
-                ),
-                "link": href,
+
+                "title":
+                    title,
+
+                "shop":
+                    "Veselý Drak",
+
+                "country":
+                    "CZ",
+
+                "condition":
+                    "Nové",
+
+                "price_eur":
+                    round(
+                        float(
+                            price
+                        ),
+                        2
+                    ),
+
+                "link":
+                    product_url,
             })
 
-            # Safety limit.
-            if len(results) >= 30:
-                break
+            if len(
+                debug[
+                    "sample_decisions"
+                ]
+            ) < 20:
 
-        # -------------------------------------------------
-        # DEDUPLICATION
-        # -------------------------------------------------
+                debug[
+                    "sample_decisions"
+                ].append({
+
+                    "title":
+                        title,
+
+                    "url":
+                        product_url,
+
+                    "decision":
+                        "accepted",
+
+                    "reason":
+                        "matched_detail",
+                })
+
+        # =================================================
+        # DEDUPLICATE
+        # =================================================
 
         unique = {}
 
         for item in results:
 
             key = (
-                item["title"].lower(),
-                item["price_eur"],
-                item["link"].lower()
+                item[
+                    "title"
+                ].lower(),
+
+                item[
+                    "price_eur"
+                ],
+
+                item[
+                    "link"
+                ].lower()
             )
 
             unique[key] = item
@@ -1689,11 +2725,15 @@ def vesely_drak_search(
             unique.values()
         )
 
-        debug["results"] = len(
+        debug[
+            "results"
+        ] = len(
             results
         )
 
-        debug["status"] = (
+        debug[
+            "status"
+        ] = (
             "ok"
             if results
             else "no_results"
@@ -1701,21 +2741,30 @@ def vesely_drak_search(
 
     except Exception as e:
 
-        debug["status"] = (
-            "parser_error"
-        )
+        debug[
+            "status"
+        ] = "parser_error"
 
-        debug["error"] = str(e)
+        debug[
+            "error"
+        ] = str(e)
 
-    debug["elapsed_ms"] = round(
+    debug[
+        "elapsed_ms"
+    ] = round(
         (
             time.monotonic()
-            - start
+            -
+            start
         ) * 1000
     )
 
     if return_debug:
-        return results, debug
+
+        return (
+            results,
+            debug
+        )
 
     return results
 
@@ -1730,7 +2779,9 @@ def generic_shop_search(
     return_debug=False
 ):
 
-    if shop["name"] == "Veselý Drak":
+    if shop["name"] == (
+        "Veselý Drak"
+    ):
 
         return vesely_drak_search(
             query,
@@ -1740,19 +2791,41 @@ def generic_shop_search(
     results = []
 
     debug = {
-        "shop": shop["name"],
-        "query": query,
-        "url": "",
-        "status": "not_implemented",
-        "http_status": None,
-        "results": 0,
-        "links_scanned": 0,
-        "elapsed_ms": 0,
-        "error": "",
+
+        "shop":
+            shop["name"],
+
+        "query":
+            query,
+
+        "url":
+            "",
+
+        "status":
+            "not_implemented",
+
+        "http_status":
+            None,
+
+        "results":
+            0,
+
+        "links_scanned":
+            0,
+
+        "elapsed_ms":
+            0,
+
+        "error":
+            "",
     }
 
     if return_debug:
-        return results, debug
+
+        return (
+            results,
+            debug
+        )
 
     return results
 
@@ -1772,16 +2845,20 @@ def run_shop(
 
         if name == "CardyX":
 
-            results, debug = cardyx_search(
-                query,
-                return_debug=True
+            results, debug = (
+                cardyx_search(
+                    query,
+                    return_debug=True
+                )
             )
 
         elif name == "Veselý Drak":
 
-            results, debug = vesely_drak_search(
-                query,
-                return_debug=True
+            results, debug = (
+                vesely_drak_search(
+                    query,
+                    return_debug=True
+                )
             )
 
         else:
@@ -1789,36 +2866,65 @@ def run_shop(
             results = []
 
             debug = {
-                "shop": name,
-                "query": query,
-                "status": "not_implemented",
-                "results": 0,
-                "error": "",
+
+                "shop":
+                    name,
+
+                "query":
+                    query,
+
+                "status":
+                    "not_implemented",
+
+                "results":
+                    0,
+
+                "error":
+                    "",
             }
 
-        debug["elapsed_ms"] = round(
+        debug[
+            "elapsed_ms"
+        ] = round(
             (
                 time.monotonic()
-                - start
+                -
+                start
             ) * 1000
         )
 
-        return results, debug
+        return (
+            results,
+            debug
+        )
 
     except Exception as e:
 
         return [], {
-            "shop": name,
-            "query": query,
-            "status": "runner_error",
-            "results": 0,
-            "error": str(e),
-            "elapsed_ms": round(
-                (
-                    time.monotonic()
-                    - start
-                ) * 1000
-            ),
+
+            "shop":
+                name,
+
+            "query":
+                query,
+
+            "status":
+                "runner_error",
+
+            "results":
+                0,
+
+            "error":
+                str(e),
+
+            "elapsed_ms":
+                round(
+                    (
+                        time.monotonic()
+                        -
+                        start
+                    ) * 1000
+                ),
         }
 
 
@@ -1835,15 +2941,6 @@ def search_all(
 
     diagnostics = []
 
-    # -----------------------------------------------------
-    # CURRENT BATCH:
-    #
-    # CardyX = known working baseline
-    # Veselý Drak = current development target
-    #
-    # NO OTHER SHOPS YET.
-    # -----------------------------------------------------
-
     shops = [
         "CardyX",
         "Veselý Drak",
@@ -1854,11 +2951,13 @@ def search_all(
     ) as executor:
 
         futures = {
+
             executor.submit(
                 run_shop,
                 shop,
                 query
             ): shop
+
             for shop in shops
         }
 
@@ -1887,16 +2986,22 @@ def search_all(
                 ]
 
                 diagnostics.append({
-                    "shop": shop_name,
-                    "query": query,
-                    "status": "future_error",
-                    "results": 0,
-                    "error": str(e),
-                })
 
-    # -----------------------------------------------------
-    # SORT DEBUG BY SHOP NAME
-    # -----------------------------------------------------
+                    "shop":
+                        shop_name,
+
+                    "query":
+                        query,
+
+                    "status":
+                        "future_error",
+
+                    "results":
+                        0,
+
+                    "error":
+                        str(e),
+                })
 
     diagnostics.sort(
         key=lambda x:
@@ -1906,15 +3011,12 @@ def search_all(
         )
     )
 
-    # -----------------------------------------------------
-    # REMOVE DUPLICATES
-    # -----------------------------------------------------
-
     unique = {}
 
     for item in results:
 
         key = (
+
             clean_text(
                 item.get(
                     "shop",
@@ -1946,10 +3048,6 @@ def search_all(
         unique.values()
     )
 
-    # -----------------------------------------------------
-    # SORT BY PRICE
-    # -----------------------------------------------------
-
     results.sort(
         key=lambda x:
         float(
@@ -1962,13 +3060,19 @@ def search_all(
 
     if return_debug:
 
-        return results, {
-            "query": query,
-            "shops": diagnostics,
-            "total_results": len(
-                results
-            ),
-        }
+        return (
+            results,
+            {
+                "query":
+                    query,
+
+                "shops":
+                    diagnostics,
+
+                "total_results":
+                    len(results),
+            }
+        )
 
     return results
 
@@ -2008,22 +3112,27 @@ def save_history(
             """,
             (
                 query,
+
                 item.get(
                     "shop",
                     ""
                 ),
+
                 item.get(
                     "title",
                     ""
                 ),
+
                 item.get(
                     "price_eur",
                     0
                 ),
+
                 item.get(
                     "link",
                     ""
                 ),
+
                 now,
             )
         )
@@ -2090,7 +3199,9 @@ def suggestion_score(
 # API SUGGESTIONS
 # =========================================================
 
-@app.get("/api/suggestions")
+@app.get(
+    "/api/suggestions"
+)
 def api_suggestions():
 
     q = clean_text(
@@ -2103,15 +3214,21 @@ def api_suggestions():
     if len(q) < 2:
 
         return jsonify({
-            "query": q,
-            "suggestions": []
+
+            "query":
+                q,
+
+            "suggestions":
+                [],
         })
 
     q_lower = q.lower()
 
     candidates = []
 
-    for item in SUGGESTION_CATALOG:
+    for item in (
+        SUGGESTION_CATALOG
+    ):
 
         title = clean_text(
             item.get(
@@ -2129,8 +3246,10 @@ def api_suggestions():
 
         if (
             q_lower in title
-            or q_lower in subtitle
-            or title.startswith(
+            or
+            q_lower in subtitle
+            or
+            title.startswith(
                 q_lower
             )
         ):
@@ -2155,19 +3274,24 @@ def api_suggestions():
         )
 
         exists = any(
+
             clean_text(
                 item.get(
                     "query",
                     ""
                 )
             ).lower()
-            == normalized_lower
+            ==
+            normalized_lower
+
             for item in candidates
         )
 
         if (
             not exists
-            and normalized_lower != q_lower
+            and
+            normalized_lower
+            != q_lower
         ):
 
             if parsed.get(
@@ -2175,14 +3299,24 @@ def api_suggestions():
             ):
 
                 candidates.append({
-                    "title": normalized,
-                    "query": normalized,
-                    "subtitle": (
-                        "Automaticky "
-                        "rozpoznaný produkt"
-                    ),
-                    "type": "product",
-                    "type_label": "Produkt",
+
+                    "title":
+                        normalized,
+
+                    "query":
+                        normalized,
+
+                    "subtitle":
+                        (
+                            "Automaticky "
+                            "rozpoznaný produkt"
+                        ),
+
+                    "type":
+                        "product",
+
+                    "type_label":
+                        "Produkt",
                 })
 
             elif parsed.get(
@@ -2190,14 +3324,24 @@ def api_suggestions():
             ):
 
                 candidates.append({
-                    "title": normalized,
-                    "query": normalized,
-                    "subtitle": (
-                        "Automaticky "
-                        "rozpoznaná karta"
-                    ),
-                    "type": "card",
-                    "type_label": "Karta",
+
+                    "title":
+                        normalized,
+
+                    "query":
+                        normalized,
+
+                    "subtitle":
+                        (
+                            "Automaticky "
+                            "rozpoznaná karta"
+                        ),
+
+                    "type":
+                        "card",
+
+                    "type_label":
+                        "Karta",
                 })
 
     candidates.sort(
@@ -2231,17 +3375,27 @@ def api_suggestions():
         if key in seen:
             continue
 
-        seen.add(key)
+        seen.add(
+            key
+        )
 
-        output.append(item)
+        output.append(
+            item
+        )
 
         if len(output) >= 8:
             break
 
     return jsonify({
-        "query": q,
-        "normalized_query": normalized,
-        "suggestions": output
+
+        "query":
+            q,
+
+        "normalized_query":
+            normalized,
+
+        "suggestions":
+            output,
     })
 
 
@@ -2249,7 +3403,9 @@ def api_suggestions():
 # API PARSE
 # =========================================================
 
-@app.get("/api/parse")
+@app.get(
+    "/api/parse"
+)
 def api_parse():
 
     q = request.args.get(
@@ -2261,18 +3417,24 @@ def api_parse():
         q
     )
 
-    parsed["type"] = classify_query(
-        parsed
+    parsed["type"] = (
+        classify_query(
+            parsed
+        )
     )
 
-    return jsonify(parsed)
+    return jsonify(
+        parsed
+    )
 
 
 # =========================================================
 # API SEARCH
 # =========================================================
 
-@app.get("/api/search")
+@app.get(
+    "/api/search"
+)
 def api_search():
 
     original_query = clean_text(
@@ -2285,8 +3447,9 @@ def api_search():
     if not original_query:
 
         return jsonify({
+
             "error":
-            "Chýba vyhľadávanie."
+                "Chýba vyhľadávanie.",
         }), 400
 
     parsed = normalize_query(
@@ -2309,9 +3472,15 @@ def api_search():
     )
 
     info = {
-        "title": normalized_query,
-        "subtitle": "",
-        "image": "",
+
+        "title":
+            normalized_query,
+
+        "subtitle":
+            "",
+
+        "image":
+            "",
     }
 
     if parsed.get(
@@ -2320,7 +3489,9 @@ def api_search():
 
         info["subtitle"] = (
             "Set: " +
-            parsed["set_name"]
+            parsed[
+                "set_name"
+            ]
         )
 
     elif parsed.get(
@@ -2329,17 +3500,33 @@ def api_search():
 
         info["subtitle"] = (
             "Pokémon: " +
-            parsed["pokemon"]
+            parsed[
+                "pokemon"
+            ]
         )
 
     return jsonify({
-        "query": original_query,
-        "normalized_query": normalized_query,
-        "parsed": parsed,
-        "results": results,
-        "czk_per_eur": CZK_PER_EUR,
-        "info": info,
-        "debug": debug,
+
+        "query":
+            original_query,
+
+        "normalized_query":
+            normalized_query,
+
+        "parsed":
+            parsed,
+
+        "results":
+            results,
+
+        "czk_per_eur":
+            CZK_PER_EUR,
+
+        "info":
+            info,
+
+        "debug":
+            debug,
     })
 
 
@@ -2347,7 +3534,9 @@ def api_search():
 # API DEBUG SEARCH
 # =========================================================
 
-@app.get("/api/debug/search")
+@app.get(
+    "/api/debug/search"
+)
 def api_debug_search():
 
     original_query = clean_text(
@@ -2360,8 +3549,9 @@ def api_debug_search():
     if not original_query:
 
         return jsonify({
+
             "error":
-            "Chýba vyhľadávanie."
+                "Chýba vyhľadávanie.",
         }), 400
 
     parsed = normalize_query(
@@ -2379,19 +3569,31 @@ def api_debug_search():
     )
 
     return jsonify({
-        "query": original_query,
-        "normalized_query": normalized_query,
-        "parsed": parsed,
-        "debug": debug,
-        "results": results,
+
+        "query":
+            original_query,
+
+        "normalized_query":
+            normalized_query,
+
+        "parsed":
+            parsed,
+
+        "debug":
+            debug,
+
+        "results":
+            results,
     })
 
 
 # =========================================================
-# VESelý DRAK DEBUG
+# VESLEY DRAK DEBUG
 # =========================================================
 
-@app.get("/api/debug/vesely")
+@app.get(
+    "/api/debug/vesely"
+)
 def api_debug_vesely():
 
     original_query = clean_text(
@@ -2404,8 +3606,9 @@ def api_debug_vesely():
     if not original_query:
 
         return jsonify({
+
             "error":
-            "Chýba vyhľadávanie."
+                "Chýba vyhľadávanie.",
         }), 400
 
     parsed = normalize_query(
@@ -2425,11 +3628,21 @@ def api_debug_vesely():
     )
 
     return jsonify({
-        "query": original_query,
-        "normalized_query": normalized_query,
-        "parsed": parsed,
-        "debug": debug,
-        "results": results,
+
+        "query":
+            original_query,
+
+        "normalized_query":
+            normalized_query,
+
+        "parsed":
+            parsed,
+
+        "debug":
+            debug,
+
+        "results":
+            results,
     })
 
 
@@ -2437,20 +3650,34 @@ def api_debug_vesely():
 # HEALTH
 # =========================================================
 
-@app.get("/health")
+@app.get(
+    "/health"
+)
 def health():
 
     index_path = find_index()
 
     return jsonify({
-        "service": "CardRadar",
-        "status": "ok",
-        "version": VERSION,
-        "base_dir": BASE_DIR,
-        "index_exists": bool(
-            index_path
-        ),
-        "index_path": index_path,
+
+        "service":
+            "CardRadar",
+
+        "status":
+            "ok",
+
+        "version":
+            VERSION,
+
+        "base_dir":
+            BASE_DIR,
+
+        "index_exists":
+            bool(
+                index_path
+            ),
+
+        "index_path":
+            index_path,
     })
 
 
@@ -2466,13 +3693,16 @@ def home():
     if not index_path:
 
         return Response(
+
             """
             <h1>CardRadar</h1>
             <p>
                 index.html nebol nájdený.
             </p>
             """,
+
             status=500,
+
             mimetype="text/html"
         )
 
@@ -2485,13 +3715,16 @@ def home():
         ) as f:
 
             return Response(
+
                 f.read(),
+
                 mimetype="text/html"
             )
 
     except Exception as e:
 
         return Response(
+
             (
                 "<h1>CardRadar</h1>"
                 "<p>"
@@ -2499,7 +3732,9 @@ def home():
                 "</p>"
                 f"<pre>{e}</pre>"
             ),
+
             status=500,
+
             mimetype="text/html"
         )
 
