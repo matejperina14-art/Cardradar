@@ -433,6 +433,15 @@ button.primary:disabled{
   white-space:nowrap;
 }
 
+.price-missing{
+
+  color:var(--sub);
+
+  font-size:1rem;
+
+  font-weight:600;
+}
+
 .buy{
 
   display:inline-block;
@@ -682,7 +691,7 @@ button.primary:disabled{
 
 /* =========================================================
    CARD RADAR FRONTEND
-   VERSION 5.12 UI+
+   VERSION 5.14
 ========================================================= */
 
 
@@ -701,6 +710,297 @@ const eur = (n) => {
   return value.toFixed(2) + ' €';
 
 };
+
+
+/*
+ * Univerzálne spracovanie ceny.
+ *
+ * Backend môže poslať napríklad:
+ *
+ * price_eur: 4.99
+ * price: 4.99
+ * price: "4,99 €"
+ * amount: 4.99
+ * value: 4.99
+ *
+ * Frontend sa pokúsi nájsť cenu
+ * bez ohľadu na konkrétne pole.
+ */
+
+function parsePriceValue(value){
+
+  if(
+    value === null ||
+    value === undefined ||
+    value === ''
+  ){
+
+    return null;
+
+  }
+
+
+  if(typeof value === 'number'){
+
+    return Number.isFinite(value)
+      ? value
+      : null;
+
+  }
+
+
+  let text =
+    String(value)
+      .trim()
+      .replace(/\s/g,'')
+      .replace(',', '.');
+
+
+  if(!text){
+    return null;
+  }
+
+
+  /*
+   * Odstránime menu a ostatné znaky,
+   * ale ponecháme čísla a desatinnú bodku.
+   */
+
+  text =
+    text.replace(
+      /[^0-9.]/g,
+      ''
+    );
+
+
+  if(!text){
+    return null;
+  }
+
+
+  /*
+   * Ak je v texte viac bodiek,
+   * ponecháme poslednú ako desatinnú.
+   */
+
+  const dots =
+    (text.match(/\./g) || []).length;
+
+
+  if(dots > 1){
+
+    const parts =
+      text.split('.');
+
+    const decimal =
+      parts.pop();
+
+    text =
+      parts.join('') +
+      '.' +
+      decimal;
+
+  }
+
+
+  const number =
+    Number(text);
+
+
+  return Number.isFinite(number)
+    ? number
+    : null;
+
+}
+
+
+/*
+ * Nájde cenu v objekte výsledku.
+ */
+
+function getResultPrice(item){
+
+  if(!item){
+    return null;
+  }
+
+
+  const fields = [
+
+    'price_eur',
+
+    'priceEUR',
+
+    'eur',
+
+    'price',
+
+    'amount',
+
+    'value',
+
+    'current_price',
+
+    'currentPrice',
+
+    'price_value',
+
+    'priceValue'
+
+  ];
+
+
+  for(
+    const field
+    of fields
+  ){
+
+    if(
+      item[field] !== undefined &&
+      item[field] !== null &&
+      item[field] !== ''
+    ){
+
+      const parsed =
+        parsePriceValue(
+          item[field]
+        );
+
+
+      if(parsed !== null){
+        return parsed;
+      }
+
+    }
+
+  }
+
+
+  /*
+   * Niektoré odpovede môžu mať
+   * cenu uloženú ako textové pole.
+   */
+
+  const textFields = [
+
+    'price_text',
+    'priceText',
+    'price_label',
+    'priceLabel'
+
+  ];
+
+
+  for(
+    const field
+    of textFields
+  ){
+
+    if(
+      item[field] !== undefined &&
+      item[field] !== null
+    ){
+
+      const parsed =
+        parsePriceValue(
+          item[field]
+        );
+
+
+      if(parsed !== null){
+        return parsed;
+      }
+
+    }
+
+  }
+
+
+  return null;
+
+}
+
+
+/*
+ * Bezpečné zobrazenie ceny.
+ */
+
+function renderPrice(item){
+
+  const price =
+    getResultPrice(item);
+
+
+  if(price === null){
+
+    return `
+      <div class="price price-missing">
+        Cena nezistená
+      </div>
+    `;
+
+  }
+
+
+  return `
+    <div class="price">
+      ${eur(price)}
+    </div>
+  `;
+
+}
+
+
+/*
+ * Získa všetky výsledky s platnou cenou.
+ */
+
+function getPricedResults(results){
+
+  return results.filter(
+    item =>
+      getResultPrice(item) !== null
+  );
+
+}
+
+
+/*
+ * Určí najlacnejší výsledok.
+ */
+
+function getCheapestIndex(results){
+
+  let bestIndex = -1;
+
+  let bestPrice = Infinity;
+
+
+  results.forEach(
+    (item,index) => {
+
+      const price =
+        getResultPrice(item);
+
+
+      if(
+        price !== null &&
+        price < bestPrice
+      ){
+
+        bestPrice = price;
+
+        bestIndex = index;
+
+      }
+
+    }
+  );
+
+
+  return bestIndex;
+
+}
 
 
 function esc(s){
@@ -734,16 +1034,6 @@ let suggestionIndex = -1;
 let suggestionController = null;
 
 
-/*
- * Krátka klientská cache.
- *
- * Výhoda:
- * keď používateľ napíše napr.
- * pika -> pikachu -> pika
- *
- * nemusíme zakaždým volať server.
- */
-
 const suggestionCache =
   new Map();
 
@@ -754,14 +1044,6 @@ const SUGGESTION_CACHE_TTL =
 /* =========================================================
    POKÉMON AUTOCOMPLETE FALLBACK
 ========================================================= */
-
-/*
- * Toto je rýchla lokálna vrstva.
- *
- * Serverové návrhy majú prednosť.
- * Táto vrstva zabezpečí okamžité návrhy
- * aj pri prvom písaní.
- */
 
 const pokemonCatalog = [
 
@@ -827,10 +1109,6 @@ function buildLocalSuggestions(q){
       pokemon.toLowerCase();
 
 
-    /*
-     * Pokémon samotný
-     */
-
     if(
       p.startsWith(query) ||
       query.startsWith(p)
@@ -851,10 +1129,6 @@ function buildLocalSuggestions(q){
 
       });
 
-
-      /*
-       * Varianty karty
-       */
 
       const suffixes = [
 
@@ -879,15 +1153,6 @@ function buildLocalSuggestions(q){
         const lower =
           title.toLowerCase();
 
-
-        /*
-         * Zobrazíme variant,
-         * ak používateľ píše napr.
-         * pika
-         * pikachu
-         * pikachu v
-         * pikachu vmax
-         */
 
         if(
           query === p ||
@@ -1004,12 +1269,6 @@ function mergeSuggestions(
   }
 
 
-  /*
-   * Server má prednosť,
-   * pretože môže obsahovať konkrétne
-   * reálne produkty z CardyX.
-   */
-
   (
     Array.isArray(serverItems)
       ? serverItems
@@ -1068,11 +1327,6 @@ function handleInput(){
   );
 
 
-  /*
-   * Zrušíme predchádzajúcu request
-   * ak používateľ už píše ďalej.
-   */
-
   if(suggestionController){
 
     suggestionController.abort();
@@ -1101,10 +1355,6 @@ function handleInput(){
   }
 
 
-  /*
-   * Najprv okamžite zobrazíme lokálne návrhy.
-   */
-
   const localItems =
     buildLocalSuggestions(q);
 
@@ -1123,11 +1373,6 @@ function handleInput(){
 
   }
 
-
-  /*
-   * Server zavoláme až po krátkom
-   * oneskorení.
-   */
 
   suggestionTimer =
     setTimeout(
@@ -1269,10 +1514,6 @@ async function loadSuggestions(q){
     q.toLowerCase().trim();
 
 
-  /*
-   * CACHE
-   */
-
   const cached =
     suggestionCache.get(
       cacheKey
@@ -1300,10 +1541,6 @@ async function loadSuggestions(q){
 
   }
 
-
-  /*
-   * AbortController
-   */
 
   suggestionController =
     new AbortController();
@@ -1347,10 +1584,6 @@ async function loadSuggestions(q){
       : [];
 
 
-    /*
-     * Uložíme iba serverové výsledky.
-     */
-
     suggestionCache.set(
       cacheKey,
       {
@@ -1359,13 +1592,6 @@ async function loadSuggestions(q){
       }
     );
 
-
-    /*
-     * Spojíme:
-     *
-     * 1. reálne serverové návrhy
-     * 2. lokálne varianty
-     */
 
     suggestionItems =
       mergeSuggestions(
@@ -1382,10 +1608,6 @@ async function loadSuggestions(q){
   }
   catch(e){
 
-    /*
-     * Abort nie je chyba.
-     */
-
     if(
       e &&
       e.name === 'AbortError'
@@ -1395,11 +1617,6 @@ async function loadSuggestions(q){
 
     }
 
-
-    /*
-     * Server nedostupný?
-     * Lokálne návrhy stále fungujú.
-     */
 
     suggestionItems =
       buildLocalSuggestions(q);
@@ -1547,31 +1764,23 @@ function renderSuggestions(){
             >
 
               <div class="suggestion-icon">
-
                 ${suggestionIcon(item)}
-
               </div>
 
 
               <div class="suggestion-main">
 
                 <div class="suggestion-title">
-
                   ${title}
-
                 </div>
 
 
                 ${
                   subtitle
                   ? `
-
                     <div class="suggestion-sub">
-
                       ${subtitle}
-
                     </div>
-
                   `
                   : ''
                 }
@@ -1582,13 +1791,9 @@ function renderSuggestions(){
               ${
                 type
                 ? `
-
                   <div class="suggestion-type">
-
                     ${type}
-
                   </div>
-
                 `
                 : ''
               }
@@ -1906,14 +2111,12 @@ function renderPreview(
         info &&
         info.image
         ? `
-
           <img
             src="${esc(
               info.image
             )}"
             alt=""
           >
-
         `
         : ''
       }
@@ -1922,26 +2125,20 @@ function renderPreview(
       <div>
 
         <h2>
-
           ${esc(
             title || ''
           )}
-
         </h2>
 
 
         ${
           subtitle
           ? `
-
             <div class="muted">
-
               ${esc(
                 subtitle
               )}
-
             </div>
-
           `
           : ''
         }
@@ -1989,6 +2186,70 @@ function renderResults(results){
   }
 
 
+  /*
+   * Skopírujeme výsledky, aby sme
+   * nemenili pôvodné dáta z API.
+   */
+
+  const sortedResults =
+    [...results];
+
+
+  /*
+   * Najprv zobrazíme výsledky,
+   * ktoré majú platnú cenu.
+   *
+   * Tie bez ceny pôjdu až na koniec.
+   */
+
+  sortedResults.sort(
+    (a,b) => {
+
+      const priceA =
+        getResultPrice(a);
+
+      const priceB =
+        getResultPrice(b);
+
+
+      if(
+        priceA === null &&
+        priceB === null
+      ){
+
+        return 0;
+
+      }
+
+
+      if(priceA === null){
+        return 1;
+      }
+
+
+      if(priceB === null){
+        return -1;
+      }
+
+
+      return priceA - priceB;
+
+    }
+  );
+
+
+  const cheapestIndex =
+    getCheapestIndex(
+      sortedResults
+    );
+
+
+  const pricedCount =
+    getPricedResults(
+      sortedResults
+    ).length;
+
+
   el.innerHTML =
 
     '<div class="panel">' +
@@ -1996,7 +2257,20 @@ function renderResults(results){
     '<h3>Aktuálne ponuky</h3>' +
 
 
-    results
+    `
+      <div
+        class="muted"
+        style="margin-bottom:4px"
+      >
+        Zobrazených ${sortedResults.length}
+        ponúk •
+        ${pricedCount}
+        s dostupnou cenou
+      </div>
+    ` +
+
+
+    sortedResults
       .map(
         (x,i) => {
 
@@ -2024,6 +2298,10 @@ function renderResults(results){
             : '';
 
 
+          const isCheapest =
+            i === cheapestIndex;
+
+
           return `
 
             <div class="offer">
@@ -2033,11 +2311,9 @@ function renderResults(results){
                 <div>
 
                   <b>
-
                     ${esc(
                       x.title || ''
                     )}
-
                   </b>
 
                 </div>
@@ -2050,27 +2326,27 @@ function renderResults(results){
                   ${typeBadge}
 
 
-                  <span class="badge">
-
-                    ${esc(
-                      x.shop || ''
-                    )}
-
-                  </span>
+                  ${
+                    x.shop
+                    ? `
+                      <span class="badge">
+                        ${esc(
+                          x.shop
+                        )}
+                      </span>
+                    `
+                    : ''
+                  }
 
 
                   ${
                     x.country
                     ? `
-
                       <span class="badge">
-
                         ${esc(
                           x.country
                         )}
-
                       </span>
-
                     `
                     : ''
                   }
@@ -2079,30 +2355,22 @@ function renderResults(results){
                   ${
                     x.condition
                     ? `
-
                       <span class="badge">
-
                         ${esc(
                           x.condition
                         )}
-
                       </span>
-
                     `
                     : ''
                   }
 
 
                   ${
-                    i === 0
+                    isCheapest
                     ? `
-
                       <span class="badge best">
-
                         NAJNIŽŠIA CENA
-
                       </span>
-
                     `
                     : ''
                   }
@@ -2114,19 +2382,12 @@ function renderResults(results){
 
               <div>
 
-                <div class="price">
-
-                  ${eur(
-                    x.price_eur
-                  )}
-
-                </div>
+                ${renderPrice(x)}
 
 
                 ${
                   x.link
                   ? `
-
                     <a
                       class="buy"
                       href="${esc(
@@ -2135,11 +2396,8 @@ function renderResults(results){
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-
                       Otvoriť ponuku ↗
-
                     </a>
-
                   `
                   : ''
                 }
@@ -2455,6 +2713,16 @@ async function search(){
       : 0;
 
 
+    const pricedResults =
+      Array.isArray(
+        d.results
+      )
+      ? getPricedResults(
+          d.results
+        ).length
+      : 0;
+
+
     stage =
       'vykreslenie statusu';
 
@@ -2464,11 +2732,20 @@ async function search(){
       <div class="panel">
 
         <b>
-
           Nájdených reálnych ponúk:
           ${resultCount}
-
         </b>
+
+
+        <div
+          class="muted"
+          style="margin-top:5px"
+        >
+          S dostupnou cenou:
+          <b>
+            ${pricedResults}
+          </b>
+        </div>
 
 
         ${
@@ -2477,7 +2754,6 @@ async function search(){
           q.toLowerCase()
 
           ? `
-
             <div
               class="muted"
               style="margin-top:6px"
@@ -2486,15 +2762,12 @@ async function search(){
               CardRadar rozpoznal:
 
               <b>
-
                 ${esc(
                   normalized
                 )}
-
               </b>
 
             </div>
-
           `
 
           : ''
@@ -2507,7 +2780,6 @@ async function search(){
           d.parsed.type
 
           ? `
-
             <div
               class="muted"
               style="margin-top:5px"
@@ -2526,7 +2798,6 @@ async function search(){
               </b>
 
             </div>
-
           `
 
           : ''
@@ -2538,7 +2809,6 @@ async function search(){
           d.czk_per_eur !== undefined
 
           ? `
-
             <div
               class="muted"
               style="margin-top:5px"
@@ -2550,7 +2820,6 @@ async function search(){
               )}
 
             </div>
-
           `
 
           : ''
