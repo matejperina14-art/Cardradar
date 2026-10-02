@@ -5,14 +5,17 @@ import unicodedata
 from datetime import datetime
 from urllib.parse import quote, urljoin
 
-from flask import Flask, jsonify, request, send_from_directory
-from bs4 import BeautifulSoup
 import requests
+from bs4 import BeautifulSoup
+from flask import Flask, jsonify, request, send_file
 
 app = Flask(__name__)
 
-VERSION = "5.1"
-DB_FILE = "cardradar.db"
+VERSION = "5.2"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INDEX_FILE = os.path.join(BASE_DIR, "index.html")
+DB_FILE = os.path.join(BASE_DIR, "cardradar.db")
 
 HEADERS = {
     "User-Agent": (
@@ -92,7 +95,7 @@ def words(text):
 
 
 # =========================================================
-# QUERY TYPE
+# PRODUCT FILTERS
 # =========================================================
 
 MERCH_WORDS = {
@@ -159,12 +162,7 @@ def classify_query(query):
     return "card"
 
 
-# =========================================================
-# CARD NUMBER
-# =========================================================
-
 def card_number_from_query(query):
-
     m = re.search(
         r"\b(\d{1,3})\s*/\s*(\d{1,3})\b",
         query
@@ -179,16 +177,10 @@ def card_number_from_query(query):
     )
 
 
-# =========================================================
-# PRODUCT FILTERS
-# =========================================================
-
 def candidate_is_merch(title):
-
     t = normalize(title)
 
     for bad in MERCH_WORDS:
-
         if re.search(
             r"\b" + re.escape(bad) + r"\b",
             t
@@ -211,51 +203,27 @@ def card_matches_query(title, query):
 
     qwords = words(query_n)
 
-    # -----------------------------------------------------
-    # EX
-    # -----------------------------------------------------
-
     if "ex" in qwords:
-
         if not re.search(
             r"(?<![a-z0-9])ex(?![a-z0-9])",
             title_n
         ):
             return False
 
-    # -----------------------------------------------------
-    # VMAX
-    # -----------------------------------------------------
-
     if "vmax" in qwords:
-
         if "vmax" not in title_n:
             return False
 
-    # -----------------------------------------------------
-    # VSTAR
-    # -----------------------------------------------------
-
     if "vstar" in qwords:
-
         if "vstar" not in title_n:
             return False
 
-    # -----------------------------------------------------
-    # GX
-    # -----------------------------------------------------
-
     if "gx" in qwords:
-
         if not re.search(
             r"(?<![a-z0-9])gx(?![a-z0-9])",
             title_n
         ):
             return False
-
-    # -----------------------------------------------------
-    # EXACT CARD NUMBER
-    # -----------------------------------------------------
 
     number = card_number_from_query(query)
 
@@ -269,20 +237,11 @@ def card_matches_query(title, query):
             f"{a.zfill(3)}/{b.zfill(3)}",
         }
 
-        found = False
-
-        for p in possible:
-
-            if p in title_n:
-                found = True
-                break
-
-        if not found:
+        if not any(
+            p in title_n
+            for p in possible
+        ):
             return False
-
-    # -----------------------------------------------------
-    # IMPORTANT NAME WORDS
-    # -----------------------------------------------------
 
     ignore = {
         "pokemon",
@@ -334,7 +293,6 @@ def sealed_matches_query(title, query):
 
     qwords = words(query_n)
 
-    # ETB
     if "etb" in qwords:
 
         if not (
@@ -343,7 +301,6 @@ def sealed_matches_query(title, query):
         ):
             return False
 
-    # BOOSTER BOX
     if (
         "booster" in qwords
         and "box" in qwords
@@ -352,7 +309,6 @@ def sealed_matches_query(title, query):
         if "booster box" not in title_n:
             return False
 
-    # BOOSTER BUNDLE
     if (
         "booster" in qwords
         and "bundle" in qwords
@@ -361,7 +317,6 @@ def sealed_matches_query(title, query):
         if "booster bundle" not in title_n:
             return False
 
-    # TIN
     if "tin" in qwords:
 
         if not re.search(
@@ -370,13 +325,11 @@ def sealed_matches_query(title, query):
         ):
             return False
 
-    # COLLECTION
     if "collection" in qwords:
 
         if "collection" not in title_n:
             return False
 
-    # SET / PRODUCT NAME
     important = []
 
     for w in qwords:
@@ -549,10 +502,6 @@ def extract_cardyx_price_from_product(url):
         "html.parser"
     )
 
-    # -----------------------------------------------------
-    # JSON-LD
-    # -----------------------------------------------------
-
     for script in soup.select(
         'script[type="application/ld+json"]'
     ):
@@ -581,10 +530,6 @@ def extract_cardyx_price_from_product(url):
             ):
                 return value
 
-    # -----------------------------------------------------
-    # META
-    # -----------------------------------------------------
-
     meta = soup.select_one(
         'meta[property="product:price:amount"]'
     )
@@ -600,10 +545,6 @@ def extract_cardyx_price_from_product(url):
             and 0.5 <= value <= 100000
         ):
             return value
-
-    # -----------------------------------------------------
-    # SHOPIFY PRICE
-    # -----------------------------------------------------
 
     selectors = [
         ".price-item--sale",
@@ -882,7 +823,6 @@ def find_price_near_link(
             strip=True
         )
 
-        # EUR
         m = re.search(
             r"(\d[\d\s.,]*)\s*(?:€|EUR)",
             text,
@@ -901,7 +841,6 @@ def find_price_near_link(
             ):
                 return value
 
-        # CZK
         if country == "CZ":
 
             m = re.search(
@@ -1142,7 +1081,7 @@ def sort_results(results):
 
 
 # =========================================================
-# API SEARCH
+# API
 # =========================================================
 
 @app.route("/api/search")
@@ -1165,10 +1104,6 @@ def api_search():
 
     results = []
 
-    # -----------------------------------------------------
-    # CARDYX
-    # -----------------------------------------------------
-
     if mode == "card":
 
         results.extend(
@@ -1184,10 +1119,6 @@ def api_search():
                 query
             )
         )
-
-    # -----------------------------------------------------
-    # OTHER SHOPS
-    # -----------------------------------------------------
 
     for shop in SHOPS:
 
@@ -1207,10 +1138,6 @@ def api_search():
                 f"{shop['name']} error:",
                 e
             )
-
-    # -----------------------------------------------------
-    # FINAL FILTER
-    # -----------------------------------------------------
 
     clean = []
 
@@ -1263,20 +1190,12 @@ def api_search():
         clean
     )
 
-    # -----------------------------------------------------
-    # HISTORY
-    # -----------------------------------------------------
-
     for result in results[:10]:
 
         save_history(
             query,
             result
         )
-
-    # -----------------------------------------------------
-    # INFO
-    # -----------------------------------------------------
 
     info = {}
 
@@ -1312,6 +1231,9 @@ def health():
         "service": "CardRadar",
         "status": "ok",
         "version": VERSION,
+        "index_exists": os.path.exists(
+            INDEX_FILE
+        ),
     })
 
 
@@ -1322,9 +1244,17 @@ def health():
 @app.route("/")
 def home():
 
-    return send_from_directory(
-        ".",
-        "index.html"
+    if not os.path.exists(INDEX_FILE):
+
+        return (
+            "<h1>CardRadar</h1>"
+            "<p>Chýba index.html.</p>"
+            "<p>Uisti sa, že index.html je "
+            "v rovnakom priečinku ako app.py.</p>"
+        ), 500
+
+    return send_file(
+        INDEX_FILE
     )
 
 
