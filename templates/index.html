@@ -1,45 +1,334 @@
-<!doctype html> 
+<!doctype html>
 <html lang="sk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CardRadar 🔍 – reálne ceny Pokémon kariet</title>
+
 <style>
-:root{--bg:#090d16;--panel:#1e293b;--input:#0f172a;--text:#f8fafc;--sub:#94a3b8;--border:#334155;--accent:#facc15}
-*{box-sizing:border-box}
-body{margin:0;padding:22px 14px;min-height:100vh;background:linear-gradient(135deg,#090d16,#0f172a,#172033);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.wrap{max-width:900px;margin:auto}
-h1{text-align:center;color:var(--accent);font-size:2.3rem;margin:10px 0 4px}
-.sub{text-align:center;color:var(--sub);margin-bottom:22px}
-.search{display:flex;gap:8px;background:#1e293bcc;padding:8px;border:1px solid var(--border);border-radius:14px}
-.search input{flex:1}
-.input,select,button{border:1px solid var(--border);background:var(--input);color:var(--text);border-radius:9px;padding:11px 13px;font-size:15px}
-button.primary{background:var(--accent);color:#111827;font-weight:800;border:0}
-.tags{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
-.tags button{padding:7px 10px;font-size:13px}
-.panel{background:#1e293bcc;border:1px solid var(--border);border-radius:14px;padding:16px;margin:14px 0}
-.preview{display:flex;gap:15px;align-items:center}
-.preview img{width:90px;border-radius:9px}
-.muted{color:var(--sub)}
-.offer{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
-.offer:last-child{border-bottom:0}
-.price{font-size:1.3rem;color:#4ade80;font-weight:800;white-space:nowrap}
-.buy{display:inline-block;margin-top:7px;background:var(--accent);color:#111827;text-decoration:none;font-weight:800;padding:7px 10px;border-radius:7px;font-size:13px}
-.badge{font-size:12px;background:#334155;padding:3px 7px;border-radius:5px;margin-right:4px}
-.best{background:#16a34a;color:white}
-.loading{text-align:center;padding:30px;color:var(--sub)}
-.error{color:#fda4af}
-.empty{text-align:center;padding:30px;color:var(--sub)}
-@media(max-width:650px){
-.search{flex-direction:column}
-.offer{align-items:flex-start;flex-direction:column}
-.price{text-align:left}
-.preview{align-items:flex-start}
+:root{
+  --bg:#090d16;
+  --panel:#1e293b;
+  --input:#0f172a;
+  --text:#f8fafc;
+  --sub:#94a3b8;
+  --border:#334155;
+  --accent:#facc15;
+  --green:#4ade80;
 }
+
+*{
+  box-sizing:border-box;
+}
+
+body{
+  margin:0;
+  padding:22px 14px;
+  min-height:100vh;
+  background:linear-gradient(135deg,#090d16,#0f172a,#172033);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+
+.wrap{
+  max-width:900px;
+  margin:auto;
+}
+
+h1{
+  text-align:center;
+  color:var(--accent);
+  font-size:2.3rem;
+  margin:10px 0 4px;
+}
+
+.sub{
+  text-align:center;
+  color:var(--sub);
+  margin-bottom:22px;
+}
+
+/* SEARCH */
+
+.search-wrap{
+  position:relative;
+}
+
+.search{
+  display:flex;
+  gap:8px;
+  background:#1e293bcc;
+  padding:8px;
+  border:1px solid var(--border);
+  border-radius:14px;
+}
+
+.search input{
+  flex:1;
+}
+
+.input,
+select,
+button{
+  border:1px solid var(--border);
+  background:var(--input);
+  color:var(--text);
+  border-radius:9px;
+  padding:11px 13px;
+  font-size:15px;
+}
+
+button{
+  cursor:pointer;
+}
+
+button.primary{
+  background:var(--accent);
+  color:#111827;
+  font-weight:800;
+  border:0;
+}
+
+/* AUTOCOMPLETE */
+
+.suggestions{
+  position:absolute;
+  z-index:1000;
+  top:calc(100% + 6px);
+  left:0;
+  right:0;
+  background:#111827;
+  border:1px solid var(--border);
+  border-radius:12px;
+  overflow:hidden;
+  box-shadow:0 15px 35px rgba(0,0,0,.45);
+  display:none;
+}
+
+.suggestions.show{
+  display:block;
+}
+
+.suggestion{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:11px 13px;
+  cursor:pointer;
+  border-bottom:1px solid rgba(51,65,85,.65);
+}
+
+.suggestion:last-child{
+  border-bottom:0;
+}
+
+.suggestion:hover,
+.suggestion.active{
+  background:#1e293b;
+}
+
+.suggestion-icon{
+  width:34px;
+  height:34px;
+  border-radius:8px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:#0f172a;
+  font-size:17px;
+  flex:none;
+}
+
+.suggestion-main{
+  min-width:0;
+  flex:1;
+}
+
+.suggestion-title{
+  font-weight:700;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.suggestion-sub{
+  color:var(--sub);
+  font-size:12px;
+  margin-top:2px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.suggestion-type{
+  color:var(--sub);
+  font-size:11px;
+  padding:4px 7px;
+  border:1px solid var(--border);
+  border-radius:6px;
+  white-space:nowrap;
+}
+
+.suggestions-loading{
+  padding:14px;
+  text-align:center;
+  color:var(--sub);
+  font-size:14px;
+}
+
+.suggestions-empty{
+  padding:14px;
+  color:var(--sub);
+  text-align:center;
+  font-size:14px;
+}
+
+/* QUICK TAGS */
+
+.tags{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  margin:12px 0;
+}
+
+.tags button{
+  padding:7px 10px;
+  font-size:13px;
+}
+
+/* PANELS */
+
+.panel{
+  background:#1e293bcc;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:16px;
+  margin:14px 0;
+}
+
+.preview{
+  display:flex;
+  gap:15px;
+  align-items:center;
+}
+
+.preview img{
+  width:90px;
+  border-radius:9px;
+}
+
+.muted{
+  color:var(--sub);
+}
+
+/* OFFERS */
+
+.offer{
+  display:flex;
+  justify-content:space-between;
+  gap:14px;
+  align-items:center;
+  padding:14px 0;
+  border-bottom:1px solid var(--border);
+}
+
+.offer:last-child{
+  border-bottom:0;
+}
+
+.price{
+  font-size:1.3rem;
+  color:var(--green);
+  font-weight:800;
+  white-space:nowrap;
+}
+
+.buy{
+  display:inline-block;
+  margin-top:7px;
+  background:var(--accent);
+  color:#111827;
+  text-decoration:none;
+  font-weight:800;
+  padding:7px 10px;
+  border-radius:7px;
+  font-size:13px;
+}
+
+.badge{
+  font-size:12px;
+  background:#334155;
+  padding:3px 7px;
+  border-radius:5px;
+  margin-right:4px;
+}
+
+.best{
+  background:#16a34a;
+  color:white;
+}
+
+.loading{
+  text-align:center;
+  padding:30px;
+  color:var(--sub);
+}
+
+.error{
+  color:#fda4af;
+}
+
+.empty{
+  text-align:center;
+  padding:30px;
+  color:var(--sub);
+}
+
+/* MOBILE */
+
+@media(max-width:650px){
+
+  body{
+    padding:16px 10px;
+  }
+
+  h1{
+    font-size:2rem;
+  }
+
+  .search{
+    flex-direction:column;
+  }
+
+  .search button{
+    width:100%;
+  }
+
+  .offer{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+
+  .price{
+    text-align:left;
+  }
+
+  .preview{
+    align-items:flex-start;
+  }
+
+  .suggestion-type{
+    display:none;
+  }
+
+}
+
 </style>
 </head>
 
 <body>
+
 <div class="wrap">
 
 <h1>CardRadar 🔍</h1>
@@ -48,164 +337,769 @@ button.primary{background:var(--accent);color:#111827;font-weight:800;border:0}
 Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
 </div>
 
-<div class="search">
-<input id="q" class="input" placeholder="Charizard VMAX, Surging Sparks ETB..." onkeydown="if(event.key==='Enter')search()">
-<button class="primary" onclick="search()">Hľadať</button>
+<div class="search-wrap">
+
+  <div class="search">
+
+    <input
+      id="q"
+      class="input"
+      autocomplete="off"
+      placeholder="Pikachu, Charizard, Surging Sparks ETB..."
+      oninput="handleInput()"
+      onkeydown="handleKeydown(event)"
+    >
+
+    <button
+      class="primary"
+      onclick="search()"
+    >
+      Hľadať
+    </button>
+
+  </div>
+
+  <div
+    id="suggestions"
+    class="suggestions"
+  ></div>
+
 </div>
 
 <div class="tags">
-<button onclick="tag('Charizard VMAX')">Charizard VMAX</button>
-<button onclick="tag('Pikachu ex')">Pikachu ex</button>
-<button onclick="tag('Surging Sparks ETB')">Surging Sparks ETB</button>
-<button onclick="tag('Umbreon VMAX')">Umbreon VMAX</button>
+
+  <button onclick="tag('Charizard VMAX')">
+    Charizard VMAX
+  </button>
+
+  <button onclick="tag('Pikachu ex')">
+    Pikachu ex
+  </button>
+
+  <button onclick="tag('Surging Sparks ETB')">
+    Surging Sparks ETB
+  </button>
+
+  <button onclick="tag('Umbreon VMAX')">
+    Umbreon VMAX
+  </button>
+
 </div>
 
 <div id="status"></div>
-<div id="preview" class="panel" style="display:none"></div>
+
+<div
+  id="preview"
+  class="panel"
+  style="display:none"
+></div>
+
 <div id="results"></div>
 
 </div>
 
 <script>
-const eur=(n)=>Number(n).toFixed(2)+' €';
+
+/* =========================================================
+   CARD RADAR FRONTEND
+   ========================================================= */
+
+const eur = (n) => Number(n).toFixed(2) + ' €';
+
+let suggestionTimer = null;
+let suggestionItems = [];
+let suggestionIndex = -1;
+
+
+/* =========================================================
+   QUICK TAG
+   ========================================================= */
 
 function tag(x){
-document.getElementById('q').value=x;
-search();
+
+  document.getElementById('q').value = x;
+
+  hideSuggestions();
+
+  search();
+
 }
+
+
+/* =========================================================
+   INPUT HANDLING
+   ========================================================= */
+
+function handleInput(){
+
+  const q = document.getElementById('q').value.trim();
+
+  suggestionIndex = -1;
+
+  clearTimeout(suggestionTimer);
+
+  if(!q){
+
+    hideSuggestions();
+
+    return;
+  }
+
+  if(q.length < 2){
+
+    hideSuggestions();
+
+    return;
+  }
+
+  showSuggestionsLoading();
+
+  suggestionTimer = setTimeout(() => {
+
+    loadSuggestions(q);
+
+  }, 220);
+
+}
+
+
+/* =========================================================
+   KEYBOARD NAVIGATION
+   ========================================================= */
+
+function handleKeydown(event){
+
+  const box = document.getElementById('suggestions');
+
+  const visible = box.classList.contains('show');
+
+  if(event.key === 'ArrowDown' && visible){
+
+    event.preventDefault();
+
+    if(!suggestionItems.length) return;
+
+    suggestionIndex++;
+
+    if(suggestionIndex >= suggestionItems.length){
+      suggestionIndex = 0;
+    }
+
+    renderActiveSuggestion();
+
+    return;
+  }
+
+  if(event.key === 'ArrowUp' && visible){
+
+    event.preventDefault();
+
+    if(!suggestionItems.length) return;
+
+    suggestionIndex--;
+
+    if(suggestionIndex < 0){
+      suggestionIndex = suggestionItems.length - 1;
+    }
+
+    renderActiveSuggestion();
+
+    return;
+  }
+
+  if(event.key === 'Enter'){
+
+    event.preventDefault();
+
+    if(
+      visible &&
+      suggestionIndex >= 0 &&
+      suggestionItems[suggestionIndex]
+    ){
+
+      chooseSuggestion(
+        suggestionItems[suggestionIndex]
+      );
+
+      return;
+    }
+
+    search();
+
+    return;
+  }
+
+  if(event.key === 'Escape'){
+
+    hideSuggestions();
+
+  }
+
+}
+
+
+/* =========================================================
+   LOAD AUTOCOMPLETE
+   ========================================================= */
+
+async function loadSuggestions(q){
+
+  try{
+
+    const r = await fetch(
+      '/api/suggestions?q=' +
+      encodeURIComponent(q)
+    );
+
+    const d = await r.json();
+
+    if(!r.ok){
+
+      throw new Error(
+        d.error || 'Chyba'
+      );
+
+    }
+
+    suggestionItems =
+      Array.isArray(d.suggestions)
+      ? d.suggestions
+      : [];
+
+    suggestionIndex = -1;
+
+    renderSuggestions();
+
+  }
+  catch(e){
+
+    hideSuggestions();
+
+  }
+
+}
+
+
+/* =========================================================
+   SHOW LOADING
+   ========================================================= */
+
+function showSuggestionsLoading(){
+
+  const box =
+    document.getElementById('suggestions');
+
+  box.innerHTML =
+    '<div class="suggestions-loading">' +
+    '🔎 Hľadám návrhy...' +
+    '</div>';
+
+  box.classList.add('show');
+
+}
+
+
+/* =========================================================
+   RENDER SUGGESTIONS
+   ========================================================= */
+
+function renderSuggestions(){
+
+  const box =
+    document.getElementById('suggestions');
+
+  if(!suggestionItems.length){
+
+    box.innerHTML =
+      '<div class="suggestions-empty">' +
+      'Žiadny presný návrh – môžeš vyhľadať aj vlastný názov.' +
+      '</div>';
+
+    box.classList.add('show');
+
+    return;
+  }
+
+  box.innerHTML =
+    suggestionItems
+      .map((item,index) => {
+
+        const title =
+          esc(item.title || '');
+
+        const subtitle =
+          esc(item.subtitle || '');
+
+        const type =
+          esc(item.type_label || '');
+
+        const icon =
+          item.type === 'set'
+          ? '📦'
+          : item.type === 'product'
+          ? '🛒'
+          : '⚡';
+
+        return `
+
+          <div
+            class="suggestion"
+            data-index="${index}"
+            onclick="chooseSuggestionByIndex(${index})"
+          >
+
+            <div class="suggestion-icon">
+              ${icon}
+            </div>
+
+            <div class="suggestion-main">
+
+              <div class="suggestion-title">
+                ${title}
+              </div>
+
+              ${
+                subtitle
+                ? `
+                  <div class="suggestion-sub">
+                    ${subtitle}
+                  </div>
+                `
+                : ''
+              }
+
+            </div>
+
+            ${
+              type
+              ? `
+                <div class="suggestion-type">
+                  ${type}
+                </div>
+              `
+              : ''
+            }
+
+          </div>
+
+        `;
+
+      })
+      .join('');
+
+  box.classList.add('show');
+
+}
+
+
+/* =========================================================
+   ACTIVE SUGGESTION
+   ========================================================= */
+
+function renderActiveSuggestion(){
+
+  const rows =
+    document.querySelectorAll(
+      '.suggestion'
+    );
+
+  rows.forEach((row,index) => {
+
+    row.classList.toggle(
+      'active',
+      index === suggestionIndex
+    );
+
+  });
+
+}
+
+
+/* =========================================================
+   CHOOSE SUGGESTION
+   ========================================================= */
+
+function chooseSuggestionByIndex(index){
+
+  if(!suggestionItems[index]) return;
+
+  chooseSuggestion(
+    suggestionItems[index]
+  );
+
+}
+
+
+function chooseSuggestion(item){
+
+  const value =
+    item.query ||
+    item.title ||
+    '';
+
+  document.getElementById('q').value =
+    value;
+
+  hideSuggestions();
+
+  search();
+
+}
+
+
+/* =========================================================
+   HIDE SUGGESTIONS
+   ========================================================= */
+
+function hideSuggestions(){
+
+  const box =
+    document.getElementById('suggestions');
+
+  box.classList.remove('show');
+
+  box.innerHTML = '';
+
+  suggestionItems = [];
+
+  suggestionIndex = -1;
+
+}
+
+
+/* =========================================================
+   SEARCH
+   ========================================================= */
 
 async function search(){
 
-const q=document.getElementById('q').value.trim();
+  const q =
+    document.getElementById('q')
+      .value
+      .trim();
 
-if(!q)return;
+  if(!q) return;
 
-history.replaceState({},'',`?q=${encodeURIComponent(q)}`);
+  hideSuggestions();
 
-document.getElementById('status').innerHTML=
-'<div class="loading">🔎 Overujem aktuálne ponuky v obchodoch...</div>';
+  history.replaceState(
+    {},
+    '',
+    `?q=${encodeURIComponent(q)}`
+  );
 
-document.getElementById('results').innerHTML='';
-document.getElementById('preview').style.display='none';
+  document.getElementById('status').innerHTML =
+    '<div class="loading">' +
+    '🔎 Overujem aktuálne ponuky v obchodoch...' +
+    '</div>';
 
-try{
+  document.getElementById('results').innerHTML = '';
 
-const r=await fetch('/api/search?q='+encodeURIComponent(q));
-const d=await r.json();
+  document.getElementById('preview').style.display =
+    'none';
 
-if(!r.ok)throw new Error(d.error||'Chyba');
+  try{
 
-if(d.info&&(d.info.image||d.info.title)){
+    const r =
+      await fetch(
+        '/api/search?q=' +
+        encodeURIComponent(q)
+      );
 
-const p=document.getElementById('preview');
+    const d =
+      await r.json();
 
-p.style.display='block';
+    if(!r.ok){
 
-p.innerHTML=`
-<div class="preview">
-${d.info.image?`<img src="${d.info.image}">`:''}
-<div>
-<h2>${esc(d.info.title||q)}</h2>
-<div class="muted">${esc(d.info.subtitle||'')}</div>
-</div>
-</div>
-`;
+      throw new Error(
+        d.error || 'Chyba'
+      );
+
+    }
+
+
+    /* =====================================================
+       PREVIEW
+       ===================================================== */
+
+    if(
+      d.info &&
+      (
+        d.info.image ||
+        d.info.title
+      )
+    ){
+
+      const p =
+        document.getElementById('preview');
+
+      p.style.display = 'block';
+
+      p.innerHTML = `
+
+        <div class="preview">
+
+          ${
+            d.info.image
+            ? `
+              <img
+                src="${esc(d.info.image)}"
+                alt=""
+              >
+            `
+            : ''
+          }
+
+          <div>
+
+            <h2>
+              ${esc(
+                d.info.title || q
+              )}
+            </h2>
+
+            <div class="muted">
+              ${esc(
+                d.info.subtitle || ''
+              )}
+            </div>
+
+          </div>
+
+        </div>
+
+      `;
+
+    }
+
+
+    /* =====================================================
+       STATUS
+       ===================================================== */
+
+    const normalized =
+      d.normalized_query ||
+      d.normalized ||
+      '';
+
+    document.getElementById('status').innerHTML = `
+
+      <div class="panel">
+
+        <b>
+          Nájdených reálnych ponúk:
+          ${d.results.length}
+        </b>
+
+        ${
+          normalized &&
+          normalized.toLowerCase() !== q.toLowerCase()
+          ? `
+            <div
+              class="muted"
+              style="margin-top:6px"
+            >
+              CardRadar hľadá ako:
+              <b>${esc(normalized)}</b>
+            </div>
+          `
+          : ''
+        }
+
+        <div
+          class="muted"
+          style="margin-top:5px"
+        >
+          Kurz CZK/EUR:
+          ${d.czk_per_eur}
+        </div>
+
+      </div>
+
+    `;
+
+
+    /* =====================================================
+       RESULTS
+       ===================================================== */
+
+    const el =
+      document.getElementById('results');
+
+
+    if(!d.results.length){
+
+      el.innerHTML =
+        '<div class="empty">' +
+        'Nenašiel som čitateľnú ponuku. ' +
+        'Obchod mohol zmeniť stránku alebo ' +
+        'vyhľadávanie nič nenašlo.' +
+        '</div>';
+
+      return;
+
+    }
+
+
+    el.innerHTML =
+
+      '<div class="panel">' +
+
+      '<h3>Aktuálne ponuky</h3>' +
+
+      d.results
+        .map((x,i) => `
+
+          <div class="offer">
+
+            <div>
+
+              <div>
+                <b>
+                  ${esc(x.title)}
+                </b>
+              </div>
+
+              <div
+                style="margin-top:6px"
+              >
+
+                <span class="badge">
+                  ${esc(x.shop)}
+                </span>
+
+                <span class="badge">
+                  ${esc(x.country)}
+                </span>
+
+                <span class="badge">
+                  ${esc(x.condition)}
+                </span>
+
+                ${
+                  i === 0
+                  ? `
+                    <span class="badge best">
+                      TOP CENA
+                    </span>
+                  `
+                  : ''
+                }
+
+              </div>
+
+            </div>
+
+
+            <div>
+
+              <div class="price">
+
+                ${eur(x.price_eur)}
+
+              </div>
+
+              <a
+                class="buy"
+                href="${esc(x.link)}"
+                target="_blank"
+                rel="noopener"
+              >
+                Otvoriť ponuku ↗
+              </a>
+
+            </div>
+
+          </div>
+
+        `)
+        .join('') +
+
+      '</div>';
+
+  }
+  catch(e){
+
+    document.getElementById('status').innerHTML =
+      '<div class="panel error">' +
+      'Chyba: ' +
+      esc(e.message) +
+      '</div>';
+
+  }
 
 }
 
-document.getElementById('status').innerHTML=`
-<div class="panel">
-<b>Nájdených reálnych ponúk: ${d.results.length}</b>
-<div class="muted">Kurz CZK/EUR: ${d.czk_per_eur}</div>
-</div>
-`;
 
-const el=document.getElementById('results');
-
-if(!d.results.length){
-
-el.innerHTML=
-'<div class="empty">Nenašiel som čitateľnú ponuku. Obchod mohol zmeniť stránku alebo vyhľadávanie nič nenašlo.</div>';
-
-return;
-}
-
-el.innerHTML=
-'<div class="panel"><h3>Aktuálne ponuky</h3>'+
-d.results.map((x,i)=>`
-
-<div class="offer">
-
-<div>
-
-<div><b>${esc(x.title)}</b></div>
-
-<div style="margin-top:6px">
-
-<span class="badge">${esc(x.shop)}</span>
-<span class="badge">${x.country}</span>
-<span class="badge">${x.condition}</span>
-
-${i===0?'<span class="badge best">TOP CENA</span>':''}
-
-</div>
-
-</div>
-
-<div>
-
-<div class="price">
-${eur(x.price_eur)}
-</div>
-
-<a class="buy"
-href="${x.link}"
-target="_blank"
-rel="noopener">
-Otvoriť ponuku ↗
-</a>
-
-</div>
-
-</div>
-
-`).join('')+
-'</div>';
-
-}
-
-catch(e){
-
-document.getElementById('status').innerHTML=
-'<div class="panel error">Chyba: '+esc(e.message)+'</div>';
-
-}
-
-}
+/* =========================================================
+   ESCAPE HTML
+   ========================================================= */
 
 function esc(s){
 
-return String(s??'').replace(
-/[&<>"']/g,
-m=>({
-'&':'&amp;',
-'<':'&lt;',
-'>':'&gt;',
-'"':'&quot;',
-"'":'&#039;'
-}[m])
+  return String(
+    s ?? ''
+  ).replace(
+    /[&<>"']/g,
+    m => ({
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#039;'
+    }[m])
+  );
+
+}
+
+
+/* =========================================================
+   CLOSE AUTOCOMPLETE WHEN CLICKING OUTSIDE
+   ========================================================= */
+
+document.addEventListener(
+  'click',
+  function(event){
+
+    const searchWrap =
+      document.querySelector(
+        '.search-wrap'
+      );
+
+    if(
+      searchWrap &&
+      !searchWrap.contains(
+        event.target
+      )
+    ){
+
+      hideSuggestions();
+
+    }
+
+  }
 );
 
+
+/* =========================================================
+   LOAD QUERY FROM URL
+   ========================================================= */
+
+const initialQuery =
+  new URLSearchParams(
+    location.search
+  ).get('q');
+
+if(initialQuery){
+
+  document.getElementById('q').value =
+    initialQuery;
+
+  search();
+
 }
 
-const q=new URLSearchParams(location.search).get('q');
-
-if(q){
-document.getElementById('q').value=q;
-search();
-}
 </script>
 
 </body>
 </html>
- 
