@@ -1,1560 +1,210 @@
-import os
-import re
-import json
-import sqlite3
-from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote, urljoin
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardRadar 🔍 – reálne ceny Pokémon kariet</title>
+<style>
+:root{--bg:#090d16;--panel:#1e293b;--input:#0f172a;--text:#f8fafc;--sub:#94a3b8;--border:#334155;--accent:#facc15}
+*{box-sizing:border-box}
+body{margin:0;padding:22px 14px;min-height:100vh;background:linear-gradient(135deg,#090d16,#0f172a,#172033);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{max-width:900px;margin:auto}
+h1{text-align:center;color:var(--accent);font-size:2.3rem;margin:10px 0 4px}
+.sub{text-align:center;color:var(--sub);margin-bottom:22px}
+.search{display:flex;gap:8px;background:#1e293bcc;padding:8px;border:1px solid var(--border);border-radius:14px}
+.search input{flex:1}
+.input,select,button{border:1px solid var(--border);background:var(--input);color:var(--text);border-radius:9px;padding:11px 13px;font-size:15px}
+button.primary{background:var(--accent);color:#111827;font-weight:800;border:0}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.tags button{padding:7px 10px;font-size:13px}
+.panel{background:#1e293bcc;border:1px solid var(--border);border-radius:14px;padding:16px;margin:14px 0}
+.preview{display:flex;gap:15px;align-items:center}
+.preview img{width:90px;border-radius:9px}
+.muted{color:var(--sub)}
+.offer{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
+.offer:last-child{border-bottom:0}
+.price{font-size:1.3rem;color:#4ade80;font-weight:800;white-space:nowrap}
+.buy{display:inline-block;margin-top:7px;background:var(--accent);color:#111827;text-decoration:none;font-weight:800;padding:7px 10px;border-radius:7px;font-size:13px}
+.badge{font-size:12px;background:#334155;padding:3px 7px;border-radius:5px;margin-right:4px}
+.best{background:#16a34a;color:white}
+.loading{text-align:center;padding:30px;color:var(--sub)}
+.error{color:#fda4af}
+.empty{text-align:center;padding:30px;color:var(--sub)}
+@media(max-width:650px){
+.search{flex-direction:column}
+.offer{align-items:flex-start;flex-direction:column}
+.price{text-align:left}
+.preview{align-items:flex-start}
+}
+</style>
+</head>
 
-import requests
-from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request
+<body>
+<div class="wrap">
 
+<h1>CardRadar 🔍</h1>
 
-# ============================================================
-# CARD RADAR
-# Backend v3
-#
-# Cieľ:
-# - presné vyhľadávanie Pokémon kariet
-# - presné vyhľadávanie sealed produktov
-# - žiadne náhodné "ex" výsledky
-# - žiadny merch / plyšáci / figúrky
-# - cena iba z produktovej stránky
-# - žiadne hádanie ceny z celého HTML
-# ============================================================
+<div class="sub">
+Porovnanie reálnych cien Pokémon kariet a produktov SK & CZ
+</div>
 
+<div class="search">
+<input id="q" class="input" placeholder="Charizard VMAX, Surging Sparks ETB..." onkeydown="if(event.key==='Enter')search()">
+<button class="primary" onclick="search()">Hľadať</button>
+</div>
 
-app = Flask(__name__)
+<div class="tags">
+<button onclick="tag('Charizard VMAX')">Charizard VMAX</button>
+<button onclick="tag('Pikachu ex')">Pikachu ex</button>
+<button onclick="tag('Surging Sparks ETB')">Surging Sparks ETB</button>
+<button onclick="tag('Umbreon VMAX')">Umbreon VMAX</button>
+</div>
 
-VERSION = "3.0"
+<div id="status"></div>
+<div id="preview" class="panel" style="display:none"></div>
+<div id="results"></div>
 
-DB_FILE = os.environ.get("CARD_RADAR_DB", "cardradar.db")
+</div>
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/17.0 Mobile/15E148 Safari/604.1"
-    ),
-    "Accept-Language": "sk-SK,sk;q=0.9,en;q=0.8,cs;q=0.7",
+<script>
+const eur=(n)=>Number(n).toFixed(2)+' €';
+
+function tag(x){
+document.getElementById('q').value=x;
+search();
 }
 
-TIMEOUT = 15
+async function search(){
 
+const q=document.getElementById('q').value.trim();
 
-# ============================================================
-# OBCHODY
-# ============================================================
+if(!q)return;
 
-SHOPS = [
-    {
-        "name": "CardyX",
-        "domain": "cardyx.sk",
-        "search": "https://www.cardyx.sk/search?q={q}",
-        "country": "SK",
-        "currency": "EUR",
-    },
-    {
-        "name": "iHRYsko",
-        "domain": "ihrysko.sk",
-        "search": "https://www.ihrysko.sk/vyhladavanie?q={q}",
-        "country": "SK",
-        "currency": "EUR",
-    },
-    {
-        "name": "Černý Rytíř",
-        "domain": "cernyrytir.cz",
-        "search": "https://www.cernyrytir.cz/index.php3?akce=3&jmeno={q}",
-        "country": "CZ",
-        "currency": "CZK",
-    },
-    {
-        "name": "Veselý Drak",
-        "domain": "vesely-drak.cz",
-        "search": "https://www.vesely-drak.cz/vyhledavani/?search={q}",
-        "country": "CZ",
-        "currency": "CZK",
-    },
-]
+history.replaceState({},'',`?q=${encodeURIComponent(q)}`);
 
+document.getElementById('status').innerHTML=
+'<div class="loading">🔎 Overujem aktuálne ponuky v obchodoch...</div>';
 
-# ============================================================
-# DATABASE
-# ============================================================
+document.getElementById('results').innerHTML='';
+document.getElementById('preview').style.display='none';
 
-def init_db():
-    con = sqlite3.connect(DB_FILE)
-    cur = con.cursor()
+try{
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            checked_at TEXT NOT NULL,
-            query TEXT NOT NULL,
-            shop TEXT NOT NULL,
-            title TEXT NOT NULL,
-            price_eur REAL NOT NULL,
-            link TEXT NOT NULL
-        )
-    """)
+const r=await fetch('/api/search?q='+encodeURIComponent(q));
+const d=await r.json();
 
-    con.commit()
-    con.close()
+if(!r.ok)throw new Error(d.error||'Chyba');
 
+if(d.info&&(d.info.image||d.info.title)){
 
-init_db()
+const p=document.getElementById('preview');
 
+p.style.display='block';
 
-# ============================================================
-# TEXT NORMALIZATION
-# ============================================================
+p.innerHTML=`
+<div class="preview">
+${d.info.image?`<img src="${d.info.image}">`:''}
+<div>
+<h2>${esc(d.info.title||q)}</h2>
+<div class="muted">${esc(d.info.subtitle||'')}</div>
+</div>
+</div>
+`;
 
-def normalize_text(value):
-    if not value:
-        return ""
-
-    value = str(value).lower()
-
-    replacements = {
-        "á": "a",
-        "ä": "a",
-        "č": "c",
-        "ď": "d",
-        "é": "e",
-        "ě": "e",
-        "í": "i",
-        "ľ": "l",
-        "ĺ": "l",
-        "ň": "n",
-        "ó": "o",
-        "ô": "o",
-        "ŕ": "r",
-        "š": "s",
-        "ť": "t",
-        "ú": "u",
-        "ů": "u",
-        "ý": "y",
-        "ž": "z",
-    }
-
-    for a, b in replacements.items():
-        value = value.replace(a, b)
-
-    value = re.sub(r"[^a-z0-9/]+", " ", value)
-    value = re.sub(r"\s+", " ", value)
-
-    return value.strip()
-
-
-def words(value):
-    return normalize_text(value).split()
-
-
-# ============================================================
-# SEARCH TYPE
-# ============================================================
-
-SEALED_WORDS = {
-    "etb",
-    "elite trainer box",
-    "booster box",
-    "booster",
-    "booster pack",
-    "booster bundle",
-    "bundle",
-    "tin",
-    "mini tin",
-    "collection box",
-    "premium collection",
-    "ultra premium collection",
-    "upc",
-    "collection",
-    "box",
-    "deck",
-    "blister",
 }
 
-MERCH_WORDS = {
-    "plush",
-    "plushie",
-    "plysak",
-    "plyš",
-    "figurka",
-    "figure",
-    "funko",
-    "tricko",
-    "tričko",
-    "shirt",
-    "mikina",
-    "hoodie",
-    "čiapka",
-    "cap",
-    "batoh",
-    "backpack",
-    "hrncek",
-    "hrnek",
-    "mug",
-    "vankus",
-    "pillow",
-    "puzzle",
-    "album",
-    "binder",
-    "obal",
-    "sleeves",
-    "deck box",
-    "playmat",
-    "podlozka",
-    "keychain",
-    "privesok",
-    "figurine",
-    "toy",
-    "hračka",
+document.getElementById('status').innerHTML=`
+<div class="panel">
+<b>Nájdených reálnych ponúk: ${d.results.length}</b>
+<div class="muted">Kurz CZK/EUR: ${d.czk_per_eur}</div>
+</div>
+`;
+
+const el=document.getElementById('results');
+
+if(!d.results.length){
+
+el.innerHTML=
+'<div class="empty">Nenašiel som čitateľnú ponuku. Obchod mohol zmeniť stránku alebo vyhľadávanie nič nenašlo.</div>';
+
+return;
 }
 
+el.innerHTML=
+'<div class="panel"><h3>Aktuálne ponuky</h3>'+
+d.results.map((x,i)=>`
 
-def detect_card_number(query):
-    """
-    Nájde napr.
-    013/094
-    55/193
-    055-193
-    """
-    m = re.search(r"\b(\d{1,3})\s*[/\-]\s*(\d{1,3})\b", query)
+<div class="offer">
 
-    if not m:
-        return None
+<div>
 
-    a = m.group(1).zfill(3)
-    b = m.group(2).zfill(3)
+<div><b>${esc(x.title)}</b></div>
 
-    return f"{a}/{b}"
+<div style="margin-top:6px">
 
+<span class="badge">${esc(x.shop)}</span>
+<span class="badge">${x.country}</span>
+<span class="badge">${x.condition}</span>
 
-def query_is_sealed(query):
-    q = normalize_text(query)
+${i===0?'<span class="badge best">TOP CENA</span>':''}
 
-    if "elite trainer box" in q:
-        return True
+</div>
 
-    if "booster box" in q:
-        return True
+</div>
 
-    if "booster bundle" in q:
-        return True
+<div>
 
-    if "premium collection" in q:
-        return True
+<div class="price">
+${eur(x.price_eur)}
+</div>
 
-    if "ultra premium" in q:
-        return True
+<a class="buy"
+href="${x.link}"
+target="_blank"
+rel="noopener">
+Otvoriť ponuku ↗
+</a>
 
-    if re.search(r"\betb\b", q):
-        return True
+</div>
 
-    if re.search(r"\bupc\b", q):
-        return True
+</div>
 
-    for word in SEALED_WORDS:
-        if word in q:
-            return True
+`).join('')+
+'</div>';
 
-    return False
+}
 
+catch(e){
 
-def query_is_card(query):
-    return not query_is_sealed(query)
+document.getElementById('status').innerHTML=
+'<div class="panel error">Chyba: '+esc(e.message)+'</div>';
 
+}
 
-# ============================================================
-# QUERY CLEANING
-# ============================================================
+}
 
-def clean_query(query):
-    q = normalize_text(query)
+function esc(s){
 
-    # card number nechávame bokom pri tokenoch,
-    # riešime ho samostatne
-    number = detect_card_number(q)
+return String(s??'').replace(
+/[&<>"']/g,
+m=>({
+'&':'&amp;',
+'<':'&lt;',
+'>':'&gt;',
+'"':'&quot;',
+"'":'&#039;'
+}[m])
+);
 
-    if number:
-        q = re.sub(
-            r"\b\d{1,3}\s*[/\-]\s*\d{1,3}\b",
-            " ",
-            q,
-        )
+}
 
-    q = re.sub(r"\s+", " ", q).strip()
+const q=new URLSearchParams(location.search).get('q');
 
-    return q, number
+if(q){
+document.getElementById('q').value=q;
+search();
+}
+</script>
 
-
-# ============================================================
-# TOKEN MATCHING
-# ============================================================
-
-def token_exists(token, text):
-    token = normalize_text(token)
-    text = normalize_text(text)
-
-    if not token:
-        return False
-
-    # veľmi krátke slová musia byť celé slovo
-    if len(token) <= 2:
-        return re.search(
-            r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])",
-            text,
-        ) is not None
-
-    return token in text
-
-
-def all_tokens_match(query, title):
-    q_words = words(query)
-    title_norm = normalize_text(title)
-
-    if not q_words:
-        return False
-
-    return all(token_exists(w, title_norm) for w in q_words)
-
-
-# ============================================================
-# EXCLUSION
-# ============================================================
-
-def contains_merch(title):
-    t = normalize_text(title)
-
-    for word in MERCH_WORDS:
-        if word in t:
-            return True
-
-    return False
-
-
-def looks_like_pokemon_product(title):
-    t = normalize_text(title)
-
-    pokemon_markers = [
-        "pokemon",
-        "pokemon tcg",
-        "pokemon trading card",
-        "pokemon tgc",
-        "pikachu",
-        "charizard",
-        "eevee",
-        "umbreon",
-        "mew",
-        "mewtwo",
-        "gengar",
-        "greninja",
-        "lucario",
-        "rayquaza",
-        "gardevoir",
-        "blastoise",
-        "venusaur",
-        "squirtle",
-        "bulbasaur",
-        "snorlax",
-        "typhlosion",
-        "dragonite",
-        "dialga",
-        "palkia",
-        "arceus",
-        "lugia",
-        "ho oh",
-        "celebi",
-        "zapdos",
-        "moltres",
-        "articuno",
-        "zekrom",
-        "reshiram",
-        "zacian",
-        "zamazenta",
-        "etb",
-        "elite trainer box",
-        "booster",
-        "booster box",
-        "booster pack",
-        "booster bundle",
-        "pokemon tcg",
-    ]
-
-    return any(x in t for x in pokemon_markers)
-
-
-# ============================================================
-# PRODUCT TYPE VALIDATION
-# ============================================================
-
-def is_probably_card(title):
-    t = normalize_text(title)
-
-    if contains_merch(t):
-        return False
-
-    # sealed produkty nie sú kusové karty
-    if query_is_sealed(title):
-        return False
-
-    card_markers = [
-        "card",
-        "single",
-        "singles",
-        "tcg",
-        "pokemon",
-        " ex",
-        " vmax",
-        " vstar",
-        " v max",
-        " v star",
-        " gx",
-        " gx ",
-        " mega ",
-    ]
-
-    return any(x in (" " + t + " ") for x in card_markers)
-
-
-def is_probably_sealed(title):
-    t = normalize_text(title)
-
-    if contains_merch(t):
-        return False
-
-    sealed_markers = [
-        "elite trainer box",
-        " etb",
-        "booster box",
-        "booster bundle",
-        "booster pack",
-        "collection box",
-        "premium collection",
-        "ultra premium collection",
-        " ultra premium",
-        "mini tin",
-        " tin",
-        "blister",
-    ]
-
-    return any(x in (" " + t + " ") for x in sealed_markers)
-
-
-# ============================================================
-# RELEVANCE
-# ============================================================
-
-def relevance(query, title):
-    """
-    Vráti:
-    - -1 = určite zlé
-    - 0 = neisté
-    - >0 = relevantné
-    """
-
-    if not title:
-        return -1
-
-    q_clean, number = clean_query(query)
-
-    q_norm = normalize_text(q_clean)
-    t_norm = normalize_text(title)
-
-    if not q_norm or not t_norm:
-        return -1
-
-    # --------------------------------------------------------
-    # MERCH
-    # --------------------------------------------------------
-
-    if contains_merch(t_norm):
-        return -1
-
-    # --------------------------------------------------------
-    # MUSÍ TO BYŤ POKÉMON PRODUKT
-    # --------------------------------------------------------
-
-    if not looks_like_pokemon_product(t_norm):
-        return -1
-
-    # --------------------------------------------------------
-    # KARTA
-    # --------------------------------------------------------
-
-    if query_is_card(query):
-
-        # Každé slovo z query musí byť v názve.
-        #
-        # Týmto napríklad:
-        #
-        # Pikachu ex
-        #
-        # NEPREJDE:
-        # Charizard ex
-        #
-        # ani:
-        # Pikachu plush
-        #
-        # ani:
-        # Pikachu figure
-        #
-
-        if not all_tokens_match(q_clean, t_norm):
-            return -1
-
-        # ex musí byť samostatný výraz
-        if re.search(r"(?<![a-z0-9])ex(?![a-z0-9])", t_norm) \
-                and " ex" in (" " + t_norm):
-            pass
-
-        # Ak je v query "ex", musí byť ex v názve ako samostatné slovo
-        if re.search(r"\bex\b", q_norm):
-            if not re.search(r"(?<![a-z0-9])ex(?![a-z0-9])", t_norm):
-                return -1
-
-        # číslo karty
-        if number:
-            compact_title = t_norm.replace(" ", "")
-
-            n1, n2 = number.split("/")
-
-            variants = {
-                number.replace("/", ""),
-                number,
-                f"{n1}/{n2}",
-                f"{int(n1)}/{int(n2)}",
-                f"{n1}-{n2}",
-                f"{int(n1)}-{int(n2)}",
-            }
-
-            if not any(v in compact_title or v in t_norm for v in variants):
-                return -1
-
-        score = 100
-
-        # exact phrase
-        if q_norm in t_norm:
-            score += 50
-
-        # number
-        if number:
-            score += 100
-
-        # ex
-        if re.search(r"\bex\b", q_norm):
-            score += 20
-
-        return score
-
-    # --------------------------------------------------------
-    # SEALED
-    # --------------------------------------------------------
-
-    if query_is_sealed(query):
-
-        # Musí byť Pokémon produkt
-        if not looks_like_pokemon_product(t_norm):
-            return -1
-
-        # query tokens
-        q_words = words(q_clean)
-
-        for token in q_words:
-
-            # ETB je špeciálny prípad
-            if token == "etb":
-                if not (
-                    " etb" in " " + t_norm
-                    or "elite trainer box" in t_norm
-                ):
-                    return -1
-
-            elif not token_exists(token, t_norm):
-                return -1
-
-        # musí byť sealed
-        if not is_probably_sealed(t_norm):
-            return -1
-
-        score = 100
-
-        if q_norm in t_norm:
-            score += 60
-
-        if "etb" in q_words:
-            score += 30
-
-        if "booster" in q_words:
-            score += 20
-
-        return score
-
-    return -1
-
-
-# ============================================================
-# PRICE PARSING
-# ============================================================
-
-def parse_number(value):
-    if value is None:
-        return None
-
-    s = str(value).strip()
-
-    s = s.replace("\xa0", " ")
-    s = s.replace("€", "")
-    s = s.replace("EUR", "")
-    s = s.replace("Kč", "")
-    s = s.replace("CZK", "")
-
-    s = re.sub(r"[^\d,.\-]", "", s)
-
-    if not s:
-        return None
-
-    # 1.299,99
-    if "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "")
-            s = s.replace(",", ".")
-        else:
-            s = s.replace(",", "")
-
-    # 189,99
-    elif "," in s:
-        s = s.replace(",", ".")
-
-    # 1.299
-    elif s.count(".") == 1:
-        left, right = s.split(".")
-
-        if len(right) == 3:
-            s = left + right
-
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
-def valid_price(price):
-    if price is None:
-        return False
-
-    # žiadne záporné / nulové / absurdné ceny
-    return 0.50 <= price <= 5000
-
-
-# ============================================================
-# CZK -> EUR
-# ============================================================
-
-def get_czk_rate():
-    try:
-        r = requests.get(
-            "https://api.frankfurter.app/latest?from=CZK&to=EUR",
-            timeout=10,
-            headers=HEADERS,
-        )
-
-        data = r.json()
-
-        rate = float(data["rates"]["EUR"])
-
-        if rate > 0:
-            return rate
-
-    except Exception:
-        pass
-
-    # približná núdzová hodnota
-    return 0.04
-
-
-# ============================================================
-# JSON-LD
-# ============================================================
-
-def get_json_ld(soup):
-    result = []
-
-    for script in soup.find_all(
-        "script",
-        type="application/ld+json",
-    ):
-        try:
-            data = json.loads(script.string or script.get_text())
-
-            if isinstance(data, list):
-                result.extend(data)
-
-            else:
-                result.append(data)
-
-        except Exception:
-            continue
-
-    return result
-
-
-def find_product_jsonld(soup):
-    items = get_json_ld(soup)
-
-    def walk(obj):
-        if isinstance(obj, dict):
-
-            typ = obj.get("@type")
-
-            if typ == "Product":
-                return obj
-
-            if isinstance(typ, list) and "Product" in typ:
-                return obj
-
-            for value in obj.values():
-                found = walk(value)
-
-                if found:
-                    return found
-
-        elif isinstance(obj, list):
-
-            for item in obj:
-                found = walk(item)
-
-                if found:
-                    return found
-
-        return None
-
-    for item in items:
-        found = walk(item)
-
-        if found:
-            return found
-
-    return None
-
-
-# ============================================================
-# TITLE
-# ============================================================
-
-def extract_title(soup):
-    product = find_product_jsonld(soup)
-
-    if product:
-        name = product.get("name")
-
-        if name:
-            return str(name).strip()
-
-    og = soup.find(
-        "meta",
-        property="og:title",
-    )
-
-    if og and og.get("content"):
-        return og["content"].strip()
-
-    h1 = soup.find("h1")
-
-    if h1:
-        text = h1.get_text(" ", strip=True)
-
-        if text:
-            return text
-
-    if soup.title:
-        return soup.title.get_text(" ", strip=True)
-
-    return ""
-
-
-# ============================================================
-# PRICE
-# ============================================================
-
-def extract_price(soup, shop):
-    product = find_product_jsonld(soup)
-
-    # 1. JSON-LD
-    if product:
-
-        offers = product.get("offers")
-
-        if isinstance(offers, list):
-            offers = offers[0] if offers else None
-
-        if isinstance(offers, dict):
-
-            price = offers.get("price")
-            currency = str(
-                offers.get("priceCurrency", "")
-            ).upper()
-
-            value = parse_number(price)
-
-            if valid_price(value):
-                return value, currency, "jsonld"
-
-    # 2. itemprop price
-    selectors = [
-        "[itemprop='price']",
-        "meta[property='product:price:amount']",
-        "meta[itemprop='price']",
-    ]
-
-    for selector in selectors:
-
-        node = soup.select_one(selector)
-
-        if not node:
-            continue
-
-        raw = (
-            node.get("content")
-            or node.get("value")
-            or node.get_text(" ", strip=True)
-        )
-
-        value = parse_number(raw)
-
-        if valid_price(value):
-
-            currency = (
-                node.get("data-currency")
-                or node.get("currency")
-                or ""
-            )
-
-            return value, str(currency).upper(), "itemprop"
-
-    # 3. Shop-specific visible price selectors
-    selectors = [
-        ".price",
-        ".product-price",
-        ".product__price",
-        ".price-final",
-        ".price-new",
-        ".selling-price",
-        ".current-price",
-        "[class*='price']",
-    ]
-
-    for selector in selectors:
-
-        nodes = soup.select(selector)
-
-        for node in nodes[:8]:
-
-            text = node.get_text(" ", strip=True)
-
-            # musí obsahovať menu
-            has_eur = (
-                "€" in text
-                or "eur" in text.lower()
-            )
-
-            has_czk = (
-                "kč" in text.lower()
-                or "czk" in text.lower()
-            )
-
-            if not has_eur and not has_czk:
-                continue
-
-            value = parse_number(text)
-
-            if valid_price(value):
-
-                currency = (
-                    "EUR"
-                    if has_eur
-                    else "CZK"
-                )
-
-                return value, currency, "visible"
-
-    return None, None, None
-
-
-# ============================================================
-# STOCK
-# ============================================================
-
-def extract_stock(soup):
-    product = find_product_jsonld(soup)
-
-    if product:
-
-        offers = product.get("offers")
-
-        if isinstance(offers, list):
-            offers = offers[0] if offers else None
-
-        if isinstance(offers, dict):
-
-            availability = str(
-                offers.get("availability", "")
-            ).lower()
-
-            if "outofstock" in availability:
-                return False
-
-            if "instock" in availability:
-                return True
-
-    text = normalize_text(
-        soup.get_text(" ", strip=True)
-    )
-
-    unavailable = [
-        "vypredane",
-        "vypredano",
-        "dlhodobo nedostupne",
-        "neni skladem",
-        "neni na sklade",
-        "out of stock",
-        "sold out",
-    ]
-
-    for word in unavailable:
-        if word in text:
-            return False
-
-    available = [
-        "skladom",
-        "skladem",
-        "in stock",
-        "do kosika",
-        "pridat do kosika",
-    ]
-
-    for word in available:
-        if word in text:
-            return True
-
-    return True
-
-
-# ============================================================
-# PRODUCT PAGE
-# ============================================================
-
-def scrape_product(
-    session,
-    url,
-    shop,
-    query,
-):
-    try:
-
-        r = session.get(
-            url,
-            headers=HEADERS,
-            timeout=TIMEOUT,
-        )
-
-        if r.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(
-            r.text,
-            "html.parser",
-        )
-
-        title = extract_title(soup)
-
-        if not title:
-            return None
-
-        score = relevance(
-            query,
-            title,
-        )
-
-        # Toto je najdôležitejší filter.
-        if score < 0:
-            return None
-
-        price, currency, source = extract_price(
-            soup,
-            shop,
-        )
-
-        if price is None:
-            return None
-
-        # Ak obchod má inú menu než očakávame,
-        # nebudeme hádať.
-        expected = shop["currency"]
-
-        if currency and currency != expected:
-            # niektoré stránky nemajú currency v JSON-LD,
-            # preto dovolíme prázdnu hodnotu
-            if currency not in ("", expected):
-                return None
-
-        if expected == "CZK":
-
-            rate = get_czk_rate()
-
-            price_eur = price * rate
-
-        else:
-
-            price_eur = price
-
-        if not valid_price(price_eur):
-            return None
-
-        stock = extract_stock(soup)
-
-        condition = (
-            "SEALED"
-            if query_is_sealed(query)
-            else "NM"
-        )
-
-        return {
-            "title": title,
-            "shop": shop["name"],
-            "country": shop["country"],
-            "price_eur": round(price_eur, 2),
-            "in_stock": bool(stock),
-            "condition": condition,
-            "language": "EN",
-            "link": url,
-            "_score": score,
-            "_price_source": source,
-        }
-
-    except Exception:
-        return None
-
-
-# ============================================================
-# FIND PRODUCT LINKS
-# ============================================================
-
-def find_links(
-    soup,
-    shop,
-    query,
-):
-    links = []
-
-    for a in soup.find_all("a", href=True):
-
-        href = a.get("href")
-
-        if not href:
-            continue
-
-        url = urljoin(
-            "https://" + shop["domain"],
-            href,
-        )
-
-        if shop["domain"] not in url:
-            continue
-
-        title = a.get_text(
-            " ",
-            strip=True,
-        )
-
-        # text samotného linku môže byť prázdny
-        if not title:
-            title = a.get("title", "")
-
-        # získať názov aj z aria-label
-        if not title:
-            title = a.get(
-                "aria-label",
-                "",
-            )
-
-        # ----------------------------------------------------
-        # Kandidát musí už na search stránke vyzerať relevantne
-        # ----------------------------------------------------
-
-        score = relevance(
-            query,
-            title,
-        )
-
-        if score < 0:
-            continue
-
-        links.append(
-            (
-                score,
-                url,
-            )
-        )
-
-    # dedupe
-    unique = {}
-
-    for score, url in links:
-
-        if url not in unique or score > unique[url]:
-            unique[url] = score
-
-    result = [
-        (score, url)
-        for url, score in unique.items()
-    ]
-
-    result.sort(
-        key=lambda x: x[0],
-        reverse=True,
-    )
-
-    return result[:15]
-
-
-# ============================================================
-# SHOP SEARCH
-# ============================================================
-
-def scrape_shop(shop, query):
-
-    session = requests.Session()
-
-    try:
-
-        search_url = shop["search"].format(
-            q=quote(query)
-        )
-
-        r = session.get(
-            search_url,
-            headers=HEADERS,
-            timeout=TIMEOUT,
-        )
-
-        if r.status_code != 200:
-            return []
-
-        soup = BeautifulSoup(
-            r.text,
-            "html.parser",
-        )
-
-        candidates = find_links(
-            soup,
-            shop,
-            query,
-        )
-
-        results = []
-
-        for _, url in candidates:
-
-            item = scrape_product(
-                session,
-                url,
-                shop,
-                query,
-            )
-
-            if item:
-                results.append(item)
-
-        # dedupe
-        unique = {}
-
-        for item in results:
-
-            key = (
-                item["shop"],
-                item["link"],
-            )
-
-            old = unique.get(key)
-
-            if old is None or item["_score"] > old["_score"]:
-                unique[key] = item
-
-        results = list(unique.values())
-
-        results.sort(
-            key=lambda x: (
-                -x["_score"],
-                x["price_eur"],
-            )
-        )
-
-        return results[:5]
-
-    except Exception:
-        return []
-
-
-# ============================================================
-# HISTORY
-# ============================================================
-
-def save_history(query, results):
-
-    if not results:
-        return
-
-    checked = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    con = sqlite3.connect(DB_FILE)
-
-    cur = con.cursor()
-
-    for item in results:
-
-        if not valid_price(
-            item["price_eur"]
-        ):
-            continue
-
-        cur.execute(
-            """
-            INSERT INTO price_history
-            (
-                checked_at,
-                query,
-                shop,
-                title,
-                price_eur,
-                link
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                checked,
-                query,
-                item["shop"],
-                item["title"],
-                item["price_eur"],
-                item["link"],
-            ),
-        )
-
-    con.commit()
-    con.close()
-
-
-def get_history(query):
-
-    con = sqlite3.connect(DB_FILE)
-
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        SELECT
-            checked_at,
-            price_eur
-        FROM price_history
-        WHERE query = ?
-          AND price_eur >= 0.50
-          AND price_eur <= 5000
-        ORDER BY checked_at ASC
-        LIMIT 100
-        """,
-        (query,),
-    )
-
-    rows = cur.fetchall()
-
-    con.close()
-
-    return [
-        {
-            "checked_at": row[0],
-            "price_eur": row[1],
-        }
-        for row in rows
-    ]
-
-
-# ============================================================
-# POKEMON INFO
-# ============================================================
-
-def pokemon_info(query):
-
-    try:
-
-        q_clean, number = clean_query(query)
-
-        # pri všeobecnom "Pikachu ex"
-        # chceme meno Pikachu
-        search_name = q_clean
-
-        search_name = re.sub(
-            r"\b(ex|vmax|vstar|gx|mega)\b",
-            "",
-            search_name,
-            flags=re.I,
-        )
-
-        search_name = re.sub(
-            r"\s+",
-            " ",
-            search_name,
-        ).strip()
-
-        if not search_name:
-            return {}
-
-        url = (
-            "https://api.pokemontcg.io/v2/cards"
-            "?q=name:"
-            + quote(search_name)
-            + "&pageSize=1"
-        )
-
-        r = requests.get(
-            url,
-            timeout=10,
-            headers={
-                "User-Agent": "CardRadar/3.0"
-            },
-        )
-
-        if r.status_code != 200:
-            return {}
-
-        data = r.json()
-
-        cards = data.get("data") or []
-
-        if not cards:
-            return {}
-
-        card = cards[0]
-
-        return {
-            "title": card.get("name"),
-            "image": (
-                card.get("images") or {}
-            ).get("small"),
-            "subtitle": " ".join(
-                x
-                for x in [
-                    (
-                        card.get("set") or {}
-                    ).get("name"),
-                    card.get("number"),
-                ]
-                if x
-            ),
-        }
-
-    except Exception:
-        return {}
-
-
-# ============================================================
-# API
-# ============================================================
-
-@app.route("/api/search")
-def api_search():
-
-    query = request.args.get(
-        "q",
-        "",
-        type=str,
-    ).strip()
-
-    if not query:
-        return jsonify({
-            "error": "Chýba vyhľadávanie."
-        }), 400
-
-    # --------------------------------------------------------
-    # concurrent search
-    # --------------------------------------------------------
-
-    results = []
-
-    with ThreadPoolExecutor(
-        max_workers=len(SHOPS)
-    ) as executor:
-
-        futures = {
-            executor.submit(
-                scrape_shop,
-                shop,
-                query,
-            ): shop
-            for shop in SHOPS
-        }
-
-        for future in as_completed(futures):
-
-            try:
-
-                data = future.result()
-
-                if data:
-                    results.extend(data)
-
-            except Exception:
-                pass
-
-    # --------------------------------------------------------
-    # GLOBAL DEDUPE
-    # --------------------------------------------------------
-
-    unique = {}
-
-    for item in results:
-
-        key = (
-            item["shop"],
-            item["link"],
-        )
-
-        if key not in unique:
-            unique[key] = item
-        else:
-            if (
-                item["_score"]
-                > unique[key]["_score"]
-            ):
-                unique[key] = item
-
-    results = list(unique.values())
-
-    # --------------------------------------------------------
-    # FINAL SAFETY CHECK
-    # --------------------------------------------------------
-
-    final = []
-
-    for item in results:
-
-        if relevance(
-            query,
-            item["title"],
-        ) < 0:
-            continue
-
-        if not valid_price(
-            item["price_eur"]
-        ):
-            continue
-
-        final.append(item)
-
-    # --------------------------------------------------------
-    # SORT
-    # --------------------------------------------------------
-
-    final.sort(
-        key=lambda x: (
-            -x["_score"],
-            x["price_eur"],
-        )
-    )
-
-    # max 20
-    final = final[:20]
-
-    # --------------------------------------------------------
-    # HISTORY
-    # --------------------------------------------------------
-
-    save_history(
-        query,
-        final,
-    )
-
-    history = get_history(
-        query
-    )
-
-    # --------------------------------------------------------
-    # INFO
-    # --------------------------------------------------------
-
-    info = pokemon_info(
-        query
-    )
-
-    # --------------------------------------------------------
-    # CLEAN API OUTPUT
-    # --------------------------------------------------------
-
-    clean_results = []
-
-    for item in final:
-
-        clean_results.append({
-            "title": item["title"],
-            "shop": item["shop"],
-            "country": item["country"],
-            "price_eur": item["price_eur"],
-            "in_stock": item["in_stock"],
-            "condition": item["condition"],
-            "language": item["language"],
-            "link": item["link"],
-        })
-
-    return jsonify({
-        "version": VERSION,
-        "query": query,
-        "info": info,
-        "results": clean_results,
-        "history": history,
-        "czk_per_eur": round(
-            get_czk_rate(),
-            6,
-        ),
-        "shops_checked": [
-            shop["name"]
-            for shop in SHOPS
-        ],
-        "checked_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
-    })
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.route("/health")
-def health():
-
-    return jsonify({
-        "status": "ok",
-        "version": VERSION,
-    })
-
-
-# ============================================================
-# START
-# ============================================================
-
-if __name__ == "__main__":
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            "5000",
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-    )
+</body>
+</html>
