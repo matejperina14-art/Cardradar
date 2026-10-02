@@ -11,11 +11,21 @@ from flask import Flask, jsonify, request, send_file
 
 app = Flask(__name__)
 
-VERSION = "5.2"
+VERSION = "5.3"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-INDEX_FILE = os.path.join(BASE_DIR, "index.html")
-DB_FILE = os.path.join(BASE_DIR, "cardradar.db")
+
+# index.html máme v priečinku Templates
+INDEX_FILE = os.path.join(
+    BASE_DIR,
+    "Templates",
+    "index.html"
+)
+
+DB_FILE = os.path.join(
+    BASE_DIR,
+    "cardradar.db"
+)
 
 HEADERS = {
     "User-Agent": (
@@ -1081,7 +1091,7 @@ def sort_results(results):
 
 
 # =========================================================
-# API
+# API SEARCH
 # =========================================================
 
 @app.route("/api/search")
@@ -1234,6 +1244,7 @@ def health():
         "index_exists": os.path.exists(
             INDEX_FILE
         ),
+        "index_path": INDEX_FILE,
     })
 
 
@@ -1249,8 +1260,7 @@ def home():
         return (
             "<h1>CardRadar</h1>"
             "<p>Chýba index.html.</p>"
-            "<p>Uisti sa, že index.html je "
-            "v rovnakom priečinku ako app.py.</p>"
+            "<p>Skontroluj priečinok Templates.</p>"
         ), 500
 
     return send_file(
