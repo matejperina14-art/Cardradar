@@ -3,6 +3,8 @@ import re
 import sqlite3
 import urllib.parse
 import time
+import copy
+import threading
 from datetime import datetime
 
 import requests
@@ -12,11 +14,12 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 5.11
+# VERSION 5.12
 # CARDYX FOCUS
+# STABILITY + SPEED
 # =========================================================
 
-VERSION = "5.11"
+VERSION = "5.12"
 
 app = Flask(__name__)
 
@@ -30,6 +33,24 @@ DB_PATH = os.path.join(
     BASE_DIR,
     "cardradar.db"
 )
+
+
+# =========================================================
+# PERFORMANCE SETTINGS
+# =========================================================
+
+# Výsledok rovnakého vyhľadávania budeme držať 30 sekúnd.
+CACHE_TTL = 30
+
+# Maximálny počet uložených vyhľadávaní v pamäti.
+CACHE_MAX_ITEMS = 50
+
+SEARCH_TIMEOUT = 10
+
+
+# =========================================================
+# HTTP HEADERS
+# =========================================================
 
 HEADERS = {
     "User-Agent": (
@@ -46,7 +67,150 @@ HEADERS = {
     "Accept-Language": (
         "cs-CZ,sk-SK;q=0.9,en;q=0.8"
     ),
+    "Connection": "keep-alive",
 }
+
+
+# =========================================================
+# THREAD LOCAL HTTP SESSION
+# =========================================================
+
+# Session nie je zdieľaná medzi vláknami.
+# Každé Flask vlákno dostane vlastnú Session.
+_http_local = threading.local()
+
+
+def get_http_session():
+
+    session = getattr(
+        _http_local,
+        "session",
+        None
+    )
+
+    if session is None:
+
+        session = requests.Session()
+
+        session.headers.update(
+            HEADERS
+        )
+
+        _http_local.session = session
+
+    return session
+
+
+# =========================================================
+# SEARCH CACHE
+# =========================================================
+
+_search_cache = {}
+
+_search_cache_lock = threading.Lock()
+
+
+def cache_key(query):
+
+    return normalize_spaces(
+        query
+    ).lower()
+
+
+def cache_get(query):
+
+    key = cache_key(
+        query
+    )
+
+    now = time.monotonic()
+
+    with _search_cache_lock:
+
+        item = _search_cache.get(
+            key
+        )
+
+        if not item:
+            return None
+
+        timestamp = item.get(
+            "timestamp",
+            0
+        )
+
+        if (
+            now -
+            timestamp
+            >
+            CACHE_TTL
+        ):
+
+            _search_cache.pop(
+                key,
+                None
+            )
+
+            return None
+
+        return copy.deepcopy(
+            item.get(
+                "data"
+            )
+        )
+
+
+def cache_set(
+    query,
+    data
+):
+
+    key = cache_key(
+        query
+    )
+
+    with _search_cache_lock:
+
+        # Ak je cache plná,
+        # odstránime najstaršiu položku.
+        if (
+            key not in _search_cache
+            and
+            len(_search_cache)
+            >= CACHE_MAX_ITEMS
+        ):
+
+            oldest_key = min(
+                _search_cache,
+                key=lambda k:
+                _search_cache[k].get(
+                    "timestamp",
+                    0
+                )
+            )
+
+            _search_cache.pop(
+                oldest_key,
+                None
+            )
+
+        _search_cache[key] = {
+
+            "timestamp":
+                time.monotonic(),
+
+            "data":
+                copy.deepcopy(
+                    data
+                ),
+        }
+
+
+def cache_clear():
+
+    with _search_cache_lock:
+
+        _search_cache.clear()
 
 
 # =========================================================
@@ -761,7 +925,8 @@ def card_matches_query(
     title,
     query,
     extra_text="",
-    return_reason=False
+    return_reason=False,
+    parsed=None
 ):
 
     title_clean = clean_text(
@@ -778,9 +943,11 @@ def card_matches_query(
         extra_clean
     )
 
-    parsed = normalize_query(
-        query
-    )
+    if parsed is None:
+
+        parsed = normalize_query(
+            query
+        )
 
     pokemon = clean_text(
         parsed.get(
@@ -899,7 +1066,8 @@ def sealed_matches_query(
     title,
     query,
     extra_text="",
-    return_reason=False
+    return_reason=False,
+    parsed=None
 ):
 
     searchable = normalize_spaces(
@@ -908,9 +1076,11 @@ def sealed_matches_query(
         clean_text(extra_text)
     ).lower()
 
-    parsed = normalize_query(
-        query
-    )
+    if parsed is None:
+
+        parsed = normalize_query(
+            query
+        )
 
     set_name = parsed.get(
         "set_name",
@@ -1242,10 +1412,12 @@ def is_merch(
         clean_text(extra_text)
     ).lower()
 
-    return any(
-        item in searchable
-        for item in MERCH_BLACKLIST
-    )
+    for item in MERCH_BLACKLIST:
+
+        if item in searchable:
+            return True
+
+    return False
 
 
 # =========================================================
@@ -1254,7 +1426,7 @@ def is_merch(
 
 def fetch(
     url,
-    timeout=20
+    timeout=SEARCH_TIMEOUT
 ):
 
     start = time.monotonic()
@@ -1279,11 +1451,11 @@ def fetch(
 
     try:
 
-        response = requests.get(
+        session = get_http_session()
+
+        response = session.get(
 
             url,
-
-            headers=HEADERS,
 
             timeout=timeout,
 
@@ -1344,6 +1516,28 @@ def fetch(
         debug[
             "error"
         ] = "Request timeout"
+
+        return None, debug
+
+    except requests.RequestException as e:
+
+        debug[
+            "elapsed_ms"
+        ] = round(
+            (
+                time.monotonic()
+                -
+                start
+            ) * 1000
+        )
+
+        debug[
+            "status"
+        ] = "request_error"
+
+        debug[
+            "error"
+        ] = str(e)
 
         return None, debug
 
@@ -1472,8 +1666,8 @@ def cardyx_find_product_block(
 
     best_text = ""
 
-    # Niekoľko úrovní hore.
-    # Neberieme celý dokument.
+    # Najviac 6 úrovní hore.
+    # Nikdy neberieme celý dokument.
     for level in range(1, 7):
 
         parent = current.parent
@@ -1493,8 +1687,6 @@ def cardyx_find_product_block(
         if not text:
             continue
 
-        # Ideálny produktový blok:
-        # názov + cena, ale nie obrovský kontajner.
         if (
             "€" in text
             or
@@ -1507,22 +1699,22 @@ def cardyx_find_product_block(
 
                 best_text = text
 
-                # Keď máme rozumný blok,
-                # ďalej už nejdeme.
                 if level >= 2:
                     break
 
     if best_text:
         return best_text
 
-    return clean_text(
-        anchor.parent.get_text(
-            " ",
-            strip=True
+    if anchor.parent:
+
+        return clean_text(
+            anchor.parent.get_text(
+                " ",
+                strip=True
+            )
         )
-        if anchor.parent
-        else ""
-    )
+
+    return ""
 
 
 # =========================================================
@@ -1533,6 +1725,51 @@ def cardyx_search(
     query,
     return_debug=False
 ):
+
+    start = time.monotonic()
+
+    # =====================================================
+    # CACHE
+    # =====================================================
+
+    cached = cache_get(
+        query
+    )
+
+    if cached is not None:
+
+        cached_results = cached.get(
+            "results",
+            []
+        )
+
+        cached_debug = cached.get(
+            "debug",
+            {}
+        )
+
+        cached_debug[
+            "cache"
+        ] = "hit"
+
+        cached_debug[
+            "elapsed_ms"
+        ] = round(
+            (
+                time.monotonic()
+                -
+                start
+            ) * 1000
+        )
+
+        if return_debug:
+
+            return (
+                cached_results,
+                cached_debug
+            )
+
+        return cached_results
 
     results = []
 
@@ -1577,14 +1814,15 @@ def cardyx_search(
         "elapsed_ms":
             0,
 
+        "cache":
+            "miss",
+
         "error":
             "",
 
         "sample_decisions":
             [],
     }
-
-    start = time.monotonic()
 
     try:
 
@@ -1606,7 +1844,7 @@ def cardyx_search(
 
         response, http_debug = fetch(
             url,
-            timeout=20
+            timeout=SEARCH_TIMEOUT
         )
 
         debug[
@@ -1631,23 +1869,29 @@ def cardyx_search(
                 ""
             )
 
-            if return_debug:
+            debug[
+                "elapsed_ms"
+            ] = round(
+                (
+                    time.monotonic()
+                    -
+                    start
+                ) * 1000
+            )
 
-                return (
-                    results,
-                    debug
-                )
+            return (
+                results,
+                debug
+            ) if return_debug else results
 
-            return results
+        # =================================================
+        # HTML PARSE
+        # =================================================
 
         soup = BeautifulSoup(
             response.text,
             "html.parser"
         )
-
-        # =================================================
-        # PRODUCT LINKS
-        # =================================================
 
         links = soup.select(
             'a[href*="/products/"]'
@@ -1660,6 +1904,10 @@ def cardyx_search(
         )
 
         seen = set()
+
+        # =================================================
+        # PARSE QUERY IBA RAZ
+        # =================================================
 
         parsed = normalize_query(
             query
@@ -1690,8 +1938,10 @@ def cardyx_search(
             if not href:
                 continue
 
-            href_key = href.lower().rstrip(
-                "/"
+            href_key = (
+                href
+                .lower()
+                .rstrip("/")
             )
 
             if href_key in seen:
@@ -1706,6 +1956,27 @@ def cardyx_search(
             )
 
             if not title:
+
+                if len(
+                    debug[
+                        "sample_decisions"
+                    ]
+                ) < 20:
+
+                    debug[
+                        "sample_decisions"
+                    ].append({
+
+                        "title":
+                            "",
+
+                        "decision":
+                            "filtered",
+
+                        "reason":
+                            "no_title",
+                    })
+
                 continue
 
             block_text = (
@@ -1724,8 +1995,6 @@ def cardyx_search(
 
             if price is None:
 
-                # Druhý pokus:
-                # bezprostredný rodič
                 if anchor.parent:
 
                     price = parse_price(
@@ -1808,7 +2077,8 @@ def cardyx_search(
                         title,
                         query,
                         block_text,
-                        return_reason=True
+                        return_reason=True,
+                        parsed=parsed
                     )
                 )
 
@@ -1819,7 +2089,8 @@ def cardyx_search(
                         title,
                         query,
                         block_text,
-                        return_reason=True
+                        return_reason=True,
+                        parsed=parsed
                     )
                 )
 
@@ -1953,7 +2224,7 @@ def cardyx_search(
         )
 
         # =================================================
-        # SORT
+        # SORT BY PRICE
         # =================================================
 
         results.sort(
@@ -1999,6 +2270,24 @@ def cardyx_search(
             -
             start
         ) * 1000
+    )
+
+    # =====================================================
+    # CACHE RESULT
+    # =====================================================
+
+    # Cacheujeme aj no_results.
+    # Tým pádom opakované neúspešné hľadanie
+    # nebude okamžite zaťažovať CardyX.
+    cache_set(
+        query,
+        {
+            "results":
+                results,
+
+            "debug":
+                debug,
+        }
     )
 
     if return_debug:
@@ -2119,7 +2408,6 @@ def search_all(
     diagnostics = []
 
     # =====================================================
-    # IMPORTANT:
     # IBA CARDYX
     # =====================================================
 
@@ -2222,15 +2510,52 @@ def save_history(
     if not results:
         return
 
-    conn = sqlite3.connect(
-        DB_PATH
-    )
+    conn = None
 
-    now = datetime.utcnow().isoformat()
+    try:
 
-    for item in results:
+        conn = sqlite3.connect(
+            DB_PATH,
+            timeout=5
+        )
 
-        conn.execute(
+        now = datetime.utcnow().isoformat()
+
+        rows = []
+
+        for item in results:
+
+            rows.append(
+
+                (
+
+                    query,
+
+                    item.get(
+                        "shop",
+                        ""
+                    ),
+
+                    item.get(
+                        "title",
+                        ""
+                    ),
+
+                    item.get(
+                        "price_eur",
+                        0
+                    ),
+
+                    item.get(
+                        "link",
+                        ""
+                    ),
+
+                    now,
+                )
+            )
+
+        conn.executemany(
 
             """
             INSERT INTO price_history
@@ -2245,36 +2570,20 @@ def save_history(
             VALUES (?, ?, ?, ?, ?, ?)
             """,
 
-            (
-
-                query,
-
-                item.get(
-                    "shop",
-                    ""
-                ),
-
-                item.get(
-                    "title",
-                    ""
-                ),
-
-                item.get(
-                    "price_eur",
-                    0
-                ),
-
-                item.get(
-                    "link",
-                    ""
-                ),
-
-                now,
-            )
+            rows
         )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+
+    except Exception:
+        # História cien nemá zhodiť celé vyhľadávanie.
+        pass
+
+    finally:
+
+        if conn:
+
+            conn.close()
 
 
 # =========================================================
@@ -2595,6 +2904,7 @@ def api_search():
         return_debug=True
     )
 
+    # História nesmie zhodiť výsledok.
     save_history(
         original_query,
         results
@@ -2721,6 +3031,78 @@ def api_debug_search():
 
 
 # =========================================================
+# CACHE DEBUG / CLEAR
+# =========================================================
+
+@app.get(
+    "/api/debug/cache"
+)
+def api_debug_cache():
+
+    with _search_cache_lock:
+
+        now = time.monotonic()
+
+        active = 0
+        expired = 0
+
+        for item in _search_cache.values():
+
+            age = (
+                now -
+                item.get(
+                    "timestamp",
+                    0
+                )
+            )
+
+            if age <= CACHE_TTL:
+                active += 1
+            else:
+                expired += 1
+
+        return jsonify({
+
+            "status":
+                "ok",
+
+            "cache_ttl_seconds":
+                CACHE_TTL,
+
+            "cache_max_items":
+                CACHE_MAX_ITEMS,
+
+            "cache_items":
+                len(
+                    _search_cache
+                ),
+
+            "active":
+                active,
+
+            "expired":
+                expired,
+        })
+
+
+@app.get(
+    "/api/debug/cache/clear"
+)
+def api_debug_cache_clear():
+
+    cache_clear()
+
+    return jsonify({
+
+        "status":
+            "ok",
+
+        "message":
+            "Cache bola vymazaná.",
+    })
+
+
+# =========================================================
 # HEALTH
 # =========================================================
 
@@ -2757,6 +3139,15 @@ def health():
             [
                 "CardyX"
             ],
+
+        "cache_ttl":
+            CACHE_TTL,
+
+        "cache_max_items":
+            CACHE_MAX_ITEMS,
+
+        "search_timeout":
+            SEARCH_TIMEOUT,
     })
 
 
