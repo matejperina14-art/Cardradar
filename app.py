@@ -14,12 +14,12 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 5.12
+# VERSION 5.13
 # CARDYX FOCUS
-# STABILITY + SPEED
+# STABILITY + SPEED + REAL AUTOCOMPLETE
 # =========================================================
 
-VERSION = "5.12"
+VERSION = "5.13"
 
 app = Flask(__name__)
 
@@ -39,11 +39,13 @@ DB_PATH = os.path.join(
 # PERFORMANCE SETTINGS
 # =========================================================
 
-# Výsledok rovnakého vyhľadávania budeme držať 30 sekúnd.
 CACHE_TTL = 30
-
-# Maximálny počet uložených vyhľadávaní v pamäti.
 CACHE_MAX_ITEMS = 50
+
+# Autocomplete má kratšiu cache,
+# aby sa nové návrhy objavili rýchlo.
+SUGGESTION_CACHE_TTL = 30
+SUGGESTION_CACHE_MAX_ITEMS = 100
 
 SEARCH_TIMEOUT = 10
 
@@ -75,8 +77,6 @@ HEADERS = {
 # THREAD LOCAL HTTP SESSION
 # =========================================================
 
-# Session nie je zdieľaná medzi vláknami.
-# Každé Flask vlákno dostane vlastnú Session.
 _http_local = threading.local()
 
 
@@ -171,8 +171,6 @@ def cache_set(
 
     with _search_cache_lock:
 
-        # Ak je cache plná,
-        # odstránime najstaršiu položku.
         if (
             key not in _search_cache
             and
@@ -211,6 +209,117 @@ def cache_clear():
     with _search_cache_lock:
 
         _search_cache.clear()
+
+
+# =========================================================
+# AUTOCOMPLETE CACHE
+# =========================================================
+
+_suggestion_cache = {}
+
+_suggestion_cache_lock = threading.Lock()
+
+
+def suggestion_cache_key(query):
+
+    return normalize_spaces(
+        query
+    ).lower()
+
+
+def suggestion_cache_get(query):
+
+    key = suggestion_cache_key(
+        query
+    )
+
+    now = time.monotonic()
+
+    with _suggestion_cache_lock:
+
+        item = _suggestion_cache.get(
+            key
+        )
+
+        if not item:
+            return None
+
+        timestamp = item.get(
+            "timestamp",
+            0
+        )
+
+        if (
+            now -
+            timestamp
+            >
+            SUGGESTION_CACHE_TTL
+        ):
+
+            _suggestion_cache.pop(
+                key,
+                None
+            )
+
+            return None
+
+        return copy.deepcopy(
+            item.get(
+                "data",
+                []
+            )
+        )
+
+
+def suggestion_cache_set(
+    query,
+    data
+):
+
+    key = suggestion_cache_key(
+        query
+    )
+
+    with _suggestion_cache_lock:
+
+        if (
+            key not in _suggestion_cache
+            and
+            len(_suggestion_cache)
+            >= SUGGESTION_CACHE_MAX_ITEMS
+        ):
+
+            oldest_key = min(
+                _suggestion_cache,
+                key=lambda k:
+                _suggestion_cache[k].get(
+                    "timestamp",
+                    0
+                )
+            )
+
+            _suggestion_cache.pop(
+                oldest_key,
+                None
+            )
+
+        _suggestion_cache[key] = {
+
+            "timestamp":
+                time.monotonic(),
+
+            "data":
+                copy.deepcopy(
+                    data
+                ),
+        }
+
+
+def suggestion_cache_clear():
+
+    with _suggestion_cache_lock:
+
+        _suggestion_cache.clear()
 
 
 # =========================================================
@@ -470,10 +579,206 @@ POKEMON_ALIASES = {
 
 
 # =========================================================
-# AUTOCOMPLETE
+# AUTOCOMPLETE CATALOG
 # =========================================================
 
 SUGGESTION_CATALOG = []
+
+_suggestion_catalog_lock = threading.Lock()
+
+
+def add_suggestions_from_results(
+    results
+):
+
+    if not results:
+        return
+
+    with _suggestion_catalog_lock:
+
+        existing = {}
+
+        for item in SUGGESTION_CATALOG:
+
+            key = clean_text(
+                item.get(
+                    "query",
+                    item.get(
+                        "title",
+                        ""
+                    )
+                )
+            ).lower()
+
+            if key:
+                existing[key] = item
+
+        for result in results:
+
+            title = clean_text(
+                result.get(
+                    "title",
+                    ""
+                )
+            )
+
+            if not title:
+                continue
+
+            if is_merch(title):
+                continue
+
+            suggestion = make_suggestion_from_title(
+                title
+            )
+
+            if not suggestion:
+                continue
+
+            key = clean_text(
+                suggestion.get(
+                    "query",
+                    ""
+                )
+            ).lower()
+
+            if not key:
+                continue
+
+            existing[key] = suggestion
+
+        new_catalog = list(
+            existing.values()
+        )
+
+        # Držíme katalóg pod kontrolou.
+        # Najnovšie/praktickejšie návrhy sú na začiatku.
+        new_catalog = (
+            new_catalog[-300:]
+        )
+
+        SUGGESTION_CATALOG.clear()
+
+        SUGGESTION_CATALOG.extend(
+            new_catalog
+        )
+
+
+def make_suggestion_from_title(
+    title
+):
+
+    title = clean_text(
+        title
+    )
+
+    if not title:
+        return None
+
+    if is_merch(title):
+        return None
+
+    parsed = normalize_query(
+        title
+    )
+
+    pokemon = clean_text(
+        parsed.get(
+            "pokemon",
+            ""
+        )
+    )
+
+    suffix = clean_text(
+        parsed.get(
+            "suffix",
+            ""
+        )
+    )
+
+    card_number = clean_text(
+        parsed.get(
+            "card_number",
+            ""
+        )
+    )
+
+    set_name = clean_text(
+        parsed.get(
+            "set_name",
+            ""
+        )
+    )
+
+    # Najprv vytvoríme krátky a použiteľný query.
+    parts = []
+
+    if pokemon:
+        parts.append(
+            pokemon
+        )
+
+    if suffix:
+        parts.append(
+            suffix
+        )
+
+    if card_number:
+        parts.append(
+            card_number
+        )
+
+    if set_name:
+        parts.append(
+            set_name
+        )
+
+    query = normalize_spaces(
+        " ".join(parts)
+    )
+
+    # Ak parser nedokáže title rozumne rozobrať,
+    # použijeme samotný názov.
+    if not query:
+        query = title
+
+    # Pri veľmi dlhých názvoch nechceme mať
+    # obrovský text v autocomplete.
+    if len(query) > 120:
+
+        query = title[:120].strip()
+
+    suggestion_type = (
+        "card"
+        if not parsed.get(
+            "product_type"
+        )
+        else "product"
+    )
+
+    type_label = (
+        "Karta"
+        if suggestion_type == "card"
+        else "Produkt"
+    )
+
+    return {
+
+        "title":
+            title,
+
+        "query":
+            query,
+
+        "subtitle":
+            "Reálna karta z CardyX",
+
+        "type":
+            suggestion_type,
+
+        "type_label":
+            type_label,
+    }
 
 
 # =========================================================
@@ -1602,7 +1907,6 @@ def cardyx_extract_title(
     anchor
 ):
 
-    # 1. Priamy text odkazu
     title = clean_text(
         anchor.get_text(
             " ",
@@ -1613,7 +1917,6 @@ def cardyx_extract_title(
     if title:
         return title
 
-    # 2. title / aria-label
     for attr in [
         "title",
         "aria-label",
@@ -1629,7 +1932,6 @@ def cardyx_extract_title(
         if value:
             return value
 
-    # 3. Obrázok
     image = anchor.find(
         "img"
     )
@@ -1666,8 +1968,6 @@ def cardyx_find_product_block(
 
     best_text = ""
 
-    # Najviac 6 úrovní hore.
-    # Nikdy neberieme celý dokument.
     for level in range(1, 7):
 
         parent = current.parent
@@ -1760,6 +2060,11 @@ def cardyx_search(
                 -
                 start
             ) * 1000
+        )
+
+        # Aj cache hit môže doplniť autocomplete.
+        add_suggestions_from_results(
+            cached_results
         )
 
         if return_debug:
@@ -2276,9 +2581,6 @@ def cardyx_search(
     # CACHE RESULT
     # =====================================================
 
-    # Cacheujeme aj no_results.
-    # Tým pádom opakované neúspešné hľadanie
-    # nebude okamžite zaťažovať CardyX.
     cache_set(
         query,
         {
@@ -2288,6 +2590,14 @@ def cardyx_search(
             "debug":
                 debug,
         }
+    )
+
+    # =====================================================
+    # UPDATE REAL AUTOCOMPLETE
+    # =====================================================
+
+    add_suggestions_from_results(
+        results
     )
 
     if return_debug:
@@ -2576,13 +2886,11 @@ def save_history(
         conn.commit()
 
     except Exception:
-        # História cien nemá zhodiť celé vyhľadávanie.
         pass
 
     finally:
 
         if conn:
-
             conn.close()
 
 
@@ -2630,6 +2938,8 @@ def suggestion_score(
     if q in subtitle:
         score += 10
 
+    # Kratšie konkrétne názvy dostanú
+    # mierne vyššiu prioritu.
     score += max(
         0,
         20 -
@@ -2637,6 +2947,107 @@ def suggestion_score(
     )
 
     return score
+
+
+# =========================================================
+# REAL CARDYX SUGGESTIONS
+# =========================================================
+
+def load_real_cardyx_suggestions(
+    query
+):
+
+    cached = suggestion_cache_get(
+        query
+    )
+
+    if cached is not None:
+        return cached
+
+    parsed = normalize_query(
+        query
+    )
+
+    search_query = parsed.get(
+        "normalized",
+        ""
+    )
+
+    if not search_query:
+        return []
+
+    # Pri obyčajnom "pika" dostaneme
+    # "Pikachu", takže CardyX dostane
+    # zmysluplné vyhľadávanie.
+    results = cardyx_search(
+        search_query
+    )
+
+    suggestions = []
+
+    for result in results:
+
+        title = clean_text(
+            result.get(
+                "title",
+                ""
+            )
+        )
+
+        if not title:
+            continue
+
+        if is_merch(title):
+            continue
+
+        suggestion = make_suggestion_from_title(
+            title
+        )
+
+        if suggestion:
+            suggestions.append(
+                suggestion
+            )
+
+    # Odstránenie duplicít.
+    unique = {}
+
+    for item in suggestions:
+
+        key = clean_text(
+            item.get(
+                "query",
+                item.get(
+                    "title",
+                    ""
+                )
+            )
+        ).lower()
+
+        if key:
+            unique[key] = item
+
+    suggestions = list(
+        unique.values()
+    )
+
+    suggestions.sort(
+        key=lambda item:
+        suggestion_score(
+            item,
+            query
+        ),
+        reverse=True
+    )
+
+    suggestions = suggestions[:20]
+
+    suggestion_cache_set(
+        query,
+        suggestions
+    )
+
+    return suggestions
 
 
 # =========================================================
@@ -2670,9 +3081,38 @@ def api_suggestions():
 
     candidates = []
 
-    for item in (
-        SUGGESTION_CATALOG
-    ):
+    # =====================================================
+    # 1. REAL CARDYX RESULTS
+    # =====================================================
+
+    try:
+
+        real_suggestions = (
+            load_real_cardyx_suggestions(
+                q
+            )
+        )
+
+        candidates.extend(
+            real_suggestions
+        )
+
+    except Exception:
+        # Autocomplete nesmie zhodiť stránku.
+        pass
+
+    # =====================================================
+    # 2. EXISTUJÚCI KATALÓG
+    # =====================================================
+
+    with _suggestion_catalog_lock:
+
+        catalog_snapshot = [
+            item.copy()
+            for item in SUGGESTION_CATALOG
+        ]
+
+    for item in catalog_snapshot:
 
         title = clean_text(
             item.get(
@@ -2699,8 +3139,12 @@ def api_suggestions():
         ):
 
             candidates.append(
-                item.copy()
+                item
             )
+
+    # =====================================================
+    # 3. AUTOMATICKÉ ROZPOZNANIE
+    # =====================================================
 
     parsed = normalize_query(
         q
@@ -2773,7 +3217,7 @@ def api_suggestions():
                         normalized,
 
                     "subtitle":
-                        "Automaticky rozpoznaná karta",
+                        "Pokémon",
 
                     "type":
                         "card",
@@ -2781,6 +3225,10 @@ def api_suggestions():
                     "type_label":
                         "Karta",
                 })
+
+    # =====================================================
+    # SORT
+    # =====================================================
 
     candidates.sort(
         key=lambda item:
@@ -2790,6 +3238,10 @@ def api_suggestions():
         ),
         reverse=True
     )
+
+    # =====================================================
+    # DEDUPLICATE
+    # =====================================================
 
     output = []
 
@@ -3061,6 +3513,12 @@ def api_debug_cache():
             else:
                 expired += 1
 
+        with _suggestion_cache_lock:
+
+            suggestion_items = len(
+                _suggestion_cache
+            )
+
         return jsonify({
 
             "status":
@@ -3082,6 +3540,17 @@ def api_debug_cache():
 
             "expired":
                 expired,
+
+            "suggestion_cache_ttl_seconds":
+                SUGGESTION_CACHE_TTL,
+
+            "suggestion_cache_items":
+                suggestion_items,
+
+            "suggestion_catalog_items":
+                len(
+                    SUGGESTION_CATALOG
+                ),
         })
 
 
@@ -3092,13 +3561,19 @@ def api_debug_cache_clear():
 
     cache_clear()
 
+    suggestion_cache_clear()
+
+    with _suggestion_catalog_lock:
+
+        SUGGESTION_CATALOG.clear()
+
     return jsonify({
 
         "status":
             "ok",
 
         "message":
-            "Cache bola vymazaná.",
+            "Cache a autocomplete katalóg boli vymazané.",
     })
 
 
@@ -3112,6 +3587,12 @@ def api_debug_cache_clear():
 def health():
 
     index_path = find_index()
+
+    with _suggestion_catalog_lock:
+
+        suggestion_count = len(
+            SUGGESTION_CATALOG
+        )
 
     return jsonify({
 
@@ -3145,6 +3626,12 @@ def health():
 
         "cache_max_items":
             CACHE_MAX_ITEMS,
+
+        "suggestion_cache_ttl":
+            SUGGESTION_CACHE_TTL,
+
+        "suggestion_catalog_items":
+            suggestion_count,
 
         "search_timeout":
             SEARCH_TIMEOUT,
