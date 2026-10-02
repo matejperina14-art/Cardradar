@@ -9,9 +9,9 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, Response
 # =========================================================
 # CARD RADAR
-# VERSION 6.3
+# VERSION 6.4
 # =========================================================
-VERSION = "6.3"
+VERSION = "6.4"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
@@ -112,11 +112,61 @@ def normalize_compare(value):
     value = re.sub(r"[^a-z0-9/]+", " ", value)
     return normalize_spaces(value)
 def absolute_url(base, href):
+    """
+    Bezpecne vytvori absolutnu HTTP/HTTPS URL.
+    Ignoruje:
+    - javascript:
+    - mailto:
+    - tel:
+    - data:
+    - #
+    - prazdne odkazy
+    - URL bez hostname
+    """
     if not href:
         return ""
-    return urllib.parse.urljoin(base, href)
+    href = clean_text(href)
+    if not href:
+        return ""
+    lowered = href.lower()
+    if lowered.startswith((
+        "javascript:",
+        "mailto:",
+        "tel:",
+        "data:",
+        "#",
+    )):
+        return ""
+    try:
+        url = urllib.parse.urljoin(
+            base,
+            href
+        )
+        parsed = urllib.parse.urlparse(
+            url
+        )
+        if parsed.scheme not in (
+            "http",
+            "https",
+        ):
+            return ""
+        if not parsed.netloc:
+            return ""
+        return url
+    except Exception:
+        return ""
 def get(url, timeout=18):
     try:
+        if not url:
+            return None
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in (
+            "http",
+            "https",
+        ):
+            return None
+        if not parsed.netloc:
+            return None
         response = requests.get(
             url,
             headers=HEADERS,
@@ -127,6 +177,8 @@ def get(url, timeout=18):
             return None
         return response
     except requests.RequestException:
+        return None
+    except Exception:
         return None
 # =========================================================
 # ALIASES
@@ -168,11 +220,6 @@ SET_ALIASES = {
     "mega evolution": "Mega Evolution",
     "me01": "Mega Evolution",
     "me02": "Phantasmal Flames",
-    "black bolt": "Black Bolt",
-    "white flare": "White Flare",
-    "journey together": "Journey Together",
-    "destined rivals": "Destined Rivals",
-    "terastal festival": "Terastal Festival",
     "perfect order": "Perfect Order",
     "ascended heroes": "Ascended Heroes",
     "pitch black": "Pitch Black",
@@ -215,7 +262,6 @@ POKEMON_ALIASES = {
     "mimikyu": "Mimikyu",
     "magikarp": "Magikarp",
     "meowscarada": "Meowscarada",
-    "greninja": "Greninja",
 }
 PRODUCT_ALIASES = {
     "etb": "Elite Trainer Box",
@@ -230,7 +276,8 @@ PRODUCT_ALIASES = {
     "collection": "Collection Box",
     "premium collection": "Premium Collection",
     "premium": "Premium Collection",
-    "ultra premium collection": "Ultra Premium Collection",
+    "ultra premium collection":
+        "Ultra Premium Collection",
     "blister": "Blister",
     "tin": "Tin",
     "mini tin": "Mini Tin",
@@ -240,7 +287,6 @@ PRODUCT_ALIASES = {
 # MERCH FILTER
 # =========================================================
 MERCH_WORDS = [
-    # plush / toys
     "plush",
     "plys",
     "plysak",
@@ -252,8 +298,6 @@ MERCH_WORDS = [
     "figurine",
     "toy",
     "hračka",
-    "hračka",
-    # clothing
     "shirt",
     "tricko",
     "tričko",
@@ -269,7 +313,6 @@ MERCH_WORDS = [
     "šiltovka",
     "hat",
     "čiapka",
-    # drinkware
     "mug",
     "hrncek",
     "hrnček",
@@ -280,7 +323,6 @@ MERCH_WORDS = [
     "flasa",
     "fľaša",
     "bottle",
-    # stationery / home
     "puzzle",
     "playmat",
     "podlozka",
@@ -293,7 +335,6 @@ MERCH_WORDS = [
     "notebook",
     "zošit",
     "zosit",
-    # card accessories
     "album",
     "binder",
     "sleeves",
@@ -305,7 +346,6 @@ MERCH_WORDS = [
     "toploader",
     "penny sleeve",
     "protection",
-    # bags / accessories
     "keychain",
     "klucenka",
     "kľúčenka",
@@ -317,7 +357,6 @@ MERCH_WORDS = [
     "wallet",
     "puzdro",
     "case",
-    # generic merch
     "merch",
     "merchandise",
     "dekoracia",
@@ -516,32 +555,26 @@ def is_card_title(title):
         "trading card",
         "tcg",
     ]
-    # Explicit TCG/card indicator.
     if any(
         indicator in q
         for indicator in card_indicators
     ):
         return True
-    # Graded cards.
     if re.search(
         r"\b(psa|cgc|bgs|sgc)\b",
         q
     ):
         return True
-    # Card number strongly suggests a card.
     if re.search(
         r"\b\d{1,3}\s*/\s*\d{1,3}\b",
         title
     ):
         return True
-    # Common card suffixes.
     if re.search(
         r"\b(vmax|vstar|gx|ex)\b",
         q
     ):
         return True
-    # Pokemon name alone can still be a card
-    # if the product is not clearly merch.
     pokemon_found = False
     for name in POKEMON_ALIASES.values():
         if normalize_compare(name) in q:
@@ -576,8 +609,6 @@ def parse_price(value):
         "kc",
         " czk"
     )
-    # Keep information about currency before
-    # removing spaces.
     is_czk = (
         "czk" in text
         or "kč" in text
@@ -593,7 +624,6 @@ def parse_price(value):
     )
     if not matches:
         return None
-    # Prefer the last numeric value in a product block.
     number = matches[-1]
     if "," in number and "." in number:
         if number.rfind(",") > number.rfind("."):
@@ -620,7 +650,6 @@ def parse_price(value):
         price = price / CZK_PER_EUR
     if price <= 0:
         return None
-    # Ignore unrealistic parser hits.
     if price > 100000:
         return None
     return round(
@@ -661,7 +690,6 @@ def pokemon_matches(title, parsed):
         set_name = normalize_compare(
             parsed["set"]
         )
-        # Some shops use shortened set names.
         if set_name not in t:
             alternatives = {
                 "pokemon 151": [
@@ -716,7 +744,6 @@ def card_matches_query(title, query):
         parsed
     ):
         return False
-    # Generic fallback.
     if not (
         parsed["pokemon"]
         or parsed["suffix"]
@@ -764,8 +791,6 @@ def sealed_matches_query(title, query):
         query
     )
     if parsed["product_type"] == "Card":
-        # A sealed product is allowed
-        # only for a set-only search.
         if not parsed["set"]:
             return False
     else:
@@ -869,6 +894,8 @@ def save_discovered(
     condition="Nové",
 ):
     if not title:
+        return
+    if not url:
         return
     try:
         conn = db()
@@ -974,6 +1001,8 @@ def cardyx_discover(query):
                 "https://www.cardyx.sk/",
                 href
             )
+            if not product_url:
+                continue
             if product_url in seen:
                 continue
             title = clean_text(
@@ -1183,9 +1212,7 @@ PRICE_SELECTORS = [
     ".price-new",
     "[class*='price']",
 ]
-def extract_title(
-    block
-):
+def extract_title(block):
     for selector in TITLE_SELECTORS:
         element = block.select_one(
             selector
@@ -1225,9 +1252,7 @@ def extract_title(
         if len(alt) >= 2:
             return alt
     return ""
-def extract_price(
-    block
-):
+def extract_price(block):
     for selector in PRICE_SELECTORS:
         elements = block.select(
             selector
@@ -1282,6 +1307,8 @@ def extract_product_from_block(
         base_url,
         href
     )
+    if not product_url:
+        return None
     return {
         "shop": shop,
         "country": country,
@@ -1323,6 +1350,8 @@ def scrape_shop_url(
             if not item:
                 continue
             product_url = item["url"]
+            if not product_url:
+                continue
             if product_url in seen_urls:
                 continue
             seen_urls.add(
@@ -1386,6 +1415,8 @@ def scrape_shop_url(
             shop["url"],
             href
         )
+        if not product_url:
+            continue
         if product_url in seen_urls:
             continue
         if not result_matches_query(
@@ -1431,6 +1462,10 @@ def generic_shop_search(
                 query
             )
             for item in results:
+                if not item.get(
+                    "url"
+                ):
+                    continue
                 key = (
                     normalize_compare(
                         item["title"]
@@ -1445,11 +1480,8 @@ def generic_shop_search(
                 all_results.append(
                     item
                 )
-            # Do not stop immediately.
-            # Try all search URL variants.
         except Exception:
             continue
-    # Save only valid filtered results.
     for item in all_results:
         save_discovered(
             item["shop"],
@@ -1499,6 +1531,8 @@ def deduplicate_results(
             "url",
             ""
         )
+        if not url:
+            continue
         key = (
             shop,
             title,
@@ -1523,9 +1557,6 @@ def search_all(
     if not query:
         return [], []
     results = []
-    # -----------------------------------------------------
-    # Source status
-    # -----------------------------------------------------
     sources = []
     # -----------------------------------------------------
     # CARDYX
@@ -1601,6 +1632,10 @@ def search_all(
             "title"
         ):
             continue
+        if not item.get(
+            "url"
+        ):
+            continue
         if item.get(
             "price_eur"
         ) is None:
@@ -1630,7 +1665,6 @@ def search_all(
             else 999999
         )
     )
-    # Sort sources alphabetically
     sources.sort(
         key=lambda x: x["shop"]
     )
@@ -1824,79 +1858,98 @@ def api_search():
                 "average": None,
             },
         })
-    parsed = parse_query(
-        original_query
-    )
-    normalized_query = (
-        parsed["normalized"]
-        or original_query
-    )
-    results, sources = search_all(
-        normalized_query
-    )
-    save_history(
-        original_query,
-        results
-    )
-    prices = [
-        x["price_eur"]
-        for x in results
-        if x.get(
-            "price_eur"
-        ) is not None
-    ]
-    lowest = (
-        round(
-            min(prices),
-            2
+    try:
+        parsed = parse_query(
+            original_query
         )
-        if prices
-        else None
-    )
-    average = (
-        round(
-            sum(prices)
-            / len(prices),
-            2
+        normalized_query = (
+            parsed["normalized"]
+            or original_query
         )
-        if prices
-        else None
-    )
-    return jsonify({
-        "query": original_query,
-        "normalized_query":
-            normalized_query,
-        "normalized":
-            normalized_query,
-        "parsed": {
-            "product_type":
-                parsed["product_type"],
-            "set":
-                parsed["set"],
-            "pokemon":
-                parsed["pokemon"],
-            "card_number":
-                parsed["card_number"],
-            "suffix":
-                parsed["suffix"],
-        },
-        "results":
-            results,
-        "sources":
-            sources,
-        "summary": {
-            "count":
-                len(results),
-            "lowest":
-                lowest,
-            "average":
-                average,
-        },
-        "czk_per_eur":
-            CZK_PER_EUR,
-        "checked_at":
-            now_iso(),
-    })
+        results, sources = search_all(
+            normalized_query
+        )
+        save_history(
+            original_query,
+            results
+        )
+        prices = [
+            x["price_eur"]
+            for x in results
+            if x.get(
+                "price_eur"
+            ) is not None
+        ]
+        lowest = (
+            round(
+                min(prices),
+                2
+            )
+            if prices
+            else None
+        )
+        average = (
+            round(
+                sum(prices)
+                / len(prices),
+                2
+            )
+            if prices
+            else None
+        )
+        return jsonify({
+            "query":
+                original_query,
+            "normalized_query":
+                normalized_query,
+            "normalized":
+                normalized_query,
+            "parsed": {
+                "product_type":
+                    parsed["product_type"],
+                "set":
+                    parsed["set"],
+                "pokemon":
+                    parsed["pokemon"],
+                "card_number":
+                    parsed["card_number"],
+                "suffix":
+                    parsed["suffix"],
+            },
+            "results":
+                results,
+            "sources":
+                sources,
+            "summary": {
+                "count":
+                    len(results),
+                "lowest":
+                    lowest,
+                "average":
+                    average,
+            },
+            "czk_per_eur":
+                CZK_PER_EUR,
+            "checked_at":
+                now_iso(),
+        })
+    except Exception as e:
+        # API nikdy nesmie spadnut do
+        # neocakavanej HTML chyby.
+        # Vratime JSON s presnou chybou.
+        return jsonify({
+            "query": original_query,
+            "normalized_query": "",
+            "results": [],
+            "sources": [],
+            "summary": {
+                "count": 0,
+                "lowest": None,
+                "average": None,
+            },
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }), 500
 # =========================================================
 # API - PRODUCTS
 # =========================================================
