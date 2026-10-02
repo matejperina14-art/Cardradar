@@ -5,6 +5,7 @@ import urllib.parse
 import time
 import copy
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
@@ -14,12 +15,12 @@ from flask import Flask, jsonify, request, Response
 
 # =========================================================
 # CARD RADAR
-# VERSION 5.14
+# VERSION 5.15
 # CARDYX FOCUS
 # STABILITY + SPEED + REAL AUTOCOMPLETE + PRODUCT IMAGES
 # =========================================================
 
-VERSION = "5.14"
+VERSION = "5.15"
 
 app = Flask(__name__)
 
@@ -46,6 +47,25 @@ SUGGESTION_CACHE_TTL = 30
 SUGGESTION_CACHE_MAX_ITEMS = 100
 
 SEARCH_TIMEOUT = 10
+
+
+# =========================================================
+# IMAGE SETTINGS
+# =========================================================
+
+# Obrázky získané z konkrétnych produktových stránok
+# držíme v pamäti 1 hodinu.
+IMAGE_CACHE_TTL = 3600
+
+# Maximálny počet uložených image URL.
+IMAGE_CACHE_MAX_ITEMS = 500
+
+# Koľko produktových stránok môžeme načítať naraz.
+IMAGE_FETCH_WORKERS = 6
+
+# Samotná produktová stránka má kratší timeout než
+# hlavné vyhľadávanie, aby nám obrázky nezablokovali search.
+IMAGE_FETCH_TIMEOUT = 5
 
 
 # =========================================================
@@ -318,6 +338,121 @@ def suggestion_cache_clear():
     with _suggestion_cache_lock:
 
         _suggestion_cache.clear()
+
+
+# =========================================================
+# IMAGE CACHE
+# =========================================================
+
+_image_cache = {}
+
+_image_cache_lock = threading.Lock()
+
+
+def image_cache_get(
+    product_url
+):
+
+    product_url = clean_text(
+        product_url
+    )
+
+    if not product_url:
+        return None
+
+    now = time.monotonic()
+
+    with _image_cache_lock:
+
+        item = _image_cache.get(
+            product_url
+        )
+
+        if item is None:
+            return None
+
+        timestamp = item.get(
+            "timestamp",
+            0
+        )
+
+        if (
+            now -
+            timestamp
+            >
+            IMAGE_CACHE_TTL
+        ):
+
+            _image_cache.pop(
+                product_url,
+                None
+            )
+
+            return None
+
+        # Dôležité:
+        # "" znamená, že sme už skúšali obrázok nájsť,
+        # ale nenašli sme ho.
+        return item.get(
+            "image",
+            ""
+        )
+
+
+def image_cache_set(
+    product_url,
+    image_url
+):
+
+    product_url = clean_text(
+        product_url
+    )
+
+    if not product_url:
+        return
+
+    image_url = clean_text(
+        image_url
+    )
+
+    with _image_cache_lock:
+
+        if (
+            product_url not in _image_cache
+            and
+            len(_image_cache)
+            >= IMAGE_CACHE_MAX_ITEMS
+        ):
+
+            oldest_key = min(
+                _image_cache,
+                key=lambda k:
+                _image_cache[k].get(
+                    "timestamp",
+                    0
+                )
+            )
+
+            _image_cache.pop(
+                oldest_key,
+                None
+            )
+
+        _image_cache[product_url] = {
+
+            "timestamp":
+                time.monotonic(),
+
+            "image":
+                image_url,
+        }
+
+
+def image_cache_clear():
+
+    with _image_cache_lock:
+
+        _image_cache.clear()
 
 
 # =========================================================
@@ -1965,8 +2100,11 @@ def cardyx_extract_image(
     2. data-src
     3. data-lazy-src
     4. data-original
-    5. srcset
-    6. data-srcset
+    5. data-image
+    6. data-image-src
+    7. data-original-src
+    8. srcset
+    9. data-srcset
     """
 
     image = anchor.find(
@@ -2126,6 +2264,518 @@ def cardyx_extract_image(
             return candidates[-1][1]
 
     return ""
+
+
+# =========================================================
+# CARDYX PRODUCT PAGE IMAGE EXTRACTION
+# =========================================================
+
+def cardyx_extract_product_page_image(
+    soup,
+    product_url
+):
+
+    """
+    Fallback pre prípady, keď CardyX search výsledok
+    neposkytol obrázok.
+
+    Priorita:
+    1. og:image
+    2. twitter:image
+    3. klasické img atribúty
+    4. srcset
+    """
+
+    if soup is None:
+        return ""
+
+    # -----------------------------------------------------
+    # OG IMAGE
+    # -----------------------------------------------------
+
+    for selector in [
+        'meta[property="og:image"]',
+        'meta[property="og:image:url"]',
+        'meta[name="og:image"]',
+    ]:
+
+        meta = soup.select_one(
+            selector
+        )
+
+        if meta:
+
+            value = clean_text(
+                meta.get(
+                    "content",
+                    ""
+                )
+            )
+
+            if value and not value.startswith(
+                "data:image/"
+            ):
+
+                absolute = absolute_url(
+                    product_url,
+                    value
+                )
+
+                if absolute:
+                    return absolute
+
+    # -----------------------------------------------------
+    # TWITTER IMAGE
+    # -----------------------------------------------------
+
+    for selector in [
+        'meta[name="twitter:image"]',
+        'meta[property="twitter:image"]',
+    ]:
+
+        meta = soup.select_one(
+            selector
+        )
+
+        if meta:
+
+            value = clean_text(
+                meta.get(
+                    "content",
+                    ""
+                )
+            )
+
+            if value and not value.startswith(
+                "data:image/"
+            ):
+
+                absolute = absolute_url(
+                    product_url,
+                    value
+                )
+
+                if absolute:
+                    return absolute
+
+    # -----------------------------------------------------
+    # IMG ELEMENTS
+    # -----------------------------------------------------
+
+    attributes = [
+
+        "src",
+
+        "data-src",
+
+        "data-lazy-src",
+
+        "data-original",
+
+        "data-image",
+
+        "data-image-src",
+
+        "data-original-src",
+    ]
+
+    images = soup.find_all(
+        "img"
+    )
+
+    # Najprv skúsime obrázky, ktoré vyzerajú ako
+    # produktové obrázky.
+    prioritized_images = []
+
+    other_images = []
+
+    for image in images:
+
+        alt = clean_text(
+            image.get(
+                "alt",
+                ""
+            )
+        ).lower()
+
+        image_class = clean_text(
+            image.get(
+                "class",
+                ""
+            )
+        ).lower()
+
+        image_id = clean_text(
+            image.get(
+                "id",
+                ""
+            )
+        ).lower()
+
+        marker = (
+            alt +
+            " " +
+            image_class +
+            " " +
+            image_id
+        )
+
+        if any(
+            token in marker
+            for token in [
+                "product",
+                "produkt",
+                "gallery",
+                "main-image",
+                "main image",
+                "woocommerce",
+            ]
+        ):
+
+            prioritized_images.append(
+                image
+            )
+
+        else:
+
+            other_images.append(
+                image
+            )
+
+    ordered_images = (
+        prioritized_images +
+        other_images
+    )
+
+    # -----------------------------------------------------
+    # PRIAME ATTRIBÚTY
+    # -----------------------------------------------------
+
+    for image in ordered_images:
+
+        for attr in attributes:
+
+            value = clean_text(
+                image.get(
+                    attr,
+                    ""
+                )
+            )
+
+            if not value:
+                continue
+
+            if value.startswith(
+                "data:image/"
+            ):
+                continue
+
+            absolute = absolute_url(
+                product_url,
+                value
+            )
+
+            if absolute:
+                return absolute
+
+    # -----------------------------------------------------
+    # SRCSET
+    # -----------------------------------------------------
+
+    for image in ordered_images:
+
+        for attr in [
+            "srcset",
+            "data-srcset",
+        ]:
+
+            srcset = clean_text(
+                image.get(
+                    attr,
+                    ""
+                )
+            )
+
+            if not srcset:
+                continue
+
+            candidates = []
+
+            for part in srcset.split(","):
+
+                part = clean_text(
+                    part
+                )
+
+                if not part:
+                    continue
+
+                pieces = part.split()
+
+                if not pieces:
+                    continue
+
+                url = pieces[0]
+
+                width = 0
+
+                if len(pieces) > 1:
+
+                    match = re.search(
+                        r"(\d+)w",
+                        pieces[1]
+                    )
+
+                    if match:
+
+                        try:
+
+                            width = int(
+                                match.group(1)
+                            )
+
+                        except Exception:
+                            width = 0
+
+                absolute = absolute_url(
+                    product_url,
+                    url
+                )
+
+                if absolute:
+
+                    candidates.append(
+                        (
+                            width,
+                            absolute
+                        )
+                    )
+
+            if candidates:
+
+                candidates.sort(
+                    key=lambda item:
+                    item[0]
+                )
+
+                return candidates[-1][1]
+
+    return ""
+
+
+# =========================================================
+# CARDYX PRODUCT PAGE IMAGE FETCH
+# =========================================================
+
+def cardyx_fetch_product_image(
+    product_url
+):
+
+    """
+    Otvorí konkrétnu CardyX produktovú stránku
+    a pokúsi sa nájsť hlavný obrázok produktu.
+
+    Cache:
+    - úspešný obrázok
+    - aj neúspešné hľadanie ako ""
+    """
+
+    product_url = clean_text(
+        product_url
+    )
+
+    if not product_url:
+        return ""
+
+    # -----------------------------------------------------
+    # CACHE
+    # -----------------------------------------------------
+
+    cached = image_cache_get(
+        product_url
+    )
+
+    if cached is not None:
+        return cached
+
+    try:
+
+        response, debug = fetch(
+            product_url,
+            timeout=IMAGE_FETCH_TIMEOUT
+        )
+
+        if not response:
+
+            image_cache_set(
+                product_url,
+                ""
+            )
+
+            return ""
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        image_url = (
+            cardyx_extract_product_page_image(
+                soup,
+                product_url
+            )
+        )
+
+        image_cache_set(
+            product_url,
+            image_url
+        )
+
+        return image_url
+
+    except Exception:
+
+        image_cache_set(
+            product_url,
+            ""
+        )
+
+        return ""
+
+
+# =========================================================
+# CARDYX ENRICH MISSING IMAGES
+# =========================================================
+
+def cardyx_enrich_missing_images(
+    results,
+    debug=None
+):
+
+    """
+    Obrázky dohľadávame iba pri už prijatých výsledkoch,
+    ktoré nemajú image.
+
+    Nikdy teda neotvárame všetkých 40+ produktov
+    zo search stránky.
+    """
+
+    if not results:
+        return results
+
+    missing = []
+
+    for item in results:
+
+        image = clean_text(
+            item.get(
+                "image",
+                ""
+            )
+        )
+
+        link = clean_text(
+            item.get(
+                "link",
+                ""
+            )
+        )
+
+        if image:
+            continue
+
+        if not link:
+            continue
+
+        missing.append(
+            item
+        )
+
+    if not missing:
+        return results
+
+    fetched = 0
+    found = 0
+
+    # -----------------------------------------------------
+    # Paralelné načítanie
+    # -----------------------------------------------------
+
+    try:
+
+        with ThreadPoolExecutor(
+            max_workers=IMAGE_FETCH_WORKERS
+        ) as executor:
+
+            future_map = {
+
+                executor.submit(
+                    cardyx_fetch_product_image,
+                    item.get(
+                        "link",
+                        ""
+                    )
+                ):
+                    item
+
+                for item in missing
+            }
+
+            for future in as_completed(
+                future_map
+            ):
+
+                item = future_map[
+                    future
+                ]
+
+                fetched += 1
+
+                try:
+
+                    image_url = future.result()
+
+                except Exception:
+
+                    image_url = ""
+
+                if image_url:
+
+                    item[
+                        "image"
+                    ] = image_url
+
+                    found += 1
+
+                else:
+
+                    item[
+                        "image"
+                    ] = ""
+
+    except Exception:
+
+        # Ak by paralelné spracovanie zlyhalo,
+        # výsledky zostanú použiteľné aj bez obrázkov.
+        pass
+
+    if debug is not None:
+
+        debug[
+            "image_fallback_candidates"
+        ] = len(
+            missing
+        )
+
+        debug[
+            "image_fallback_fetched"
+        ] = fetched
+
+        debug[
+            "image_fallback_found"
+        ] = found
+
+    return results
 
 
 # =========================================================
@@ -2291,6 +2941,15 @@ def cardyx_search(
             0,
 
         "images_missing":
+            0,
+
+        "image_fallback_candidates":
+            0,
+
+        "image_fallback_fetched":
+            0,
+
+        "image_fallback_found":
             0,
 
         "elapsed_ms":
@@ -2740,6 +3399,52 @@ def cardyx_search(
         results = list(
             unique.values()
         )
+
+        # =====================================================
+        # FALLBACK IMAGE FETCH
+        # =====================================================
+
+        # Až teraz, keď už máme iba reálne prijaté
+        # výsledky, dohľadáme chýbajúce obrázky.
+        #
+        # Tým pádom napr. pri Pikachu neotvárame
+        # všetkých 44 produktov, ale iba prijaté
+        # výsledky bez obrázka.
+
+        cardyx_enrich_missing_images(
+            results,
+            debug
+        )
+
+        # =====================================================
+        # UPDATE IMAGE COUNTERS
+        # =====================================================
+
+        final_images_found = 0
+        final_images_missing = 0
+
+        for item in results:
+
+            if clean_text(
+                item.get(
+                    "image",
+                    ""
+                )
+            ):
+
+                final_images_found += 1
+
+            else:
+
+                final_images_missing += 1
+
+        debug[
+            "images_found"
+        ] = final_images_found
+
+        debug[
+            "images_missing"
+        ] = final_images_missing
 
         # =====================================================
         # SORT BY PRICE
@@ -3718,49 +4423,88 @@ def api_debug_cache():
             else:
                 expired += 1
 
-        with _suggestion_cache_lock:
+    with _suggestion_cache_lock:
 
-            suggestion_items = len(
-                _suggestion_cache
+        suggestion_items = len(
+            _suggestion_cache
+        )
+
+    with _suggestion_catalog_lock:
+
+        catalog_items = len(
+            SUGGESTION_CATALOG
+        )
+
+    with _image_cache_lock:
+
+        image_items = len(
+            _image_cache
+        )
+
+        image_active = 0
+        image_expired = 0
+
+        for item in _image_cache.values():
+
+            age = (
+                now -
+                item.get(
+                    "timestamp",
+                    0
+                )
             )
 
-        with _suggestion_catalog_lock:
+            if age <= IMAGE_CACHE_TTL:
+                image_active += 1
+            else:
+                image_expired += 1
 
-            catalog_items = len(
-                SUGGESTION_CATALOG
-            )
+    return jsonify({
 
-        return jsonify({
+        "status":
+            "ok",
 
-            "status":
-                "ok",
+        "cache_ttl_seconds":
+            CACHE_TTL,
 
-            "cache_ttl_seconds":
-                CACHE_TTL,
+        "cache_max_items":
+            CACHE_MAX_ITEMS,
 
-            "cache_max_items":
-                CACHE_MAX_ITEMS,
+        "cache_items":
+            len(
+                _search_cache
+            ),
 
-            "cache_items":
-                len(
-                    _search_cache
-                ),
+        "active":
+            active,
 
-            "active":
-                active,
+        "expired":
+            expired,
 
-            "expired":
-                expired,
+        "suggestion_cache_ttl_seconds":
+            SUGGESTION_CACHE_TTL,
 
-            "suggestion_cache_ttl_seconds":
-                SUGGESTION_CACHE_TTL,
+        "suggestion_cache_items":
+            suggestion_items,
 
-            "suggestion_cache_items":
-                suggestion_items,
+        "suggestion_catalog_items":
+            catalog_items,
 
-            "suggestion_catalog_items":
-                catalog_items,
-        })
+        "image_cache_ttl_seconds":
+            IMAGE_CACHE_TTL,
+
+        "image_cache_max_items":
+            IMAGE_CACHE_MAX_ITEMS,
+
+        "image_cache_items":
+            image_items,
+
+        "image_cache_active":
+            image_active,
+
+        "image_cache_expired":
+            image_expired,
+    })
 
 
 @app.get(
@@ -3772,6 +4516,8 @@ def api_debug_cache_clear():
 
     suggestion_cache_clear()
 
+    image_cache_clear()
+
     with _suggestion_catalog_lock:
 
         SUGGESTION_CATALOG.clear()
@@ -3782,7 +4528,7 @@ def api_debug_cache_clear():
             "ok",
 
         "message":
-            "Cache a autocomplete katalóg boli vymazané.",
+            "Cache, image cache a autocomplete katalóg boli vymazané.",
     })
 
 
@@ -3801,6 +4547,12 @@ def health():
 
         suggestion_count = len(
             SUGGESTION_CATALOG
+        )
+
+    with _image_cache_lock:
+
+        image_cache_count = len(
+            _image_cache
         )
 
     return jsonify({
@@ -3841,6 +4593,18 @@ def health():
 
         "suggestion_catalog_items":
             suggestion_count,
+
+        "image_cache_ttl":
+            IMAGE_CACHE_TTL,
+
+        "image_cache_items":
+            image_cache_count,
+
+        "image_fetch_workers":
+            IMAGE_FETCH_WORKERS,
+
+        "image_fetch_timeout":
+            IMAGE_FETCH_TIMEOUT,
 
         "search_timeout":
             SEARCH_TIMEOUT,
