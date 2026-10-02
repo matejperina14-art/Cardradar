@@ -11,16 +11,50 @@ from flask import Flask, jsonify, request, send_file
 
 app = Flask(__name__)
 
-VERSION = "5.3"
+VERSION = "5.4"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# index.html máme v priečinku Templates
-INDEX_FILE = os.path.join(
-    BASE_DIR,
-    "Templates",
-    "index.html"
-)
+# =========================================================
+# INDEX.HTML – AUTOMATICKÉ HĽADANIE
+# =========================================================
+
+def find_index_file():
+    candidates = [
+        os.path.join(BASE_DIR, "index.html"),
+        os.path.join(BASE_DIR, "Templates", "index.html"),
+        os.path.join(BASE_DIR, "templates", "index.html"),
+        os.path.join(BASE_DIR, "Index.html"),
+        os.path.join(BASE_DIR, "Templates", "Index.html"),
+        os.path.join(BASE_DIR, "templates", "Index.html"),
+    ]
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    # Posledná kontrola – prehľadá celý projekt
+    for root, dirs, files in os.walk(BASE_DIR):
+        # Nechceme prehľadávať zbytočné systémové priečinky
+        dirs[:] = [
+            d for d in dirs
+            if d not in {
+                ".git",
+                "__pycache__",
+                ".venv",
+                "venv",
+                "node_modules"
+            }
+        ]
+
+        for filename in files:
+            if filename.lower() == "index.html":
+                return os.path.join(root, filename)
+
+    return None
+
+
+INDEX_FILE = find_index_file()
 
 DB_FILE = os.path.join(
     BASE_DIR,
@@ -82,6 +116,7 @@ def normalize(text):
     text = str(text)
 
     text = unicodedata.normalize("NFKD", text)
+
     text = "".join(
         c for c in text
         if not unicodedata.combining(c)
@@ -1237,14 +1272,15 @@ def api_search():
 @app.route("/health")
 def health():
 
+    current_index = find_index_file()
+
     return jsonify({
         "service": "CardRadar",
         "status": "ok",
         "version": VERSION,
-        "index_exists": os.path.exists(
-            INDEX_FILE
-        ),
-        "index_path": INDEX_FILE,
+        "index_exists": bool(current_index),
+        "index_path": current_index,
+        "base_dir": BASE_DIR,
     })
 
 
@@ -1255,16 +1291,18 @@ def health():
 @app.route("/")
 def home():
 
-    if not os.path.exists(INDEX_FILE):
+    current_index = find_index_file()
+
+    if not current_index:
 
         return (
             "<h1>CardRadar</h1>"
             "<p>Chýba index.html.</p>"
-            "<p>Skontroluj priečinok Templates.</p>"
+            "<p>Render ho nenašiel v projekte.</p>"
         ), 500
 
     return send_file(
-        INDEX_FILE
+        current_index
     )
 
 
