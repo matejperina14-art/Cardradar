@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.5
+CARD RADAR – rozšírenia 6.6
+ - 6.6: CardyX – sklad a obrázky priamo z obchodu
  - 6.5: kontrola pred spustením na /admin/test?key=ADMIN_KEY
  - 6.4: katalógy sa po reštarte servera načítajú hneď a postupne
 ===========================
@@ -910,7 +911,60 @@ def manifest():
     return resp
 
 
+def _shopify_enrich(shop, query, results):
+    """CardyX (Shopify): sklad a obrázky z rýchleho JSON vyhľadávania obchodu."""
+    if not results:
+        return
+    url = (shop["base_url"].rstrip("/") + "/search/suggest.json?q=" + urllib.parse.quote(query)
+           + "&resources[type]=product&resources[limit]=10"
+           + "&resources[options][unavailable_products]=last")
+    resp, _ = G["fetch"](url, timeout=4)
+    if not resp:
+        return
+    try:
+        products = resp.json()["resources"]["results"]["products"]
+    except Exception:
+        return
+    info = {}
+    for p in products or []:
+        path = urllib.parse.urlsplit(p.get("url") or "").path.rstrip("/").lower()
+        if not path:
+            continue
+        img = p.get("image") or ""
+        if not img and isinstance(p.get("featured_image"), dict):
+            img = p["featured_image"].get("url", "")
+        if img:
+            img = G["absolute_url"](shop["base_url"], img)
+            if "width=" not in img:
+                img += ("&" if "?" in img else "?") + "width=400"
+        info[path] = (p.get("available"), img)
+    for r in results:
+        hit = info.get(urllib.parse.urlsplit(r.get("link") or "").path.rstrip("/").lower())
+        if not hit:
+            continue
+        available, img = hit
+        if not r.get("stock") and available is not None:
+            r["stock"] = "in" if available else "out"
+        if not r.get("image") and img:
+            r["image"] = img
+
+
+def _make_scrape_fix(original):
+    def _scrape(shop, query, timeout):
+        res, dbg = original(shop, query, timeout)
+        if shop.get("shopify") and res:
+            try:
+                _shopify_enrich(shop, query, res)
+                dbg["images_found"] = sum(1 for r in res if r.get("image"))
+                dbg["images_missing"] = len(res) - dbg["images_found"]
+            except Exception:
+                pass
+        return res, dbg
+    return _scrape
+
+
 def _install_fixes(g):
+    g["_scrape"] = _make_scrape_fix(g["_scrape"])
     g["SEARCH_TIMEOUT"] = FAST_TIMEOUT
     for name, fn in (("client_ip", client_ip), ("debug_allowed", debug_allowed)):
         g[name] = fn
