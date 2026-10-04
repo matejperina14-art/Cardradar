@@ -20,7 +20,8 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, Response
 
 # =========================================================
-# CARD RADAR 5.30
+# CARD RADAR 5.31
+# Novinky 5.31: tvrdý filter merchu (aj s "TCG" v názve) + pozitívna kontrola, že ide o kartu/TCG produkt
 # Novinky 5.30:
 #  - sklad: rozpoznanie Skladom / Vypredané / Predobjednávka / Na objednávku
 #  - cena za booster (ETB, booster box, bundle, "36 balíčkov" v názve...)
@@ -42,7 +43,7 @@ from flask import Flask, jsonify, request, Response
 #  - história cien v pozadí + automatické mazanie starých záznamov
 # =========================================================
 
-VERSION = "5.30"
+VERSION = "5.31"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
@@ -750,53 +751,61 @@ def detect_language(title):
 # MERCH FILTER
 # =========================================================
 
-# Slová sa hľadajú ako ZAČIATOK slova, takže "plyš" chytí aj plyšák, plyšová,
-# plyšáky a "tričk" chytí tričko, trička, tričká. (Stará verzia hľadala len
-# celé slová, preto jej "plyšák" alebo "šálka" prešli.)
+# Slová sa hľadajú ako ZAČIATOK slova ("plyš" chytí plyšák, plyšová, plyšáky).
+# Tri úrovne:
+#  1. ACCESSORY  – príslušenstvo, vždy preč
+#  2. MERCH_HARD – oblečenie, hrnčeky, plyšáky..., VŽDY preč (aj keď je v názve "TCG")
+#  3. MERCH_SOFT – figúrky, odznaky...: preč, iba ak to nie je TCG kolekcia
+#                  ("Charizard ex Premium Collection with figure" ostane)
 
-# Príslušenstvo: vždy preč (chceme len karty a sealed produkty)
 ACCESSORY_PATTERNS = [
     r"sleeves?", r"obal\w*", r"album\w*", r"binder\w*", r"toploader\w*",
     r"playmat\w*", r"podlo[žz]k\w*", r"deck\s*box\w*", r"deckbox\w*",
     r"puzdr\w*", r"pouzdr\w*", r"stojan\w*", r"portfoli\w*", r"one\s*touch",
-    r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?",
+    r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?", r"r[áa]m[čc]ek\w*",
 ]
 
-# Merch: preč, pokiaľ názov zároveň neobsahuje znak TCG produktu
-# (napr. "Charizard ex Premium Collection with figure" ostane)
-MERCH_PATTERNS = [
+MERCH_HARD_PATTERNS = [
     # oblečenie
-    r"tri[čc]k\w*", r"t-?shirt\w*", r"shirt\w*", r"mikin\w*", r"hoodie\w*",
-    r"pono[žz]k\w*", r"socks?", r"[čc]iap\w*", r"[čc]epic\w*", r"[šs]iltovk\w*",
-    r"k[šs]iltovk\w*", r"caps?", r"py[žz]am\w*", r"kost[ýy]m\w*", r"costume\w*",
+    r"tri[čc]k\w*", r"trik[oa]", r"trik[aů]", r"t-?shirt\w*", r"\w*shirt\w*", r"tee",
+    r"mikin\w*", r"hoodie\w*", r"hoody", r"sweat\w*", r"pono[žz]k\w*", r"socks?",
+    r"[čc]iap\w*", r"[čc]epi[cč]\w*", r"k?[šs]iltovk\w*", r"caps?", r"beanie\w*", r"hats?",
+    r"py[žz]am\w*", r"pyjam\w*", r"pajam\w*", r"kost[ýy]m\w*", r"costume\w*",
     r"rukavic\w*", r"[šs]atk\w*", r"[šs][áa]l", r"[šs][áa]ly", r"scarf\w*",
-    r"tepl[áa]k\w*", r"leg[íi]n\w*", r"[šs]ortk\w*", r"[šs]ortky",
-    # plyšáky, figúrky, hračky
-    r"ply[šs]\w*", r"plush\w*", r"peluche\w*", r"fig[úu]r\w*", r"figur\w*",
-    r"figure\w*", r"statue\w*", r"so[šs]k\w*", r"funko\w*", r"pop!", r"vinyl\w*",
-    r"hra[čc]k\w*", r"toys?", r"lego", r"mega\s+construx", r"stavebnic\w*",
-    r"puzzle\w*", r"pokladni[čc]k\w*", r"mystery", r"blind\s*box\w*",
-    r"gashapon\w*", r"tamagotchi",
-    # domácnosť, kuchyňa
-    r"hrn[čc]\w*", r"hrnk\w*", r"hrnek", r"mugs?", r"[šs][áa]lk\w*", r"poh[áa]r\w*",
-    r"cups?", r"tumbler\w*", r"f[ľl]a[šs]\w*", r"bottle\w*", r"termosk\w*",
-    r"lamp", r"lamp[ay]", r"lampi[čc]k\w*", r"svietidl\w*", r"deka", r"deky",
-    r"blanket\w*", r"vank[úu][šs]\w*", r"pol[šs]t[áa][řr]\w*", r"uter[áa]k\w*",
-    r"osu[šs]k\w*", r"towel\w*", r"oblie[čc]k\w*", r"tanier\w*", r"misk[ay]",
-    r"lunch\s*box\w*", r"desiatov\w*",
+    r"tepl[áa]k\w*", r"leg[íi]n\w*", r"[šs]ortk\w*", r"bund[ay]", r"jacket\w*",
+    r"papu[čc]\w*", r"slippers?", r"oble[čc]en\w*", r"textil\w*", r"bunda",
+    # plyšáky, hračky
+    r"ply[šs]\w*", r"plush\w*", r"peluche\w*", r"hra[čc]k\w*", r"toys?", r"lego",
+    r"mega\s+construx", r"stavebnic\w*", r"puzzle\w*", r"pokladni[čc]k\w*",
+    r"gashapon\w*", r"tamagotchi", r"funko\w*", r"pop!", r"vinyl\w*",
+    # kuchyňa, domácnosť
+    r"hrn[čc]\w*", r"hrn[íi][čc]\w*", r"hrnk\w*", r"hrnek", r"termo\w*", r"mugs?",
+    r"[šs][áa]lk\w*", r"[šs][áa]lek", r"poh[áa]r\w*", r"cups?", r"tumbler\w*",
+    r"f[ľl]a[šs]\w*", r"lahv\w*", r"lahev", r"bottle\w*", r"lamp", r"lamp[ayu]", r"lampi[čc]k\w*",
+    r"svietidl\w*", r"sv[ií]tidl\w*", r"deka", r"deky", r"blanket\w*", r"vank[úu][šs]\w*",
+    r"pol[šs]t[áa][řr]\w*", r"uter[áa]k\w*", r"ru[čc]n[íi]k\w*", r"osu[šs]k\w*", r"towel\w*",
+    r"oblie[čc]k\w*", r"povle[čc]\w*", r"tanier\w*", r"tal[íi][řr]\w*", r"misk[ayu]",
+    r"lunch\s*box\w*", r"desiatov\w*", r"svačin\w*", r"box\s+na\s+jedlo",
     # škola, doplnky, elektronika
-    r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?",
-    r"pera[čc]n[íi]k\w*", r"z[áa]pisn[íi]k\w*", r"zo[šs]it\w*", r"fixk\w*",
-    r"pastel\w*", r"k[ľl][úu][čc]enk\w*", r"keychain\w*", r"keyring\w*",
+    r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?", r"kabelk\w*",
+    r"pera[čc]n[íi]k\w*", r"penál\w*", r"z[áa]pisn[íi]k\w*", r"zo[šs]it\w*", r"se[šs]it\w*",
+    r"fixk\w*", r"pastel\w*", r"pero", r"pera",
+    r"k[ľl][úu][čc]enk\w*", r"kl[íi][čc]enk\w*", r"keychain\w*", r"keyring\w*",
     r"pr[íi]ves\w*", r"n[áa]ram\w*", r"n[áa]hrdeln[íi]k\w*", r"[šs]perk\w*",
-    r"odznak\w*", r"pins?", r"bro[žz]\w*", r"pe[ňn]a[žz]enk\w*", r"wallet\w*",
-    r"phone\s+case", r"mobile\s+case", r"hodink\w*", r"sl[úu]chadl\w*",
-    r"sluch[áa]tk\w*", r"headphones?", r"earphones?", r"reproduktor\w*",
-    r"plag[áa]t\w*", r"poster\w*", r"sticker\w*", r"n[áa]lepk\w*", r"tetov\w*",
-    r"knih\w*", r"kniha", r"books?", r"komiks\w*", r"manga", r"omal\w*",
-    r"nintendo", r"videohr\w*",
+    r"pe[ňn]a[žz]enk\w*", r"wallet\w*", r"phone\s+case", r"mobile\s+case", r"kryt\s+na",
+    r"hodink\w*", r"hodiny", r"watch", r"sl[úu]chadl\w*", r"sluch[áa]tk\w*",
+    r"headphones?", r"earphones?", r"reproduktor\w*", r"powerbank\w*",
+    r"plag[áa]t\w*", r"poster\w*", r"sticker\w*", r"n[áa]lepk\w*", r"samolep\w*", r"tetov\w*",
+    r"knih\w*", r"kniha", r"books?", r"komiks\w*", r"manga", r"omal\w*", r"encyklop\w*",
+    r"nintendo", r"videohr\w*", r"switch",
     # jedlo
-    r"[čc]okol[áa]d\w*", r"cukrovink\w*", r"candy", r"l[íi]zank\w*", r"[žz]uva[čc]k\w*",
+    r"[čc]okol[áa]d\w*", r"cukrovink\w*", r"bonbon\w*", r"candy", r"l[íi]zank\w*",
+    r"[žz]uva[čc]k\w*", r"ramune", r"limon[áa]d\w*",
+]
+
+MERCH_SOFT_PATTERNS = [
+    r"fig[úu]r\w*", r"figur\w*", r"figure\w*", r"statue\w*", r"so[šs]k\w*",
+    r"odznak\w*", r"badge\w*", r"pins?", r"bro[žz]\w*", r"mystery", r"blind\s*box\w*",
 ]
 
 # Znaky skutočného TCG produktu (karta / sealed)
@@ -807,13 +816,25 @@ TCG_MARKER_RE = re.compile(
     re.I,
 )
 
+# Znaky jednotlivej karty (pri hľadaní karty musí mať aspoň jeden)
+CARD_MARKER_RE = re.compile(
+    r"\b\d{1,3}\s*/\s*\d{1,3}\b|#\s?\d{1,3}\b|\b(?:sv|swsh|sm|xy|me|bw|svp|sve)\s?-?\d"
+    r"|\b(?:ex|gx|v|vmax|vstar|lv\.?\s?x|break|prime|legend|tag\s+team)\b"
+    r"|holo|reverse|full\s*art|rare|promo|illustration|secret|trainer\s+gallery|alt\w*\s+art"
+    r"|\bsir\b|\bir\b|\bsr\b|\bur\b|\bar\b|\bchr\b|\bshiny\b|\bkart[ay]\b|\bcard\b"
+    r"|\bpsa\b|\bcgc\b|\bbgs\b|graded|\bnm\b|near\s+mint|mint",
+    re.I,
+)
+
 
 def _words_re(patterns):
     return re.compile(r"(?<!\w)(?:" + "|".join(patterns) + r")(?!\w)", re.I)
 
 
 ACCESSORY_RE = _words_re(ACCESSORY_PATTERNS)
-MERCH_RE = _words_re(MERCH_PATTERNS)
+MERCH_HARD_RE = _words_re(MERCH_HARD_PATTERNS)
+MERCH_SOFT_RE = _words_re(MERCH_SOFT_PATTERNS)
+MERCH_RE = MERCH_HARD_RE  # spätná kompatibilita
 
 
 def merch_reason(title, extra_text=""):
@@ -822,10 +843,44 @@ def merch_reason(title, extra_text=""):
     m = ACCESSORY_RE.search(text)
     if m:
         return "accessory:" + m.group(0).lower()
-    m = MERCH_RE.search(text)
+    m = MERCH_HARD_RE.search(text)
+    if m:
+        return "merch:" + m.group(0).lower()
+    m = MERCH_SOFT_RE.search(text)
     if m and not TCG_MARKER_RE.search(text):
         return "merch:" + m.group(0).lower()
     return ""
+
+
+# Názvy setov (aj starších) pre pozitívnu kontrolu
+TCG_SET_NAMES = set(KNOWN_SETS) | {
+    "ascended heroes", "perfect order", "white flare", "black bolt", "mega evolution",
+    "scarlet violet", "scarlet & violet", "paldean fates", "shrouded fable", "paldea evolved",
+    "paradox rift", "temporal forces", "twilight masquerade", "stellar crown",
+    "crown zenith", "silver tempest", "lost origin", "pokemon go", "pokémon go", "astral radiance",
+    "brilliant stars", "fusion strike", "celebrations", "evolving skies", "chilling reign",
+    "battle styles", "shining fates", "vivid voltage", "champion's path", "champions path",
+    "darkness ablaze", "rebel clash", "sword shield", "sword & shield", "cosmic eclipse",
+    "hidden fates", "unified minds", "unbroken bonds", "team up", "lost thunder",
+    "dragon majesty", "celestial storm", "forbidden light", "ultra prism", "crimson invasion",
+    "shining legends", "burning shadows", "guardians rising", "sun moon", "sun & moon",
+    "evolutions", "steam siege", "fates collide", "generations", "breakpoint", "breakthrough",
+    "ancient origins", "roaring skies", "primal clash", "phantom forces", "furious fists",
+    "flashfire", "base set", "jungle", "fossil", "team rocket", "neo genesis", "gym heroes",
+    "151", "shiny treasure", "vstar universe", "terastal", "night wanderer",
+    "stellar miracle", "battle partners", "heat wave arena", "glory of team rocket",
+}
+_TCG_SET_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in sorted(TCG_SET_NAMES, key=len, reverse=True)) + r")\b",
+    re.I)
+
+
+def looks_like_tcg(title):
+    """Pozitívna kontrola: názov vyzerá ako karta alebo TCG produkt."""
+    text = clean_text(title)
+    if TCG_MARKER_RE.search(text) or CARD_MARKER_RE.search(text):
+        return True
+    return _TCG_SET_RE.search(text) is not None
 
 
 def is_merch(title, extra_text=""):
@@ -1157,6 +1212,10 @@ def _scrape(shop, query, timeout):
                 debug["merch_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason=why)
                 continue
+            if not looks_like_tcg(title):
+                debug["merch_filtered"] += 1
+                _log(debug, title=title, decision="filtered", reason="not_tcg")
+                continue
 
             lang = detect_language(title)
             if lang and not foreign_ok:
@@ -1335,7 +1394,7 @@ def shops_status(debug):
 
 def make_suggestion_from_title(title):
     title = clean_text(title)
-    if not title or is_merch(title):
+    if not title or is_merch(title) or not looks_like_tcg(title):
         return None
 
     p = normalize_query(title)
@@ -1438,7 +1497,7 @@ def shopify_suggest(shop, q, timeout=SUGGESTION_TIMEOUT):
     out = []
     for p in products or []:
         title = clean_text(p.get("title", ""))
-        if not title or is_merch(title):
+        if not title or is_merch(title) or not looks_like_tcg(title):
             continue
         if detect_language(title) and not foreign_ok:
             continue
