@@ -20,7 +20,12 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, Response
 
 # =========================================================
-# CARD RADAR 5.31
+# CARD RADAR 6.0
+# Novinky 6.0:
+#  - "group" pri každej ponuke: rovnaký produkt v rôznych obchodoch sa spojí
+#  - /api/home: zľavy dňa, najlacnejšie ETB, obľúbené hľadania, nové sety
+#  - PWA (manifest, service worker, ikony v priečinku static/)
+# Novinky 5.32: jazyk produktu (JP, KR, CN, EN, DE, FR...) – nič sa neskrýva, filtruje frontend
 # Novinky 5.31: tvrdý filter merchu (aj s "TCG" v názve) + pozitívna kontrola, že ide o kartu/TCG produkt
 # Novinky 5.30:
 #  - sklad: rozpoznanie Skladom / Vypredané / Predobjednávka / Na objednávku
@@ -43,7 +48,7 @@ from flask import Flask, jsonify, request, Response
 #  - história cien v pozadí + automatické mazanie starých záznamov
 # =========================================================
 
-VERSION = "5.31"
+VERSION = "6.0"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
@@ -150,6 +155,18 @@ SHOPS = [
 ]
 
 ACTIVE_SHOPS = [s for s in SHOPS if s.get("enabled", True)]
+
+# Nové sety na úvodnej stránke – NAJNOVŠÍ HORE. Uprav, keď vyjde nový set.
+NEW_SETS = [
+    {"name": "Ascended Heroes", "query": "ascended heroes"},
+    {"name": "Phantasmal Flames", "query": "phantasmal flames"},
+    {"name": "Mega Evolution", "query": "mega evolution"},
+    {"name": "Black Bolt", "query": "black bolt"},
+    {"name": "White Flare", "query": "white flare"},
+    {"name": "Destined Rivals", "query": "destined rivals"},
+    {"name": "Journey Together", "query": "journey together"},
+    {"name": "Prismatic Evolutions", "query": "prismatic evolutions"},
+]
 ALLOWED_HOSTS = {urllib.parse.urlparse(s["base_url"]).netloc.lower() for s in SHOPS}
 
 HEADERS = {
@@ -355,6 +372,16 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_email ON alerts(email)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(price_daily)")}
+    if "image" not in cols:
+        conn.execute("ALTER TABLE price_daily ADD COLUMN image TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pd_day ON price_daily(day)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_log (
+            day TEXT NOT NULL, query TEXT NOT NULL, n INTEGER DEFAULT 1,
+            PRIMARY KEY (day, query)
+        )
+    """)
     conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
 
     migrated = conn.execute("SELECT v FROM meta WHERE k='migrated_daily'").fetchone()
@@ -381,15 +408,16 @@ def _save_history(results):
         day = today_str()
         rows = [
             (r["link"], day, r.get("shop", ""), r.get("title", ""),
-             r.get("price_eur"), r.get("stock", ""))
+             r.get("price_eur"), r.get("stock", ""), r.get("image", ""))
             for r in results if r.get("link") and r.get("price_eur")
         ]
         conn.executemany("""
-            INSERT INTO price_daily (link, day, shop, title, price_eur, stock)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO price_daily (link, day, shop, title, price_eur, stock, image)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(link, day) DO UPDATE SET
                 price_eur = excluded.price_eur, stock = excluded.stock,
-                title = excluded.title
+                title = excluded.title,
+                image = COALESCE(NULLIF(excluded.image, ''), price_daily.image)
         """, rows)
         if random.random() < 0.02:
             prune_history(conn)
@@ -405,6 +433,37 @@ def save_history(query, results):
     """Zápis do DB beží na pozadí, odpoveď naň nečaká."""
     if results:
         BG_EXECUTOR.submit(_save_history, copy.deepcopy(results))
+        BG_EXECUTOR.submit(_log_search, clean_text(query).lower()[:80])
+
+
+def _log_search(query):
+    if not query:
+        return
+    conn = None
+    try:
+        conn = db_connect()
+        conn.execute("""INSERT INTO search_log (day, query, n) VALUES (?, ?, 1)
+                        ON CONFLICT(day, query) DO UPDATE SET n = n + 1""", (today_str(), query))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+def _store_image(link, image_url):
+    conn = None
+    try:
+        conn = db_connect()
+        conn.execute("UPDATE price_daily SET image = ? WHERE link = ? AND (image IS NULL OR image = '')",
+                     (image_url, link))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
 
 
 def add_trends(results, days=30):
@@ -495,6 +554,8 @@ KNOWN_SETS = sorted(
         "terastal festival", "destined rivals", "journey together",
         "twilight masquerade", "stellar crown", "temporal forces",
         "obsidian flames", "mega evolution", "phantasmal flames",
+        "ascended heroes", "perfect order", "black bolt", "white flare",
+        "paldean fates", "shrouded fable", "paldea evolved",
     },
     key=len, reverse=True,
 )
@@ -730,21 +791,46 @@ def parse_price(text):
 # JAZYK PRODUKTU
 # =========================================================
 
-LANG_PATTERNS = [
-    ("JP", re.compile(r"japon\w*|japan\w*|\bjpn\b", re.I)),
-    ("KR", re.compile(r"k[óo]rej\w*|korean\w*", re.I)),
-    ("CN", re.compile(r"[čc][ií]nsk\w*|[čc][ií]nšt\w*|chinese", re.I)),
-    ("ID", re.compile(r"indon[ée]z\w*|indonesian", re.I)),
+# Jazyk sa zisťuje z názvu: celé slová (bez ohľadu na veľkosť písmen)
+# a skratky (len VEĽKÝMI písmenami, aby "de" v texte nebolo nemčina).
+_LANG_DEFS = [
+    ("JP", r"japon\w*|japan\w*|japonsk\w*", r"JP|JPN|JAP"),
+    ("KR", r"k[óo]rej\w*|korean\w*", r"KR|KOR"),
+    ("TW", r"traditional\s+chinese|t-?chinese|tradičn\w*\s+[čc][íi]n\w*|taiwan\w*", r"TW|T-?CN"),
+    ("CN", r"[čc][ií]nsk\w*|[čc][ií]n[šs]t\w*|chinese|simplified\s+chinese|s-?chinese", r"CN|CHN|S-?CN"),
+    ("ID", r"indon[ée]z\w*|indonesian\w*", r"IDN|INDO"),
+    ("TH", r"thajsk\w*|thai", r"TH|THA"),
+    ("DE", r"nem[ec]ck\w*|n[ěe]meck\w*|german\w*|deutsch\w*", r"DE|GER|DEU"),
+    ("FR", r"franc[úu]zsk\w*|francouzsk\w*|french|fran[çc]ais\w*", r"FR|FRA"),
+    ("IT", r"talian\w*|italsk\w*|italian\w*|italiano", r"IT|ITA"),
+    ("ES", r"[šs]paniel\w*|[šs]pan[ěe]l\w*|spanish|espa[ñn]ol\w*", r"ES|ESP|SPA"),
+    ("PT", r"portugal\w*|portugues\w*", r"PT|POR"),
+    ("NL", r"holandsk\w*|nizozemsk\w*|dutch|nederlands\w*", r"NL|NLD"),
+    ("PL", r"po[ľl]sk\w*|polish|polski", r"PL|POL"),
+    ("EN", r"anglick\w*|english|angli[čc]tin\w*", r"EN|ENG|UK"),
 ]
+LANG_PATTERNS = [
+    (code, re.compile(r"(?<!\w)(?:" + words + r")(?!\w)", re.I),
+     re.compile(r"(?<![A-Za-z0-9])(?:" + codes + r")(?![A-Za-z0-9])"))
+    for code, words, codes in _LANG_DEFS
+]
+ASIAN_LANGS = {"JP", "KR", "CN", "TW", "ID", "TH"}
 FOREIGN_QUERY_RE = re.compile(
-    r"japon|japan|jpn|k[óo]rej|korean|[čc][ií]nsk|chinese|indon", re.I)
+    r"japon|japan|jpn|k[óo]rej|korean|[čc][ií]nsk|chinese|indon|thai|thajsk", re.I)
 
 
 def detect_language(title):
-    for code, pattern in LANG_PATTERNS:
-        if pattern.search(title or ""):
+    """Kód jazyka produktu ('JP', 'EN', 'DE'...) alebo '' ak nie je uvedený."""
+    title = title or ""
+    for code, words_re, codes_re in LANG_PATTERNS:
+        if words_re.search(title) or codes_re.search(title):
             return code
     return ""
+
+
+def query_language(q):
+    lang = detect_language(q)
+    return lang if lang and lang != "EN" else ""
 
 
 # =========================================================
@@ -916,6 +1002,55 @@ def detect_stock(text):
 
 
 # =========================================================
+# SPÁJANIE ROVNAKÝCH PRODUKTOV (group key)
+# =========================================================
+
+GROUP_TYPES = [
+    ("etb", re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)),
+    ("booster box", re.compile(r"booster\s*(?:box|display)", re.I)),
+    ("booster bundle", re.compile(r"booster\s*bundle", re.I)),
+    ("sleeved booster", re.compile(r"sleeved\s+booster", re.I)),
+    ("3-pack blister", re.compile(r"3\s*-?\s*pack|three\s+pack|3\s*booster\s+blister", re.I)),
+    ("checklane blister", re.compile(r"checklane|1\s*-?\s*pack\s+blister|single\s+blister", re.I)),
+    ("blister", re.compile(r"blister", re.I)),
+    ("mini tin", re.compile(r"mini\s+tin", re.I)),
+    ("tin", re.compile(r"\btins?\b", re.I)),
+    ("build battle", re.compile(r"build\s*(?:&|and)?\s*battle", re.I)),
+    ("booster pack", re.compile(r"booster\s+pack|\bbooster\b", re.I)),
+    ("collection", re.compile(r"collection|kolekci", re.I)),
+]
+_VARIANT_RES = [
+    ("pc", re.compile(r"pok[eé]mon\s+center", re.I)),
+    ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
+    ("rev", re.compile(r"reverse", re.I)),
+    ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
+]
+
+
+def group_key(title, lang=""):
+    """Kľúč, podľa ktorého sa spoja rovnaké produkty z rôznych obchodov.
+    None = nevieme s istotou povedať, o aký produkt ide (zobrazí sa samostatne)."""
+    t = clean_text(title)
+    if not t:
+        return None
+    p = normalize_query(t)
+    lang = lang or "EN"
+    variants = ",".join(v for v, rx in _VARIANT_RES if rx.search(t))
+    ptype = next((name for name, rx in GROUP_TYPES if rx.search(t)), "")
+    pokemon = (p.get("pokemon") or "").lower()
+    set_name = p.get("set_name") or ""
+    number = p.get("card_number") or ""
+
+    if ptype and set_name and ptype != "collection":
+        return f"s|{set_name}|{ptype}|{pokemon}|{variants}|{lang}"
+    if number and pokemon:
+        return f"c|{pokemon}|{number}|{variants}|{lang}"
+    if pokemon and set_name and p.get("suffix") and not ptype:
+        return f"c|{pokemon}|{p['suffix']}|{set_name}|{variants}|{lang}"
+    return None
+
+
+# =========================================================
 # POČET BOOSTEROV (cena za booster)
 # =========================================================
 
@@ -925,7 +1060,7 @@ PACKS_EXPLICIT_RE = re.compile(
 PACKS_PAREN_RE = re.compile(r"booster\s*(?:box|display)\D{0,10}\((\d{1,2})\)", re.I)
 
 
-def estimate_packs(title):
+def estimate_packs(title, lang=""):
     """Odhad počtu boosterov v produkte; None = nevieme / nemá zmysel."""
     t = clean_text(title).lower()
     if not t:
@@ -935,6 +1070,8 @@ def estimate_packs(title):
         n = int(m.group(1))
         if 1 <= n <= 36:
             return n
+    if lang in ASIAN_LANGS:
+        return None  # ázijské boxy majú rôzny počet balíčkov (10, 20, 30...)
     if re.search(r"booster\s*(?:box|display)", t):
         return 18 if re.search(r"\bhalf\b|poloviční|polovičn", t) else 36
     if re.search(r"elite\s+trainer\s+box|\betb\b", t):
@@ -1112,6 +1249,7 @@ def fetch_product_image(product_url):
     image_cache.set(product_url, image_url)
     if image_url:
         catalog_set_image(product_url, image_url)
+        BG_EXECUTOR.submit(_store_image, product_url, image_url)
     return image_url
 
 
@@ -1189,7 +1327,6 @@ def _scrape(shop, query, timeout):
 
         parsed = normalize_query(query)
         kind = classify_query(parsed)
-        foreign_ok = FOREIGN_QUERY_RE.search(query) is not None
         seen = set()
 
         for anchor in links:
@@ -1218,10 +1355,6 @@ def _scrape(shop, query, timeout):
                 continue
 
             lang = detect_language(title)
-            if lang and not foreign_ok:
-                debug["language_filtered"] += 1
-                _log(debug, title=title, decision="filtered", reason="language_" + lang)
-                continue
 
             block_text = find_product_block(anchor)
 
@@ -1247,7 +1380,7 @@ def _scrape(shop, query, timeout):
             debug["price_found"] += 1
 
             image_url = extract_image(anchor, shop["base_url"])
-            packs = estimate_packs(title)
+            packs = estimate_packs(title, lang)
             results.append({
                 "title": title, "shop": shop["name"], "country": shop["country"],
                 "condition": "Nové", "language": lang, "price_eur": round(price, 2),
@@ -1255,6 +1388,7 @@ def _scrape(shop, query, timeout):
                 "stock": detect_stock(block_text),
                 "packs": packs,
                 "price_per_pack": round(price / packs, 2) if packs and packs > 1 else None,
+                "group": group_key(title, lang),
             })
             debug["accepted"] += 1
             _log(debug, title=title, price_eur=round(price, 2),
@@ -1499,7 +1633,7 @@ def shopify_suggest(shop, q, timeout=SUGGESTION_TIMEOUT):
         title = clean_text(p.get("title", ""))
         if not title or is_merch(title) or not looks_like_tcg(title):
             continue
-        if detect_language(title) and not foreign_ok:
+        if detect_language(title) in ASIAN_LANGS and not foreign_ok:
             continue
         link = absolute_url(shop["base_url"], p.get("url", ""))
         if link:
@@ -1650,6 +1784,7 @@ def api_search():
         "query": original, "normalized_query": normalized, "parsed": parsed,
         "results": results, "summary": build_summary(results),
         "czk_per_eur": CZK_PER_EUR, "info": info, "shops": shops_status(debug),
+        "query_lang": query_language(original),
     }
     if is_admin():
         payload["debug"] = debug
@@ -1779,6 +1914,157 @@ def home():
                         status=500, mimetype="text/html")
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+# =========================================================
+# ÚVODNÁ STRÁNKA
+# =========================================================
+
+home_cache = TTLCache(600, 2)
+
+
+def build_home():
+    now = datetime.now(timezone.utc)
+    since3 = (now - timedelta(days=3)).strftime("%Y-%m-%d")
+    since30 = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+    since14 = (now - timedelta(days=14)).strftime("%Y-%m-%d")
+    conn = db_connect()
+    try:
+        latest = conn.execute("""
+            SELECT p.link, p.title, p.shop, p.price_eur, p.stock, p.image, p.day,
+                   (SELECT MAX(q.price_eur) FROM price_daily q
+                     WHERE q.link = p.link AND q.day >= ? AND q.day < p.day) AS old_max,
+                   (SELECT MAX(q.image) FROM price_daily q WHERE q.link = p.link) AS any_image
+            FROM price_daily p
+            JOIN (SELECT link, MAX(day) AS d FROM price_daily WHERE day >= ? GROUP BY link) r
+              ON p.link = r.link AND p.day = r.d
+            WHERE p.price_eur > 0 AND (p.stock IS NULL OR p.stock != 'out')
+        """, (since30, since3)).fetchall()
+        popular = conn.execute("""
+            SELECT query, SUM(n) AS c FROM search_log WHERE day >= ?
+            GROUP BY query ORDER BY c DESC LIMIT 10
+        """, (since14,)).fetchall()
+    finally:
+        conn.close()
+
+    deals, cheap_etb, seen_deal, seen_etb = [], [], set(), set()
+    for link, title, shop, price, stock, image, day, old_max, any_image in latest:
+        if is_merch(title) or not looks_like_tcg(title):
+            continue
+        lang = detect_language(title)
+        if lang in ASIAN_LANGS:
+            continue
+        item = {"link": link, "title": title, "shop": shop, "price_eur": round(price, 2),
+                "stock": stock or "", "image": image or any_image or "", "language": lang,
+                "group": group_key(title, lang), "day": day,
+                "query": (make_suggestion_from_title(title) or {}).get("query") or title}
+        if old_max and old_max - price >= 1 and price <= old_max * 0.97:
+            item["old_price_eur"] = round(old_max, 2)
+            item["drop_pct"] = round((old_max - price) / old_max * 100)
+            deals.append(item)
+        if re.search(r"elite\s+trainer\s+box|\betb\b", title, re.I):
+            cheap_etb.append(item)
+
+    deals.sort(key=lambda d: d["drop_pct"], reverse=True)
+    cheap_etb.sort(key=lambda d: d["price_eur"])
+
+    def uniq(items, seen, limit):
+        out = []
+        for it in items:
+            k = it["group"] or it["link"]
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(it)
+            if len(out) >= limit:
+                break
+        return out
+
+    return {
+        "deals": uniq(deals, seen_deal, 12),
+        "cheap_etb": uniq(cheap_etb, seen_etb, 8),
+        "popular": [q for q, _ in popular if len(q) >= 3][:8],
+        "new_sets": NEW_SETS,
+    }
+
+
+@app.get("/api/home")
+def api_home():
+    data = home_cache.get("home")
+    if data is None:
+        try:
+            data = build_home()
+        except Exception:
+            data = {"deals": [], "cheap_etb": [], "popular": [], "new_sets": NEW_SETS}
+        home_cache.set("home", data)
+    resp = jsonify(data)
+    resp.headers["Cache-Control"] = "public, max-age=120"
+    return resp
+
+
+# =========================================================
+# PWA (inštalácia na mobil)
+# =========================================================
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    data = {
+        "name": "CardRadar – ceny Pokémon kariet",
+        "short_name": "CardRadar",
+        "description": "Porovnanie cien Pokémon kariet, ETB a booster boxov.",
+        "start_url": "/?source=pwa",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#070b14",
+        "theme_color": "#070b14",
+        "lang": "sk",
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            {"src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png",
+             "purpose": "maskable"},
+        ],
+    }
+    resp = Response(json.dumps(data, ensure_ascii=False), mimetype="application/manifest+json")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+SERVICE_WORKER = """
+const CACHE = 'cardradar-v6';
+const SHELL = ['/', '/static/icon-192.png', '/static/logo.svg'];
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', e => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.startsWith('/api/')) return;            // ceny vždy čerstvé zo siete
+  if (e.request.mode === 'navigate') {                      // stránka: sieť, offline z cache
+    e.respondWith(fetch(e.request).then(r => {
+      const copy = r.clone(); caches.open(CACHE).then(c => c.put('/', copy)); return r;
+    }).catch(() => caches.match('/')));
+    return;
+  }
+  if (url.pathname.startsWith('/static/')) {
+    e.respondWith(caches.match(e.request).then(m => m || fetch(e.request).then(r => {
+      const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return r;
+    })));
+  }
+});
+"""
+
+
+@app.get("/sw.js")
+def service_worker():
+    resp = Response(SERVICE_WORKER, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
     return resp
 
 
@@ -2200,7 +2486,8 @@ def finalize(resp):
     if (resp.status_code != 200 or resp.direct_passthrough
             or "Content-Encoding" in resp.headers
             or "gzip" not in request.headers.get("Accept-Encoding", "").lower()
-            or resp.mimetype not in ("application/json", "text/html")):
+            or resp.mimetype not in ("application/json", "text/html", "application/javascript",
+                                     "application/manifest+json", "image/svg+xml")):
         return resp
     data = resp.get_data()
     if len(data) < 1024:
