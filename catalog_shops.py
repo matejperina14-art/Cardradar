@@ -1,5 +1,5 @@
 """
-CARD RADAR – obchody v katalógovom režime (6.1)
+CARD RADAR – obchody v katalógovom režime (6.1.1)
 ================================================
 iHRYsko, imago a Herný svet nemajú vyhľadávanie, ktoré by sa dalo spoľahlivo
 čítať, preto ich CardRadar raz za hodinu prejde cez kategóriu Pokémon TCG
@@ -50,8 +50,28 @@ CATALOG_SHOPS = [
     {
         "name": "iHRYsko", "country": "SK", "enabled": True,
         "base_url": "https://www.ihrysko.sk/",
-        "catalog": ["https://www.ihrysko.sk/pokemon-tcg-c17668"],
-        "max_pages": 15,
+        # hlavná kategória + každý set zvlášť (hlavná kategória neukazuje všetko)
+        "catalog": [
+            "https://www.ihrysko.sk/pokemon-tcg-c17668",
+            "https://www.ihrysko.sk/pokemon-delta-reign-c100387",
+            "https://www.ihrysko.sk/pokemon-30th-celebrations-c100385",
+            "https://www.ihrysko.sk/pokemon-pitch-black-c100378",
+            "https://www.ihrysko.sk/pokemon-chaos-rising-c100377",
+            "https://www.ihrysko.sk/pokemon-perfect-order-c100371",
+            "https://www.ihrysko.sk/pokemon-ascended-heroes-c100365",
+            "https://www.ihrysko.sk/pokemon-phantasmal-flames-c100358",
+            "https://www.ihrysko.sk/pokemon-mega-evolution-c100354",
+            "https://www.ihrysko.sk/pokemon-black-bolt-a-white-flare-sv-10-5-c100350",
+            "https://www.ihrysko.sk/pokemon-destined-rivals-c100343",
+            "https://www.ihrysko.sk/pokemon-journey-together-c100335",
+            "https://www.ihrysko.sk/pokemon-prismatic-evolutions-c100327",
+            "https://www.ihrysko.sk/pokemon-surging-sparks-c100321",
+            "https://www.ihrysko.sk/pokemon-stellar-crown-c100318",
+            "https://www.ihrysko.sk/pokemon-151-c100268",
+        ],
+        "max_pages": 8,
+        # malé náhľady (xs) -> stredné (md)
+        "image_replace": ("/xs/products/", "/md/products/"),
     },
     {
         "name": "imago", "country": "SK", "enabled": True,
@@ -90,6 +110,7 @@ EXTRA_NEW_SETS = [  # vložia sa pred "Ascended Heroes"
 
 G = {}  # globálne premenné z app.py (nastaví install)
 
+_COMING_RE = re.compile(r"o[čc]ak[áa]vame|o[čc]ek[áa]v[áa]me|pripravujeme|coming\s+soon", re.I)
 _PLACEHOLDER_RE = re.compile(r"loading|placeholder|blank|spacer|lazy[-_]?load|1x1|pixel\.", re.I)
 _STRIKE_SELECTOR = ("del, s, strike, [class*='old'], [class*='before'], "
                     "[class*='original'], [class*='crossed'], [class*='strike']")
@@ -273,10 +294,16 @@ def _parse_listing(shop, html, page_url):
         price = _tile_price(block)
         if not price or price <= 0:
             continue
+        image = g["extract_image"](anchor, page_url)
+        rep = shop.get("image_replace")
+        if image and rep:
+            image = image.replace(rep[0], rep[1])
+        stock = g["detect_stock_el"](block)
+        if not stock and _COMING_RE.search(block.get_text(" ", strip=True)):
+            stock = "preorder"
         items.append({
             "link": href, "title": title, "price_eur": round(price, 2),
-            "image": g["extract_image"](anchor, page_url),
-            "stock": g["detect_stock_el"](block),
+            "image": image, "stock": stock,
         })
     return items, soup
 
