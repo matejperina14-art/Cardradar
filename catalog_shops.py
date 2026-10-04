@@ -1,6 +1,13 @@
 """
-CARD RADAR – obchody v katalógovom režime (6.1.1)
-================================================
+CARD RADAR – rozšírenia 6.2
+===========================
+ - obchody v katalógovom režime (iHRYsko, imago)
+ - XML feedy (Heureka / Google), stačí vyplniť "feed" pri obchode
+ - presnejšie hľadanie sealed produktov aj pri setoch, ktoré app.py nepozná
+ - kurz CZK denne z Európskej centrálnej banky
+ - stránky /podmienky a /ochrana-udajov + odkazy v päte webu
+ - automatické mazanie starých strážcov ceny (GDPR)
+
 iHRYsko, imago a Herný svet nemajú vyhľadávanie, ktoré by sa dalo spoľahlivo
 čítať, preto ich CardRadar raz za hodinu prejde cez kategóriu Pokémon TCG
 (aj ďalšie strany), uloží produkty do databázy a pri hľadaní filtruje lokálne.
@@ -25,6 +32,9 @@ Premenné prostredia (nepovinné):
 """
 
 import copy
+import html as _html
+import unicodedata
+import xml.etree.ElementTree as ET
 import os
 import re
 import sqlite3
@@ -80,8 +90,11 @@ CATALOG_SHOPS = [
         "max_pages": 15,
     },
     {
-        "name": "Herný svet", "country": "SK", "enabled": False, 
+        # web blokuje roboty (HTTP 403). Keď dostaneš adresu XML feedu,
+        # vlož ju do "feed" a zmeň "enabled" na True.
+        "name": "Herný svet", "country": "SK", "enabled": False,
         "base_url": "https://www.hernysvet.sk/",
+        "feed": "",
         "catalog": ["https://www.hernysvet.sk/tema/pokemon"],
         "max_pages": 15,
     },
@@ -102,6 +115,12 @@ EXTRA_ALIASES = {
     "pitch": "pitch black", "chaos": "chaos rising",
 }
 EXTRA_SETS = {"pitch black", "chaos rising", "perfect order"}
+# Prevádzkovateľ (zobrazí sa v podmienkach a ochrane údajov) – nastav na Renderi
+OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "prevádzkovateľ CardRadar")
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "") or os.environ.get("SMTP_FROM", "")
+ECB_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+FEED_MAX_BYTES = 150 * 1024 * 1024
+
 EXTRA_NEW_SETS = [  # vložia sa pred "Ascended Heroes"
     {"name": "Pitch Black", "query": "pitch black"},
     {"name": "Chaos Rising", "query": "chaos rising"},
@@ -330,6 +349,8 @@ def _next_page(soup, page_url, n, host):
 # =========================================================
 
 def crawl_shop(shop):
+    if shop.get("feed"):
+        return crawl_feed(shop)
     host = urllib.parse.urlparse(shop["base_url"]).netloc.lower()
     items, pages, errors = {}, 0, []
     start = time.monotonic()
@@ -474,6 +495,260 @@ def catalog_scrape(shop, query):
 
 
 # =========================================================
+# XML FEED (Heureka / Google Merchant)
+# =========================================================
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1].upper()
+
+
+def _feed_stock(d):
+    av = (d.get("AVAILABILITY") or "").lower().replace("_", " ")
+    if av:
+        if "out of stock" in av or "discontinued" in av:
+            return "out"
+        if "preorder" in av:
+            return "preorder"
+        if "backorder" in av:
+            return "order"
+        if "in stock" in av:
+            return "in"
+    dd = (d.get("DELIVERY_DATE") or "").strip()
+    if dd == "0":
+        return "in"
+    if dd.isdigit():
+        return "order"
+    if dd:
+        return "preorder"
+    return ""
+
+
+def crawl_feed(shop):
+    """Prejde XML feed obchodu po kúskoch (aj veľký feed) a uloží TCG produkty."""
+    g = G
+    start = time.monotonic()
+    host = urllib.parse.urlparse(shop["base_url"]).netloc.lower()
+    items, errors, scanned = {}, [], 0
+    try:
+        resp = g["get_http_session"]().get(shop["feed"], timeout=(5, 90), stream=True)
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+        resp.raw.decode_content = True
+        for _, el in ET.iterparse(resp.raw, events=("end",)):
+            if _local(el.tag) not in ("SHOPITEM", "ITEM", "ENTRY"):
+                continue
+            scanned += 1
+            d = {}
+            for ch in el:
+                d.setdefault(_local(ch.tag), (ch.text or "").strip())
+            el.clear()
+            title = g["clean_text"](d.get("PRODUCTNAME") or d.get("PRODUCT") or d.get("TITLE"))
+            link = g["clean_link"](g["clean_text"](d.get("URL") or d.get("LINK")))
+            if not title or not link or urllib.parse.urlparse(link).netloc.lower() != host:
+                continue
+            if g["is_merch"](title) or not g["looks_like_tcg"](title):
+                continue
+            raw = d.get("PRICE_VAT") or d.get("SALE_PRICE") or d.get("PRICE") or ""
+            m = re.search(r"\d[\d\s.,]*", raw)
+            price = g["_to_float"](m.group(0).strip()) if m else None
+            if not price or price <= 0:
+                continue
+            if "CZK" in raw.upper() or shop.get("currency") == "CZK":
+                price = price / g["CZK_PER_EUR"]
+            items[link] = {"link": link, "title": title, "price_eur": round(price, 2),
+                           "image": d.get("IMGURL") or d.get("IMAGE_LINK") or "",
+                           "stock": _feed_stock(d)}
+            if resp.raw.tell() > FEED_MAX_BYTES:
+                errors.append({"url": shop["feed"], "error": "feed je príliš veľký, načítaná len časť"})
+                break
+    except Exception as e:
+        errors.append({"url": shop.get("feed"), "error": str(e)[:200]})
+
+    result = list(items.values())
+    updated = ""
+    if result:
+        updated = _save_catalog(shop["name"], result)
+        try:
+            g["_save_history"]([dict(r, shop=shop["name"]) for r in result])
+        except Exception:
+            pass
+    return {"shop": shop["name"], "source": "feed", "items": len(result),
+            "scanned": scanned, "pages": 1, "errors": errors, "updated": updated,
+            "elapsed_ms": round((time.monotonic() - start) * 1000), "sample": result[:10]}
+
+
+# =========================================================
+# PRESNEJŠIE HĽADANIE SEALED PRODUKTOV
+# Ak set nie je v zozname (napr. úplne nový), app.py by vrátil všetky
+# booster boxy. Teraz musia byť v názve aj ostatné hľadané slová.
+# =========================================================
+
+_GENERIC_WORDS = {
+    "pokemon", "tcg", "booster", "boosters", "box", "boxy", "display", "elite", "trainer",
+    "etb", "bundle", "pack", "packs", "blister", "tin", "tins", "mini", "collection",
+    "premium", "kolekcia", "kolekce", "set", "edicia", "edice", "the", "and", "of",
+    "en", "eng", "english", "anglicky", "anglicka", "anglicke", "card", "cards", "karty",
+    "game", "hra", "balicek", "balicky", "sealed",
+}
+
+
+def _fold(text):
+    t = unicodedata.normalize("NFKD", str(text or "").lower())
+    return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def _fold_words(text):
+    return set(re.findall(r"[a-z0-9]+", _fold(text)))
+
+
+def _make_sealed_fix(original):
+    def sealed_matches_query(title, extra_text, parsed):
+        ok, reason = original(title, extra_text, parsed)
+        if not ok or parsed.get("set_name"):
+            return ok, reason
+        want = {w for w in _fold_words(parsed.get("original", "")) - _GENERIC_WORDS
+                if len(w) >= 3 or w.isdigit()}
+        if want - _fold_words(title + " " + extra_text):
+            return False, "words_not_found"
+        return True, reason
+    return sealed_matches_query
+
+
+# =========================================================
+# KURZ CZK Z ECB + UPRATOVANIE STRÁŽCOV
+# =========================================================
+
+def _update_czk():
+    resp, _ = G["fetch"](ECB_URL, timeout=10)
+    if not resp:
+        return None
+    m = re.search(r"currency=['\"]CZK['\"]\s+rate=['\"]([\d.]+)", resp.text)
+    if not m:
+        return None
+    rate = float(m.group(1))
+    if 15 < rate < 40:
+        G["_g"]["CZK_PER_EUR"] = rate
+        G["CZK_PER_EUR"] = rate
+        return rate
+    return None
+
+
+def _cleanup_alerts():
+    """Splnení strážcovia po 30 dňoch, nepotvrdení po 7 dňoch."""
+    now = datetime.now(timezone.utc)
+    conn = _db()
+    try:
+        conn.execute("DELETE FROM alerts WHERE notified IS NOT NULL AND notified < ?",
+                     ((now - timedelta(days=30)).isoformat(),))
+        conn.execute("DELETE FROM alerts WHERE confirmed = 0 AND created < ?",
+                     ((now - timedelta(days=7)).isoformat(),))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def _daily_loop():
+    time.sleep(5)
+    while True:
+        try:
+            _update_czk()
+        except Exception:
+            pass
+        try:
+            _cleanup_alerts()
+        except Exception:
+            pass
+        time.sleep(12 * 3600)
+
+
+# =========================================================
+# PODMIENKY A OCHRANA ÚDAJOV
+# =========================================================
+
+def _legal_page(title, body_html):
+    from flask import Response
+    home = G.get("PUBLIC_URL") or "/"
+    contact = (f'<a href="mailto:{_html.escape(CONTACT_EMAIL)}">{_html.escape(CONTACT_EMAIL)}</a>'
+               if CONTACT_EMAIL else "cez kontakt uvedený na webe")
+    body_html = body_html.replace("{KONTAKT}", contact).replace(
+        "{PREVADZKOVATEL}", _html.escape(OPERATOR_NAME))
+    page = f"""<!doctype html><html lang="sk"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} – CardRadar</title>
+<style>
+body{{margin:0;background:#0f172a;color:#e2e8f0;font:16px/1.6 -apple-system,Segoe UI,sans-serif}}
+main{{max-width:720px;margin:0 auto;padding:28px 20px 60px}}
+h1{{color:#facc15;font-size:1.6rem}} h2{{font-size:1.1rem;margin-top:1.6em;color:#f8fafc}}
+a{{color:#facc15}} p,li{{color:#cbd5e1}} .back{{display:inline-block;margin-bottom:12px}}
+</style><main><a class="back" href="{home}">← Späť na CardRadar</a><h1>{title}</h1>{body_html}
+<p style="margin-top:2em;font-size:.85rem;color:#64748b">Posledná aktualizácia: október 2026</p></main>"""
+    return Response(page, mimetype="text/html")
+
+
+TERMS_HTML = """
+<p>CardRadar je bezplatný porovnávač cien Pokémon TCG produktov, ktorý prevádzkuje {PREVADZKOVATEL}.</p>
+<h2>Čo CardRadar robí</h2>
+<p>Zobrazuje ceny a dostupnosť produktov z verejne dostupných stránok a feedov internetových obchodov.
+CardRadar nič nepredáva. Nákup prebieha vždy priamo v obchode a riadi sa jeho obchodnými podmienkami.</p>
+<h2>Presnosť údajov</h2>
+<p>Ceny a sklad sa aktualizujú automaticky, no môžu byť oneskorené alebo nepresné. Pred nákupom
+si vždy over cenu a dostupnosť v obchode. Prepočet z CZK na EUR je orientačný (denný kurz ECB).</p>
+<h2>Odkazy na obchody</h2>
+<p>Niektoré odkazy môžu byť partnerské. Ak cez ne nakúpiš, CardRadar môže dostať províziu.
+Cenu pre teba to nemení.</p>
+<h2>Strážca ceny</h2>
+<p>Služba je bezplatná a bez záruky, že e-mail príde vždy včas. Kedykoľvek ju zrušíš odkazom v e-maile.</p>
+<h2>Ochranné známky</h2>
+<p>Pokémon a súvisiace názvy sú ochranné známky ich vlastníkov. CardRadar nie je s nimi spojený.</p>
+<h2>Kontakt</h2><p>{KONTAKT}</p>
+"""
+
+PRIVACY_HTML = """
+<p>Prevádzkovateľ: {PREVADZKOVATEL}, kontakt: {KONTAKT}.</p>
+<h2>Aké údaje spracúvame</h2>
+<ul>
+<li><b>Strážca ceny:</b> e-mail, sledovaný produkt a cieľová cena. Účel: poslať ti upozornenie,
+o ktoré si požiadal (právny základ: tvoj súhlas potvrdený kliknutím v e-maile).</li>
+<li><b>Hľadané výrazy:</b> ukladáme len text hľadania a počet za deň, bez väzby na teba,
+aby sme ukázali obľúbené hľadania.</li>
+<li><b>IP adresa:</b> drží sa len v pamäti servera asi minútu, na ochranu pred zneužitím
+(obmedzenie počtu požiadaviek). Neukladá sa.</li>
+<li><b>Obľúbené produkty</b> sa ukladajú iba v tvojom prehliadači, nie na serveri.</li>
+</ul>
+<h2>Ako dlho</h2>
+<p>Nepotvrdený strážca sa zmaže po 7 dňoch, splnený 30 dní po odoslaní upozornenia.
+Aktívny strážca trvá, kým ho nezrušíš odkazom v e-maile.</p>
+<h2>Kto k údajom má prístup</h2>
+<p>Web beží na serveroch spoločnosti Render (USA). E-maily sa odosielajú cez poskytovateľa
+e-mailovej služby. Údaje nepredávame ani nezdieľame na reklamné účely.</p>
+<h2>Cookies</h2>
+<p>CardRadar nepoužíva reklamné ani sledovacie cookies. Prehliadač si ukladá len súbory
+potrebné na rýchlejšie načítanie a obľúbené produkty.</p>
+<h2>Tvoje práva</h2>
+<p>Máš právo na prístup k údajom, ich opravu, vymazanie a odvolanie súhlasu. Stačí napísať na
+kontakt vyššie. Sťažnosť môžeš podať na Úrad na ochranu osobných údajov SR (dataprotection.gov.sk).</p>
+"""
+
+FOOTER_HTML = ('<footer style="text-align:center;padding:24px 12px 40px;font-size:13px;'
+               'opacity:.7"><a href="/podmienky" style="color:inherit">Podmienky</a> · '
+               '<a href="/ochrana-udajov" style="color:inherit">Ochrana údajov</a></footer>')
+
+
+def _inject_footer(resp):
+    from flask import request
+    try:
+        if (request.path == "/" and resp.status_code == 200 and resp.mimetype == "text/html"
+                and "Content-Encoding" not in resp.headers and not resp.direct_passthrough):
+            body = resp.get_data(as_text=True)
+            if "/ochrana-udajov" not in body and "</body>" in body:
+                resp.set_data(body.replace("</body>", FOOTER_HTML + "</body>", 1))
+    except Exception:
+        pass
+    return resp
+
+
+# =========================================================
 # DEBUG ENDPOINT
 # =========================================================
 
@@ -548,13 +823,25 @@ def install(g):
     original = g["_scrape"]
 
     def _scrape(shop, query, timeout):
-        if shop.get("catalog"):
+        if shop.get("catalog") or shop.get("feed"):
             return catalog_scrape(shop, query)
         return original(shop, query, timeout)
 
     g["_scrape"] = _scrape
 
-    # 6) databáza, endpoint, obnova na pozadí
+    # 6) presnejšie hľadanie sealed produktov (aj pre pôvodné obchody)
+    fixed = _make_sealed_fix(g["sealed_matches_query"])
+    g["sealed_matches_query"] = fixed
+    G["sealed_matches_query"] = fixed
+
+    # 7) databáza, stránky, obnova na pozadí
     _init_db()
-    g["app"].add_url_rule("/api/debug/catalog", "api_debug_catalog", api_debug_catalog)
+    app = g["app"]
+    app.add_url_rule("/api/debug/catalog", "api_debug_catalog", api_debug_catalog)
+    app.add_url_rule("/podmienky", "terms_page",
+                     lambda: _legal_page("Podmienky používania", TERMS_HTML))
+    app.add_url_rule("/ochrana-udajov", "privacy_page",
+                     lambda: _legal_page("Ochrana osobných údajov", PRIVACY_HTML))
+    app.after_request(_inject_footer)   # beží pred gzipom v app.py
+    threading.Thread(target=_daily_loop, daemon=True, name="daily").start()
     _start_worker()
