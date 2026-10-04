@@ -6,7 +6,11 @@ import sqlite3
 import threading
 import time
 import copy
+import json
+import secrets
+import smtplib
 import urllib.parse
+from email.message import EmailMessage
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -16,8 +20,19 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, Response
 
 # =========================================================
-# CARD RADAR 5.26
-# Novinky oproti 5.25:
+# CARD RADAR 5.30
+# Novinky 5.30:
+#  - sklad: rozpoznanie Skladom / Vypredané / Predobjednávka / Na objednávku
+#  - cena za booster (ETB, booster box, bundle, "36 balíčkov" v názve...)
+#  - denná história cien + trend za 30 dní + /api/history pre graf
+#  - strážca ceny: e-mail s potvrdením (SMTP v premenných prostredia)
+#  - /api/latest pre obľúbené karty
+#  - /api/debug/detect: rozpozná platformu obchodu a navrhne konfiguráciu
+# Novinky 5.27:
+#  - prísnejší filter merchu (plyšáky, tričká, šálky, hrnčeky, príslušenstvo...)
+#  - našepkávač s obrázkami: Shopify predictive search (CardyX) + doťahovanie
+#    chýbajúcich obrázkov, katalóg návrhov si obrázky pamätá
+# Novinky 5.26:
 #  - vyhľadávanie nečaká na obrázky (dotiahnu sa cez /api/images)
 #  - chyby obchodov (timeout, HTTP chyba) sa neukladajú do cache
 #  - rovnaké súbežné hľadania sa nescrapujú dvakrát (single-flight)
@@ -27,7 +42,7 @@ from flask import Flask, jsonify, request, Response
 #  - história cien v pozadí + automatické mazanie starých záznamov
 # =========================================================
 
-VERSION = "5.26"
+VERSION = "5.30"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
@@ -53,6 +68,24 @@ HISTORY_KEEP_DAYS = 90
 RATE_SEARCH = 30
 RATE_SUGGEST = 120
 RATE_IMAGES = 60
+RATE_HISTORY = 60
+RATE_ALERTS = 5          # nových strážcov za 10 minút na IP
+ALERTS_PER_EMAIL = 20
+
+# Strážca ceny (e-mail). Bez SMTP_HOST je funkcia vypnutá.
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")   # napr. https://cardradar.sk
+ALERT_CHECK_HOURS = float(os.environ.get("ALERT_CHECK_HOURS", "6"))
+ALERTS_ENABLED = bool(SMTP_HOST and SMTP_FROM)
+
+try:
+    import fcntl  # Linux: zámok, aby strážcu cien spúšťal len jeden proces
+except ImportError:
+    fcntl = None
 
 try:
     import lxml  # noqa: F401  (pip install lxml = rýchlejšie parsovanie)
@@ -77,6 +110,7 @@ SHOPS = [
         "base_url": "https://www.cardyx.sk/",
         "search_url": "https://www.cardyx.sk/search?q={q}",
         "link_selector": 'a[href*="/products/"]',
+        "shopify": True,  # rýchly našepkávač s obrázkami cez /search/suggest.json
     },
     # --- Shoptet obchody (SK). Vyhľadávanie: /vyhladavanie/?string=... ---
     {
@@ -251,6 +285,8 @@ class RateLimiter:
 search_limiter = RateLimiter(RATE_SEARCH)
 suggest_limiter = RateLimiter(RATE_SUGGEST)
 images_limiter = RateLimiter(RATE_IMAGES)
+history_limiter = RateLimiter(RATE_HISTORY)
+alerts_limiter = RateLimiter(RATE_ALERTS, window=600)
 
 
 def client_ip():
@@ -281,13 +317,18 @@ def db_connect():
     return conn
 
 
+def today_str():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def prune_history(conn):
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=HISTORY_KEEP_DAYS)).isoformat()
-    conn.execute("DELETE FROM price_history WHERE checked_at < ?", (cutoff,))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=HISTORY_KEEP_DAYS)).strftime("%Y-%m-%d")
+    conn.execute("DELETE FROM price_daily WHERE day < ?", (cutoff,))
 
 
 def init_db():
     conn = db_connect()
+    # pôvodná tabuľka (už sa do nej nezapisuje, slúži len na prenos dát)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS price_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,8 +336,35 @@ def init_db():
             price_eur REAL, link TEXT, checked_at TEXT
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_checked ON price_history(checked_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_link ON price_history(link)")
+    # jedna cena na produkt a deň = malá databáza, rýchle grafy
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS price_daily (
+            link TEXT NOT NULL, day TEXT NOT NULL,
+            shop TEXT, title TEXT, price_eur REAL, stock TEXT,
+            PRIMARY KEY (link, day)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL, link TEXT NOT NULL, title TEXT, shop TEXT,
+            target REAL NOT NULL, token TEXT UNIQUE NOT NULL,
+            confirmed INTEGER DEFAULT 0, created TEXT, site TEXT,
+            last_price REAL, last_checked TEXT, notified TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_email ON alerts(email)")
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+
+    migrated = conn.execute("SELECT v FROM meta WHERE k='migrated_daily'").fetchone()
+    if not migrated:
+        conn.execute("""
+            INSERT OR IGNORE INTO price_daily (link, day, shop, title, price_eur, stock)
+            SELECT link, substr(checked_at, 1, 10), shop, title, MIN(price_eur), ''
+            FROM price_history WHERE link != '' AND price_eur > 0
+            GROUP BY link, substr(checked_at, 1, 10)
+        """)
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('migrated_daily', '1')")
     prune_history(conn)
     conn.commit()
     conn.close()
@@ -305,22 +373,23 @@ def init_db():
 init_db()
 
 
-def _save_history(query, results):
+def _save_history(results):
     conn = None
     try:
         conn = db_connect()
-        now = datetime.now(timezone.utc).isoformat()
+        day = today_str()
         rows = [
-            (query, r.get("shop", ""), r.get("title", ""),
-             r.get("price_eur", 0), r.get("link", ""), now)
-            for r in results
+            (r["link"], day, r.get("shop", ""), r.get("title", ""),
+             r.get("price_eur"), r.get("stock", ""))
+            for r in results if r.get("link") and r.get("price_eur")
         ]
-        conn.executemany(
-            "INSERT INTO price_history "
-            "(query, shop, title, price_eur, link, checked_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            rows,
-        )
+        conn.executemany("""
+            INSERT INTO price_daily (link, day, shop, title, price_eur, stock)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(link, day) DO UPDATE SET
+                price_eur = excluded.price_eur, stock = excluded.stock,
+                title = excluded.title
+        """, rows)
         if random.random() < 0.02:
             prune_history(conn)
         conn.commit()
@@ -334,7 +403,38 @@ def _save_history(query, results):
 def save_history(query, results):
     """Zápis do DB beží na pozadí, odpoveď naň nečaká."""
     if results:
-        BG_EXECUTOR.submit(_save_history, query, copy.deepcopy(results))
+        BG_EXECUTOR.submit(_save_history, copy.deepcopy(results))
+
+
+def add_trends(results, days=30):
+    """Ku každému výsledku pridá najstaršiu cenu za posledných `days` dní."""
+    links = [r["link"] for r in results if r.get("link")]
+    if not links:
+        return
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    today = today_str()
+    oldest = {}
+    conn = None
+    try:
+        conn = db_connect()
+        for i in range(0, len(links), 400):
+            chunk = links[i:i + 400]
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT link, day, price_eur FROM price_daily "
+                f"WHERE link IN ({marks}) AND day >= ? AND day < ? ORDER BY day ASC",
+                (*chunk, since, today)).fetchall()
+            for link, day, price in rows:
+                oldest.setdefault(link, (day, price))
+    except Exception:
+        return
+    finally:
+        if conn:
+            conn.close()
+    for r in results:
+        old = oldest.get(r.get("link"))
+        if old and old[1]:
+            r["trend"] = {"since": old[0], "price_eur": round(old[1], 2)}
 
 
 # =========================================================
@@ -477,9 +577,13 @@ def normalize_query(query):
             q = pattern.sub(" ", q)
             break
 
-    set_name, q = _extract(q, _SETS_RE)
+    # najprv celé názvy setov ("surging sparks"), až potom skratky ("sv8", "surging")
+    set_name, q = _extract(q, _KNOWN_SETS_RE)
     if not set_name:
-        set_name, q = _extract(q, _KNOWN_SETS_RE)
+        set_name, q = _extract(q, _SETS_RE)
+    if set_name:  # zvyšné slová z názvu setu preč ("surging" + "sparks")
+        for w in set_name.split():
+            q = re.sub(r"\b" + re.escape(w) + r"\b", " ", q)
 
     pokemon, q = _extract(q, _POKEMON_RE)
 
@@ -646,28 +750,146 @@ def detect_language(title):
 # MERCH FILTER
 # =========================================================
 
-MERCH_WORDS = [
-    "plush", "plyš", "peluche", "figúrka", "figurka", "figure", "figurine",
-    "vinyl figure", "statue", "funko", "funko pop", "pop!", "pop vinyl",
-    "hrnček", "hrnek", "mug", "tričko", "tricko", "shirt", "mikina", "hoodie",
-    "ponožky", "ponozky", "socks", "puzzle", "podložka", "podlozka", "playmat",
-    "album", "binder", "obal", "sleeves", "sleeve", "keychain", "kľúčenka",
-    "klucenka", "batoh", "backpack", "taška", "taska", "poster", "plagát",
-    "plagat", "sticker", "nálepka", "nalepka", "slúchadlá", "sluchatka",
-    "headphones", "earphones", "hračka", "hracka", "toy", "toys", "lampa",
-    "lamp", "fľaša", "flasa", "bottle", "peňaženka", "penezenka", "wallet",
-    "puzdro", "pouzdro", "phone case", "mobile case", "čepice", "cepice",
-    "cap", "deka", "blanket", "mystery", "blind box", "toploader", "stojan",
-    "polštář", "polstar", "vankúš", "vankus",
+# Slová sa hľadajú ako ZAČIATOK slova, takže "plyš" chytí aj plyšák, plyšová,
+# plyšáky a "tričk" chytí tričko, trička, tričká. (Stará verzia hľadala len
+# celé slová, preto jej "plyšák" alebo "šálka" prešli.)
+
+# Príslušenstvo: vždy preč (chceme len karty a sealed produkty)
+ACCESSORY_PATTERNS = [
+    r"sleeves?", r"obal\w*", r"album\w*", r"binder\w*", r"toploader\w*",
+    r"playmat\w*", r"podlo[žz]k\w*", r"deck\s*box\w*", r"deckbox\w*",
+    r"puzdr\w*", r"pouzdr\w*", r"stojan\w*", r"portfoli\w*", r"one\s*touch",
+    r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?",
 ]
-MERCH_RE = re.compile(
-    r"(?<!\w)(?:" + "|".join(re.escape(w) for w in MERCH_WORDS) + r")(?!\w)",
+
+# Merch: preč, pokiaľ názov zároveň neobsahuje znak TCG produktu
+# (napr. "Charizard ex Premium Collection with figure" ostane)
+MERCH_PATTERNS = [
+    # oblečenie
+    r"tri[čc]k\w*", r"t-?shirt\w*", r"shirt\w*", r"mikin\w*", r"hoodie\w*",
+    r"pono[žz]k\w*", r"socks?", r"[čc]iap\w*", r"[čc]epic\w*", r"[šs]iltovk\w*",
+    r"k[šs]iltovk\w*", r"caps?", r"py[žz]am\w*", r"kost[ýy]m\w*", r"costume\w*",
+    r"rukavic\w*", r"[šs]atk\w*", r"[šs][áa]l", r"[šs][áa]ly", r"scarf\w*",
+    r"tepl[áa]k\w*", r"leg[íi]n\w*", r"[šs]ortk\w*", r"[šs]ortky",
+    # plyšáky, figúrky, hračky
+    r"ply[šs]\w*", r"plush\w*", r"peluche\w*", r"fig[úu]r\w*", r"figur\w*",
+    r"figure\w*", r"statue\w*", r"so[šs]k\w*", r"funko\w*", r"pop!", r"vinyl\w*",
+    r"hra[čc]k\w*", r"toys?", r"lego", r"mega\s+construx", r"stavebnic\w*",
+    r"puzzle\w*", r"pokladni[čc]k\w*", r"mystery", r"blind\s*box\w*",
+    r"gashapon\w*", r"tamagotchi",
+    # domácnosť, kuchyňa
+    r"hrn[čc]\w*", r"hrnk\w*", r"hrnek", r"mugs?", r"[šs][áa]lk\w*", r"poh[áa]r\w*",
+    r"cups?", r"tumbler\w*", r"f[ľl]a[šs]\w*", r"bottle\w*", r"termosk\w*",
+    r"lamp", r"lamp[ay]", r"lampi[čc]k\w*", r"svietidl\w*", r"deka", r"deky",
+    r"blanket\w*", r"vank[úu][šs]\w*", r"pol[šs]t[áa][řr]\w*", r"uter[áa]k\w*",
+    r"osu[šs]k\w*", r"towel\w*", r"oblie[čc]k\w*", r"tanier\w*", r"misk[ay]",
+    r"lunch\s*box\w*", r"desiatov\w*",
+    # škola, doplnky, elektronika
+    r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?",
+    r"pera[čc]n[íi]k\w*", r"z[áa]pisn[íi]k\w*", r"zo[šs]it\w*", r"fixk\w*",
+    r"pastel\w*", r"k[ľl][úu][čc]enk\w*", r"keychain\w*", r"keyring\w*",
+    r"pr[íi]ves\w*", r"n[áa]ram\w*", r"n[áa]hrdeln[íi]k\w*", r"[šs]perk\w*",
+    r"odznak\w*", r"pins?", r"bro[žz]\w*", r"pe[ňn]a[žz]enk\w*", r"wallet\w*",
+    r"phone\s+case", r"mobile\s+case", r"hodink\w*", r"sl[úu]chadl\w*",
+    r"sluch[áa]tk\w*", r"headphones?", r"earphones?", r"reproduktor\w*",
+    r"plag[áa]t\w*", r"poster\w*", r"sticker\w*", r"n[áa]lepk\w*", r"tetov\w*",
+    r"knih\w*", r"kniha", r"books?", r"komiks\w*", r"manga", r"omal\w*",
+    r"nintendo", r"videohr\w*",
+    # jedlo
+    r"[čc]okol[áa]d\w*", r"cukrovink\w*", r"candy", r"l[íi]zank\w*", r"[žz]uva[čc]k\w*",
+]
+
+# Znaky skutočného TCG produktu (karta / sealed)
+TCG_MARKER_RE = re.compile(
+    r"booster|elite\s+trainer|\betb\b|collection|kolekci|blister|\btins?\b|\btcg\b"
+    r"|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|display"
+    r"|\b\d{1,3}\s*/\s*\d{1,3}\b",
     re.I,
 )
 
 
+def _words_re(patterns):
+    return re.compile(r"(?<!\w)(?:" + "|".join(patterns) + r")(?!\w)", re.I)
+
+
+ACCESSORY_RE = _words_re(ACCESSORY_PATTERNS)
+MERCH_RE = _words_re(MERCH_PATTERNS)
+
+
+def merch_reason(title, extra_text=""):
+    """'' = je to karta/produkt; inak dôvod vyradenia."""
+    text = clean_text(title + " " + extra_text)
+    m = ACCESSORY_RE.search(text)
+    if m:
+        return "accessory:" + m.group(0).lower()
+    m = MERCH_RE.search(text)
+    if m and not TCG_MARKER_RE.search(text):
+        return "merch:" + m.group(0).lower()
+    return ""
+
+
 def is_merch(title, extra_text=""):
-    return MERCH_RE.search(clean_text(title + " " + extra_text)) is not None
+    return bool(merch_reason(title, extra_text))
+
+
+# =========================================================
+# SKLAD
+# =========================================================
+
+STOCK_OUT_RE = re.compile(
+    r"vypredan\w*|nie\s+je\s+skladom|nie\s+je\s+na\s+sklade|nedostupn\w*|vyprodan\w*"
+    r"|nen[íi]\s+skladem|nen[íi]\s+dostupn\w*|sold\s*out|out\s+of\s+stock|ausverkauft", re.I)
+STOCK_PRE_RE = re.compile(r"predobjedn\w*|p[řr]edobjedn\w*|pre-?order\w*|vorbestell\w*", re.I)
+STOCK_ORDER_RE = re.compile(r"na\s+objedn[áa]vku|do\s+\d+\s+dn[íi]|na\s+dotaz", re.I)
+STOCK_IN_RE = re.compile(r"skladom|skladem|na\s+sklade|in\s+stock|dostupn[ée]|k\s+odberu|ihne[dď]", re.I)
+
+
+def detect_stock(text):
+    """'in' | 'out' | 'preorder' | 'order' | '' (nevieme)"""
+    text = clean_text(text)
+    if not text:
+        return ""
+    if STOCK_OUT_RE.search(text):
+        return "out"
+    if STOCK_PRE_RE.search(text):
+        return "preorder"
+    if STOCK_ORDER_RE.search(text):
+        return "order"
+    if STOCK_IN_RE.search(text):
+        return "in"
+    return ""
+
+
+# =========================================================
+# POČET BOOSTEROV (cena za booster)
+# =========================================================
+
+PACKS_EXPLICIT_RE = re.compile(
+    r"(?<![\d/.,])(\d{1,2})\s*(?:-|x)?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|packungen|boost\w*)",
+    re.I)
+PACKS_PAREN_RE = re.compile(r"booster\s*(?:box|display)\D{0,10}\((\d{1,2})\)", re.I)
+
+
+def estimate_packs(title):
+    """Odhad počtu boosterov v produkte; None = nevieme / nemá zmysel."""
+    t = clean_text(title).lower()
+    if not t:
+        return None
+    m = PACKS_EXPLICIT_RE.search(t) or PACKS_PAREN_RE.search(t)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 36:
+            return n
+    if re.search(r"booster\s*(?:box|display)", t):
+        return 18 if re.search(r"\bhalf\b|poloviční|polovičn", t) else 36
+    if re.search(r"elite\s+trainer\s+box|\betb\b", t):
+        return 11 if "pokemon center" in t or "pokémon center" in t else 9
+    if re.search(r"booster\s*bundle", t):
+        return 6
+    if re.search(r"sleeved\s+booster|booster\s+pack|\bbooster\b$", t) and not re.search(
+            r"collection|box|tin|blister|bundle|display", t):
+        return 1
+    return None
 
 
 # =========================================================
@@ -833,7 +1055,16 @@ def fetch_product_image(product_url):
     except Exception:
         pass
     image_cache.set(product_url, image_url)
+    if image_url:
+        catalog_set_image(product_url, image_url)
     return image_url
+
+
+def catalog_set_image(link, image_url):
+    with _catalog_lock:
+        for s in SUGGESTION_CATALOG.values():
+            if s.get("link") == link and not s.get("image"):
+                s["image"] = image_url
 
 
 def fill_images_from_cache(results):
@@ -921,9 +1152,10 @@ def _scrape(shop, query, timeout):
                 continue
 
             # lacné filtre najprv (pred hľadaním ceny v DOM)
-            if is_merch(title):
+            why = merch_reason(title)
+            if why:
                 debug["merch_filtered"] += 1
-                _log(debug, title=title, decision="filtered", reason="merch")
+                _log(debug, title=title, decision="filtered", reason=why)
                 continue
 
             lang = detect_language(title)
@@ -956,10 +1188,14 @@ def _scrape(shop, query, timeout):
             debug["price_found"] += 1
 
             image_url = extract_image(anchor, shop["base_url"])
+            packs = estimate_packs(title)
             results.append({
                 "title": title, "shop": shop["name"], "country": shop["country"],
                 "condition": "Nové", "language": lang, "price_eur": round(price, 2),
                 "link": href, "image": image_url,
+                "stock": detect_stock(block_text),
+                "packs": packs,
+                "price_per_pack": round(price / packs, 2) if packs and packs > 1 else None,
             })
             debug["accepted"] += 1
             _log(debug, title=title, price_eur=round(price, 2),
@@ -1174,6 +1410,68 @@ def suggestion_score(item, query):
     return score + max(0, 20 - len(title) // 10)
 
 
+def _shopify_img(url):
+    """Menší náhľad zo Shopify CDN (rýchlejšie načítanie)."""
+    if url and ("/cdn/shop/" in url or "cdn.shopify.com" in url) and "width=" not in url:
+        url += ("&" if "?" in url else "?") + "width=160"
+    return url
+
+
+def shopify_suggest(shop, q, timeout=SUGGESTION_TIMEOUT):
+    """Shopify predictive search. Vráti zoznam výsledkov alebo None pri chybe."""
+    cache_key = "shopify|" + shop["name"].lower() + "|" + q.lower()
+    cached = suggestion_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    url = (shop["base_url"].rstrip("/") + "/search/suggest.json?q=" + urllib.parse.quote(q)
+           + "&resources[type]=product&resources[limit]=10"
+           + "&resources[options][unavailable_products]=last")
+    resp, _ = fetch(url, timeout=timeout)
+    if not resp:
+        return None
+    try:
+        products = resp.json()["resources"]["results"]["products"]
+    except Exception:
+        return None
+
+    foreign_ok = FOREIGN_QUERY_RE.search(q) is not None
+    out = []
+    for p in products or []:
+        title = clean_text(p.get("title", ""))
+        if not title or is_merch(title):
+            continue
+        if detect_language(title) and not foreign_ok:
+            continue
+        link = absolute_url(shop["base_url"], p.get("url", ""))
+        if link:
+            link = link.split("?")[0]  # bez ?_pos=...&_sid=...
+        image = p.get("image") or ""
+        if not image and isinstance(p.get("featured_image"), dict):
+            image = p["featured_image"].get("url", "")
+        image = _shopify_img(absolute_url(shop["base_url"], image)) if image else ""
+        raw = p.get("price", p.get("price_min"))
+        price = _to_float(str(raw)) if raw not in (None, "") else None
+        out.append({
+            "title": title, "shop": shop["name"], "country": shop["country"],
+            "price_eur": round(price, 2) if price else None,
+            "link": link, "image": image,
+        })
+    suggestion_cache.set(cache_key, out)
+    if out:
+        add_suggestions_from_results(out)
+    return out
+
+
+def remote_suggestion_results(q):
+    shop = ACTIVE_SHOPS[0]
+    if shop.get("shopify"):
+        res = shopify_suggest(shop, q)
+        if res is not None:
+            return res
+    return shop_search(shop, q, return_debug=False,
+                       cache_result=True, timeout=SUGGESTION_TIMEOUT)
+
+
 @app.get("/api/suggestions")
 def api_suggestions():
     q = clean_text(request.args.get("q", ""))
@@ -1186,6 +1484,7 @@ def api_suggestions():
 
     cached = suggestion_cache.get(q.lower())
     if cached is not None:
+        fill_images_from_cache(cached)
         return jsonify({"query": q, "normalized_query": normalized,
                         "suggestions": cached, "source": "suggestion_cache"})
 
@@ -1202,8 +1501,7 @@ def api_suggestions():
     remote_used = False
     if len(candidates) < MIN_LOCAL_SUGGESTIONS and ACTIVE_SHOPS:
         remote_used = True
-        remote = shop_search(ACTIVE_SHOPS[0], q, return_debug=False,
-                             cache_result=True, timeout=SUGGESTION_TIMEOUT)
+        remote = remote_suggestion_results(q)
         known = {clean_text(c.get("query", "")).lower() for c in candidates}
         for s in suggestions_from_results(remote):
             if clean_text(s["query"]).lower() not in known:
@@ -1233,6 +1531,12 @@ def api_suggestions():
             if len(output) >= 8:
                 break
 
+    for item in output:
+        if not item.get("image") and item.get("link"):
+            cached_img = image_cache.get(item["link"])
+            if cached_img:
+                item["image"] = cached_img
+
     suggestion_cache.set(q.lower(), output)
     return jsonify({"query": q, "normalized_query": normalized,
                     "suggestions": output,
@@ -1248,6 +1552,7 @@ def api_config():
     resp = jsonify({
         "version": VERSION,
         "czk_per_eur": CZK_PER_EUR,
+        "alerts_enabled": ALERTS_ENABLED,
         "shops": [{"name": s["name"], "country": s["country"], "url": s["base_url"]}
                   for s in ACTIVE_SHOPS],
     })
@@ -1273,6 +1578,7 @@ def api_search():
     parsed = normalize_query(original)
     normalized = parsed.get("normalized", original)
     results, debug = search_all(normalized, return_debug=True)
+    add_trends(results)
     save_history(original, results)
 
     info = {"title": normalized, "subtitle": "", "image": ""}
@@ -1398,6 +1704,7 @@ def health():
         "active_shops": [f"{x['name']} ({x['country']})" for x in ACTIVE_SHOPS],
         "suggestion_catalog_items": catalog_items,
         "image_cache_items": image_cache.stats()[0],
+        "alerts_enabled": ALERTS_ENABLED,
     })
 
 
@@ -1414,6 +1721,412 @@ def home():
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+# =========================================================
+# HISTÓRIA CIEN + OBĽÚBENÉ
+# =========================================================
+
+@app.get("/api/history")
+def api_history():
+    """Denné ceny jedného produktu: /api/history?link=..."""
+    if not history_limiter.allow(client_ip()):
+        return too_many()
+    link = clean_text(request.args.get("link", ""))
+    if not is_allowed_link(link):
+        return jsonify({"error": "Neplatný odkaz."}), 400
+    conn = db_connect()
+    try:
+        rows = conn.execute(
+            "SELECT day, price_eur, stock, title, shop FROM price_daily "
+            "WHERE link = ? ORDER BY day ASC", (link,)).fetchall()
+    finally:
+        conn.close()
+    points = [{"day": d, "price_eur": round(p, 2), "stock": s or ""} for d, p, s, _, _ in rows if p]
+    title = rows[-1][3] if rows else ""
+    shop = rows[-1][4] if rows else ""
+    return jsonify({"link": link, "title": title, "shop": shop, "points": points})
+
+
+@app.post("/api/latest")
+def api_latest():
+    """Posledná známa cena pre zoznam odkazov (obľúbené): {"links": [...]}"""
+    if not history_limiter.allow(client_ip()):
+        return too_many()
+    data = request.get_json(silent=True) or {}
+    links = [clean_text(l) for l in (data.get("links") or [])[:100]
+             if isinstance(l, str) and is_allowed_link(clean_text(l))]
+    out = {}
+    if links:
+        conn = db_connect()
+        try:
+            marks = ",".join("?" * len(links))
+            rows = conn.execute(f"""
+                SELECT p.link, p.day, p.price_eur, p.stock FROM price_daily p
+                JOIN (SELECT link, MAX(day) AS d FROM price_daily
+                      WHERE link IN ({marks}) GROUP BY link) m
+                  ON p.link = m.link AND p.day = m.d
+            """, links).fetchall()
+        finally:
+            conn.close()
+        for link, day, price, stock in rows:
+            out[link] = {"day": day, "price_eur": round(price, 2) if price else None,
+                         "stock": stock or ""}
+    return jsonify({"latest": out})
+
+
+# =========================================================
+# STRÁŽCA CENY
+# =========================================================
+
+EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[a-z]{2,24}$", re.I)
+
+
+def send_mail(to, subject, text):
+    msg = EmailMessage()
+    msg["From"] = SMTP_FROM
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(text)
+    if SMTP_PORT == 465:
+        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15)
+    else:
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+        server.starttls()
+    try:
+        if SMTP_USER:
+            server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
+    finally:
+        server.quit()
+
+
+def site_url():
+    return PUBLIC_URL or request.url_root.rstrip("/")
+
+
+def _walk_json(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk_json(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_json(v)
+
+
+def fetch_product_offer(link):
+    """Aktuálna cena a sklad z produktovej stránky (JSON-LD / meta značky)."""
+    resp, _ = fetch(link, timeout=10)
+    if not resp:
+        return None, ""
+    html = resp.text
+    soup = BeautifulSoup(html, HTML_PARSER)
+    price, currency, stock = None, "EUR", ""
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        for node in _walk_json(data):
+            if "price" in node or "lowPrice" in node:
+                raw = node.get("price", node.get("lowPrice"))
+                v = _to_float(str(raw)) if raw not in (None, "") else None
+                if v:
+                    price = v
+                    currency = str(node.get("priceCurrency", "EUR")).upper()
+                    avail = str(node.get("availability", "")).lower()
+                    if "outofstock" in avail or "soldout" in avail:
+                        stock = "out"
+                    elif "preorder" in avail:
+                        stock = "preorder"
+                    elif "instock" in avail:
+                        stock = "in"
+                    break
+        if price:
+            break
+
+    if not price:
+        for sel in ('meta[property="product:price:amount"]', 'meta[property="og:price:amount"]',
+                    '[itemprop="price"]'):
+            el = soup.select_one(sel)
+            if el:
+                v = _to_float(clean_text(el.get("content") or el.get_text()))
+                if v:
+                    price = v
+                    cur = soup.select_one('meta[property="product:price:currency"], '
+                                          'meta[property="og:price:currency"], [itemprop="priceCurrency"]')
+                    if cur:
+                        currency = clean_text(cur.get("content") or cur.get_text()).upper() or "EUR"
+                    break
+
+    if price and currency in ("CZK", "KČ"):
+        price = price / CZK_PER_EUR
+    if not stock:
+        stock = detect_stock(soup.get_text(" ", strip=True)[:20000])
+    return (round(price, 2) if price else None), stock
+
+
+@app.post("/api/alerts")
+def api_alerts_create():
+    if not ALERTS_ENABLED:
+        return jsonify({"error": "Strážca ceny zatiaľ nie je na serveri zapnutý."}), 503
+    if not alerts_limiter.allow(client_ip()):
+        return too_many()
+    data = request.get_json(silent=True) or {}
+    email = clean_text(data.get("email", "")).lower()
+    link = clean_text(data.get("link", ""))
+    title = clean_text(data.get("title", ""))[:200]
+    shop = clean_text(data.get("shop", ""))[:60]
+    try:
+        target = round(float(data.get("target")), 2)
+    except (TypeError, ValueError):
+        target = 0
+    if not EMAIL_RE.match(email):
+        return jsonify({"error": "Zadaj platný e-mail."}), 400
+    if not is_allowed_link(link):
+        return jsonify({"error": "Neplatný produkt."}), 400
+    if not 0 < target < 100000:
+        return jsonify({"error": "Zadaj cieľovú cenu."}), 400
+
+    conn = db_connect()
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM alerts WHERE email = ?", (email,)).fetchone()[0]
+        if count >= ALERTS_PER_EMAIL:
+            return jsonify({"error": f"Na jeden e-mail môžeš mať najviac {ALERTS_PER_EMAIL} strážcov."}), 400
+        existing = conn.execute(
+            "SELECT id, confirmed FROM alerts WHERE email = ? AND link = ?", (email, link)).fetchone()
+        token = secrets.token_urlsafe(24)
+        site = site_url()
+        if existing:
+            conn.execute("UPDATE alerts SET target = ?, notified = NULL, token = ? WHERE id = ?",
+                         (target, token, existing[0]))
+            confirmed = bool(existing[1])
+        else:
+            conn.execute(
+                "INSERT INTO alerts (email, link, title, shop, target, token, confirmed, created, site) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (email, link, title, shop, target, token,
+                 datetime.now(timezone.utc).isoformat(), site))
+            confirmed = False
+        conn.commit()
+    finally:
+        conn.close()
+
+    if confirmed:
+        return jsonify({"status": "ok", "message": f"Strážca upravený na {target:.2f} €."})
+
+    try:
+        send_mail(email, "Potvrď strážcu ceny – CardRadar",
+                  f"Ahoj,\n\nchceš dostať e-mail, keď cena klesne na {target:.2f} € alebo menej?\n\n"
+                  f"{title} ({shop})\n{link}\n\n"
+                  f"Potvrď kliknutím: {site}/alerts/confirm?token={token}\n\n"
+                  f"Ak si o to nežiadal, tento e-mail ignoruj.\n\nCardRadar")
+    except Exception:
+        return jsonify({"error": "Potvrdzovací e-mail sa nepodarilo odoslať. Skús to neskôr."}), 502
+    return jsonify({"status": "ok",
+                    "message": "Poslali sme ti e-mail. Strážca začne fungovať po potvrdení."})
+
+
+def _simple_page(title, text):
+    home = PUBLIC_URL or "/"
+    return Response(
+        f"""<!doctype html><html lang="sk"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0f172a;color:#f8fafc;font-family:-apple-system,Segoe UI,sans-serif;padding:20px">
+<div style="max-width:420px;text-align:center"><h1 style="color:#facc15">{title}</h1>
+<p style="color:#94a3b8;line-height:1.5">{text}</p>
+<a href="{home}" style="display:inline-block;margin-top:10px;background:#facc15;color:#111827;
+padding:10px 16px;border-radius:8px;font-weight:800;text-decoration:none">Späť na CardRadar</a></div>""",
+        mimetype="text/html")
+
+
+@app.get("/alerts/confirm")
+def alerts_confirm():
+    token = clean_text(request.args.get("token", ""))
+    conn = db_connect()
+    try:
+        row = conn.execute("SELECT id, target, title FROM alerts WHERE token = ?", (token,)).fetchone()
+        if row:
+            conn.execute("UPDATE alerts SET confirmed = 1 WHERE id = ?", (row[0],))
+            conn.commit()
+    finally:
+        conn.close()
+    if not row:
+        return _simple_page("Odkaz neplatí", "Tento strážca už neexistuje alebo bol odkaz zmenený.")
+    stop = f"{PUBLIC_URL or request.url_root.rstrip('/')}/alerts/stop?token={token}"
+    return _simple_page("Strážca je zapnutý 🔔",
+                        f"Napíšeme ti, keď {row[2] or 'produkt'} klesne na {row[1]:.2f} € alebo menej."
+                        f"<br><br><a href='{stop}' style='color:#94a3b8'>Zrušiť strážcu</a>")
+
+
+@app.get("/alerts/stop")
+def alerts_stop():
+    token = clean_text(request.args.get("token", ""))
+    conn = db_connect()
+    try:
+        cur = conn.execute("DELETE FROM alerts WHERE token = ?", (token,))
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+    if not deleted:
+        return _simple_page("Hotovo", "Tento strážca už bol zrušený.")
+    return _simple_page("Strážca zrušený", "Viac ti o tomto produkte písať nebudeme.")
+
+
+def check_alerts_once():
+    conn = db_connect()
+    try:
+        alerts = conn.execute(
+            "SELECT id, email, link, title, shop, target, token, site FROM alerts "
+            "WHERE confirmed = 1 AND notified IS NULL").fetchall()
+    finally:
+        conn.close()
+
+    offers = {}
+    for link in {a[2] for a in alerts}:
+        try:
+            offers[link] = fetch_product_offer(link)
+        except Exception:
+            offers[link] = (None, "")
+        time.sleep(1)  # šetrne k obchodom
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = db_connect()
+    try:
+        for aid, email, link, title, shop, target, token, site in alerts:
+            price, stock = offers.get(link, (None, ""))
+            conn.execute("UPDATE alerts SET last_price = ?, last_checked = ? WHERE id = ?",
+                         (price, now, aid))
+            if price:
+                conn.execute("""
+                    INSERT INTO price_daily (link, day, shop, title, price_eur, stock)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(link, day) DO UPDATE SET price_eur = excluded.price_eur,
+                        stock = excluded.stock
+                """, (link, today_str(), shop, title, price, stock))
+            if price and price <= target and stock != "out":
+                try:
+                    send_mail(email, f"Cena klesla: {title} za {price:.2f} €",
+                              f"Ahoj,\n\n{title} ({shop}) je teraz za {price:.2f} € "
+                              f"(tvoj cieľ bol {target:.2f} €).\n\n{link}\n\n"
+                              f"Strážca sa tým vypína. Nový si nastavíš na {site}\n"
+                              f"Zrušiť: {site}/alerts/stop?token={token}\n\nCardRadar")
+                    conn.execute("UPDATE alerts SET notified = ? WHERE id = ?", (now, aid))
+                except Exception:
+                    pass
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_alert_lock_file = None
+
+
+def _alerts_loop():
+    time.sleep(60)
+    while True:
+        try:
+            check_alerts_once()
+        except Exception:
+            pass
+        time.sleep(max(0.25, ALERT_CHECK_HOURS) * 3600)
+
+
+def start_alert_worker():
+    """Spustí strážcu na pozadí – len v jednom procese (zámok súboru)."""
+    global _alert_lock_file
+    if not ALERTS_ENABLED:
+        return
+    if fcntl is not None:
+        try:
+            _alert_lock_file = open(os.path.join(BASE_DIR, ".alerts.lock"), "w")
+            fcntl.flock(_alert_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return  # iný proces už strážcu spúšťa
+    threading.Thread(target=_alerts_loop, daemon=True, name="alerts").start()
+
+
+start_alert_worker()
+
+
+# =========================================================
+# PRIDANIE OBCHODU: automatické rozpoznanie platformy
+# =========================================================
+
+PLATFORM_PRESETS = {
+    "shoptet": {
+        "marker": re.compile(r"shoptet", re.I),
+        "search": ["/vyhladavanie/?string={q}", "/vyhledavani/?string={q}"],
+        "selector": "div.product a.name",
+    },
+    "shopify": {
+        "marker": re.compile(r"cdn\.shopify\.com|Shopify\.theme|/cdn/shop/", re.I),
+        "search": ["/search?q={q}&type=product", "/search?q={q}"],
+        "selector": 'a[href*="/products/"]',
+    },
+    "upgates": {
+        "marker": re.compile(r"upgates", re.I),
+        "search": ["/vyhledavani?q={q}", "/vyhladavanie?q={q}", "/search?q={q}", "/hledani?q={q}"],
+        "selector": 'a[href*="/p/"]',
+    },
+    "woocommerce": {
+        "marker": re.compile(r"woocommerce", re.I),
+        "search": ["/?s={q}&post_type=product"],
+        "selector": "li.product a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link",
+    },
+}
+
+
+@app.get("/api/debug/detect")
+def api_debug_detect():
+    """/api/debug/detect?url=https://www.obchod.cz&q=pikachu -> návrh konfigurácie"""
+    if not debug_allowed():
+        return jsonify({"error": "Nepovolené."}), 403
+    url = clean_text(request.args.get("url", ""))
+    q = clean_text(request.args.get("q", "")) or "pikachu"
+    if not re.match(r"^https?://[^/\s]+", url):
+        return jsonify({"error": "Zadaj ?url=https://www.obchod.sk"}), 400
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}/"
+    resp, dbg = fetch(base, timeout=10)
+    if not resp:
+        return jsonify({"error": "Stránka neodpovedá.", "debug": dbg}), 502
+
+    platform = next((name for name, p in PLATFORM_PRESETS.items()
+                     if p["marker"].search(resp.text)), None)
+    if not platform:
+        return jsonify({"base_url": base, "platform": None,
+                        "message": "Platformu sa nepodarilo rozpoznať. Vyhľadávaciu URL a selektor "
+                                   "treba zistiť ručne (vyhľadaj na webe a skopíruj adresu)."})
+
+    preset = PLATFORM_PRESETS[platform]
+    host = parsed.netloc.lower()
+    ALLOWED_HOSTS.add(host)  # aby test prešiel cez kontrolu odkazov
+    tried = []
+    for path in preset["search"]:
+        shop = {"name": host, "country": "CZ" if host.endswith(".cz") else "SK",
+                "base_url": base, "search_url": base.rstrip("/") + path,
+                "link_selector": preset["selector"]}
+        results, debug = shop_search(shop, normalize_query(q)["normalized"] or q,
+                                     return_debug=True, cache_result=False)
+        tried.append({"search_url": shop["search_url"], "status": debug["status"],
+                      "links": debug.get("links_scanned", 0), "results": len(results)})
+        if debug.get("links_scanned"):
+            config = {"name": parsed.netloc.replace("www.", ""), "country": shop["country"],
+                      "enabled": True, "base_url": base, "search_url": shop["search_url"],
+                      "link_selector": preset["selector"]}
+            if platform == "shopify":
+                config["shopify"] = True
+            return jsonify({"platform": platform, "tried": tried, "config": config,
+                            "sample": results[:5],
+                            "message": "Funguje. Skopíruj 'config' do zoznamu SHOPS v app.py."})
+    return jsonify({"platform": platform, "tried": tried,
+                    "message": "Platforma rozpoznaná, ale vyhľadávanie nevrátilo produkty. "
+                               "Over vyhľadávaciu URL ručne."})
 
 
 # =========================================================
