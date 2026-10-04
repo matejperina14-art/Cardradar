@@ -769,6 +769,7 @@ _swr = {}
 _swr_lock = threading.Lock()
 _swr_busy = set()
 _swr_pool = _TPE(max_workers=4, thread_name_prefix="swr")
+_enrich_pool = _TPE(max_workers=6, thread_name_prefix="enrich")
 
 
 def _swr_key(shop, query):
@@ -911,20 +912,25 @@ def manifest():
     return resp
 
 
-def _shopify_enrich(shop, query, results):
-    """CardyX (Shopify): sklad a obrázky z rýchleho JSON vyhľadávania obchodu."""
-    if not results:
-        return
+def _shopify_suggest_raw(shop, query):
     url = (shop["base_url"].rstrip("/") + "/search/suggest.json?q=" + urllib.parse.quote(query)
            + "&resources[type]=product&resources[limit]=10"
            + "&resources[options][unavailable_products]=last")
     resp, _ = G["fetch"](url, timeout=4)
     if not resp:
-        return
+        return []
     try:
-        products = resp.json()["resources"]["results"]["products"]
+        return resp.json()["resources"]["results"]["products"] or []
     except Exception:
+        return []
+
+
+def _shopify_enrich(shop, query, results, products=None):
+    """CardyX (Shopify): sklad a obrázky z rýchleho JSON vyhľadávania obchodu."""
+    if not results:
         return
+    if products is None:
+        products = _shopify_suggest_raw(shop, query)
     info = {}
     for p in products or []:
         path = urllib.parse.urlsplit(p.get("url") or "").path.rstrip("/").lower()
@@ -972,10 +978,18 @@ def _shopify_product_js(r):
 
 def _make_scrape_fix(original):
     def _scrape(shop, query, timeout):
+        if not shop.get("shopify"):
+            return original(shop, query, timeout)
+        # JSON so skladom sa sťahuje súčasne s vyhľadávaním, nie až po ňom
+        fut = _enrich_pool.submit(_shopify_suggest_raw, shop, query)
         res, dbg = original(shop, query, timeout)
-        if shop.get("shopify") and res:
+        if res:
             try:
-                _shopify_enrich(shop, query, res)
+                try:
+                    products = fut.result(timeout=4)
+                except Exception:
+                    products = []
+                _shopify_enrich(shop, query, res, products)
                 dbg["images_found"] = sum(1 for r in res if r.get("image"))
                 dbg["images_missing"] = len(res) - dbg["images_found"]
             except Exception:
