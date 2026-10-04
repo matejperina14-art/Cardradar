@@ -1,41 +1,64 @@
 import os
 import re
+import gzip
+import random
 import sqlite3
 import threading
 import time
 import copy
 import urllib.parse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, Response
 
 # =========================================================
-# CARD RADAR 5.23 - CardyX
+# CARD RADAR 5.26
+# Novinky oproti 5.25:
+#  - vyhľadávanie nečaká na obrázky (dotiahnu sa cez /api/images)
+#  - chyby obchodov (timeout, HTTP chyba) sa neukladajú do cache
+#  - rovnaké súbežné hľadania sa nescrapujú dvakrát (single-flight)
+#  - zdieľané thread pooly, lxml parser (ak je nainštalovaný), gzip
+#  - rate limit na IP, debug len s ADMIN_KEY
+#  - stav obchodov v odpovedi (frontend ukáže, ktorý neodpovedal)
+#  - história cien v pozadí + automatické mazanie starých záznamov
 # =========================================================
 
-VERSION = "5.25"
+VERSION = "5.26"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
 CZK_PER_EUR = 24.4618
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
-CACHE_TTL = 600  # opakované hľadanie je okamžité (ceny sa tak často nemenia)
-CACHE_MAX_ITEMS = 100
-IMAGE_ENRICH_MAX = 12      # max. produktových stránok na doťahovanie obrázkov
-IMAGE_ENRICH_BUDGET = 4    # max. sekúnd čakania na obrázky
+CACHE_TTL = 600
+CACHE_MAX_ITEMS = 300
 SUGGESTION_CACHE_TTL = 300
-SUGGESTION_CACHE_MAX_ITEMS = 200
-IMAGE_CACHE_TTL = 3600
-IMAGE_CACHE_MAX_ITEMS = 500
-SEARCH_TIMEOUT = 10
+SUGGESTION_CACHE_MAX_ITEMS = 300
+IMAGE_CACHE_TTL = 6 * 3600
+IMAGE_CACHE_MAX_ITEMS = 2000
+SEARCH_TIMEOUT = 8
 SUGGESTION_TIMEOUT = 4
-IMAGE_FETCH_WORKERS = 8
-IMAGE_FETCH_TIMEOUT = 3
-MIN_LOCAL_SUGGESTIONS = 4  # ak je menej, doplníme z CardyX
+IMAGE_FETCH_WORKERS = 10
+IMAGE_FETCH_TIMEOUT = 4
+IMAGE_BATCH_MAX = 12        # max. odkazov v jednej požiadavke /api/images
+IMAGE_BATCH_BUDGET = 6      # max. sekúnd čakania v /api/images
+MIN_LOCAL_SUGGESTIONS = 4
+HISTORY_KEEP_DAYS = 90
+
+# Rate limit (požiadaviek za minútu na jednu IP)
+RATE_SEARCH = 30
+RATE_SUGGEST = 120
+RATE_IMAGES = 60
+
+try:
+    import lxml  # noqa: F401  (pip install lxml = rýchlejšie parsovanie)
+    HTML_PARSER = "lxml"
+except ImportError:
+    HTML_PARSER = "html.parser"
 
 # =========================================================
 # OBCHODY (pridanie obchodu = jeden záznam v tomto zozname)
@@ -45,6 +68,7 @@ MIN_LOCAL_SUGGESTIONS = 4  # ak je menej, doplníme z CardyX
 #   search_url     URL vyhľadávania, {q} sa nahradí hľadaným textom
 #   link_selector  CSS selektor odkazov na produkty vo výsledkoch
 #   enabled        False = obchod sa nepoužije (dá sa ho stále testovať)
+#   loose_set      True = v názvoch nie je set, stačí číslo karty
 # =========================================================
 
 SHOPS = [
@@ -60,7 +84,7 @@ SHOPS = [
         "base_url": "https://www.tcgzonenitra.sk/",
         "search_url": "https://www.tcgzonenitra.sk/vyhladavanie/?string={q}",
         "link_selector": "div.product a.name",
-        "loose_set": True,  # v názvoch kariet je len číslo (042/128), bez setu
+        "loose_set": True,
     },
     {
         "name": "Beardex", "country": "SK", "enabled": True,
@@ -74,8 +98,7 @@ SHOPS = [
         "search_url": "https://www.cardempire.sk/vyhladavanie/?string={q}",
         "link_selector": "div.product a.name",
     },
-    # --- CZ (Upgates): produkty majú URL /p/..., ceny v Kč. VYPNUTÉ, kým sa
-    # neoverí vyhľadávacia URL (zistite ju vyhľadaním na webe a skopírovaním z prehliadača)
+    # --- CZ (Upgates): VYPNUTÉ, kým sa neoverí vyhľadávacia URL
     {
         "name": "Gengar.cz", "country": "CZ", "enabled": False,
         "base_url": "https://www.gengar.cz/",
@@ -92,6 +115,7 @@ SHOPS = [
 ]
 
 ACTIVE_SHOPS = [s for s in SHOPS if s.get("enabled", True)]
+ALLOWED_HOSTS = {urllib.parse.urlparse(s["base_url"]).netloc.lower() for s in SHOPS}
 
 HEADERS = {
     "User-Agent": (
@@ -100,8 +124,16 @@ HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "cs-CZ,sk-SK;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
 }
+
+# Zdieľané pooly: vlákna (a ich HTTP spojenia) sa používajú opakovane
+SHOP_EXECUTOR = ThreadPoolExecutor(max_workers=max(8, len(ACTIVE_SHOPS) * 4),
+                                   thread_name_prefix="shop")
+IMAGE_EXECUTOR = ThreadPoolExecutor(max_workers=IMAGE_FETCH_WORKERS,
+                                    thread_name_prefix="img")
+BG_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bg")
 
 _local = threading.local()
 
@@ -111,6 +143,9 @@ def get_http_session():
     if s is None:
         s = requests.Session()
         s.headers.update(HEADERS)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
         _local.session = s
     return s
 
@@ -137,7 +172,7 @@ def text_contains_word(text, word):
 
 
 # =========================================================
-# TTL CACHE (jedna trieda pre všetky cache)
+# TTL CACHE
 # =========================================================
 
 class TTLCache:
@@ -179,17 +214,80 @@ search_cache = TTLCache(CACHE_TTL, CACHE_MAX_ITEMS)
 suggestion_cache = TTLCache(SUGGESTION_CACHE_TTL, SUGGESTION_CACHE_MAX_ITEMS)
 image_cache = TTLCache(IMAGE_CACHE_TTL, IMAGE_CACHE_MAX_ITEMS)
 
-# Autocomplete katalóg (posledných 500 reálnych kariet)
 SUGGESTION_CATALOG = {}
 _catalog_lock = threading.Lock()
+
+_inflight = {}
+_inflight_lock = threading.Lock()
+
+
+# =========================================================
+# RATE LIMIT
+# =========================================================
+
+class RateLimiter:
+    def __init__(self, limit, window=60):
+        self.limit = limit
+        self.window = window
+        self._hits = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key):
+        now = time.monotonic()
+        with self._lock:
+            q = self._hits.setdefault(key, deque())
+            while q and now - q[0] > self.window:
+                q.popleft()
+            if len(q) >= self.limit:
+                return False
+            q.append(now)
+            if len(self._hits) > 5000:
+                for k in [k for k, v in self._hits.items()
+                          if not v or now - v[-1] > self.window]:
+                    self._hits.pop(k, None)
+            return True
+
+
+search_limiter = RateLimiter(RATE_SEARCH)
+suggest_limiter = RateLimiter(RATE_SUGGEST)
+images_limiter = RateLimiter(RATE_IMAGES)
+
+
+def client_ip():
+    xff = request.headers.get("X-Forwarded-For", "")
+    return (xff.split(",")[0].strip() if xff else "") or request.remote_addr or "?"
+
+
+def too_many():
+    return jsonify({"error": "Príliš veľa požiadaviek. Skús to o chvíľu."}), 429
+
+
+def is_admin():
+    return bool(ADMIN_KEY) and request.args.get("key", "") == ADMIN_KEY
+
+
+def debug_allowed():
+    # bez ADMIN_KEY (lokálny vývoj) sú debug endpointy voľné
+    return not ADMIN_KEY or is_admin()
 
 
 # =========================================================
 # DATABASE
 # =========================================================
 
+def db_connect():
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def prune_history(conn):
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=HISTORY_KEEP_DAYS)).isoformat()
+    conn.execute("DELETE FROM price_history WHERE checked_at < ?", (cutoff,))
+
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS price_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,6 +295,9 @@ def init_db():
             price_eur REAL, link TEXT, checked_at TEXT
         )
     """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_checked ON price_history(checked_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_link ON price_history(link)")
+    prune_history(conn)
     conn.commit()
     conn.close()
 
@@ -204,12 +305,10 @@ def init_db():
 init_db()
 
 
-def save_history(query, results):
-    if not results:
-        return
+def _save_history(query, results):
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn = db_connect()
         now = datetime.now(timezone.utc).isoformat()
         rows = [
             (query, r.get("shop", ""), r.get("title", ""),
@@ -222,6 +321,8 @@ def save_history(query, results):
             "VALUES (?, ?, ?, ?, ?, ?)",
             rows,
         )
+        if random.random() < 0.02:
+            prune_history(conn)
         conn.commit()
     except Exception:
         pass
@@ -230,12 +331,36 @@ def save_history(query, results):
             conn.close()
 
 
+def save_history(query, results):
+    """Zápis do DB beží na pozadí, odpoveď naň nečaká."""
+    if results:
+        BG_EXECUTOR.submit(_save_history, query, copy.deepcopy(results))
+
+
+# =========================================================
+# INDEX.HTML (načítaný raz, znovu len pri zmene súboru)
+# =========================================================
+
+_index_cache = {"path": None, "mtime": None, "html": None}
+
+
 def find_index():
     for sub in ("templates", "Templates", ""):
         path = os.path.join(BASE_DIR, sub, "index.html")
         if os.path.isfile(path):
             return path
     return None
+
+
+def load_index():
+    path = find_index()
+    if not path:
+        return None
+    mtime = os.path.getmtime(path)
+    if _index_cache["path"] != path or _index_cache["mtime"] != mtime:
+        with open(path, "r", encoding="utf-8") as f:
+            _index_cache.update(path=path, mtime=mtime, html=f.read())
+    return _index_cache["html"]
 
 
 # =========================================================
@@ -300,16 +425,27 @@ PRODUCT_PATTERNS = [
     ("tin", r"\btins?\b"),
 ]
 
-_SETS_SORTED = sorted(SET_ALIASES.items(), key=lambda x: len(x[0]), reverse=True)
-_POKEMON_SORTED = sorted(POKEMON_ALIASES.items(), key=lambda x: len(x[0]), reverse=True)
+
+def _compile_aliases(pairs):
+    out = []
+    for alias, canonical in sorted(pairs, key=lambda x: len(x[0]), reverse=True):
+        out.append((re.compile(r"\b" + re.escape(alias.lower()) + r"\b"), canonical))
+    return out
+
+
+# predkompilované regexy = rýchlejšia normalizácia
+_SETS_RE = _compile_aliases(SET_ALIASES.items())
+_KNOWN_SETS_RE = _compile_aliases((c, c) for c in KNOWN_SETS)
+_POKEMON_RE = _compile_aliases(POKEMON_ALIASES.items())
+_PRODUCT_RE = [(c, re.compile(p)) for c, p in PRODUCT_PATTERNS]
+_SUFFIX_RE = re.compile(r"\b(vmax|vstar|ex|gx|v)\b", re.I)
+_CARDNUM_RE = re.compile(r"\b(\d{1,4})\s*/\s*(\d{1,4})\b")
 
 
 def _extract(q, candidates):
-    """Nájde prvý (alias, canonical) v texte, vráti (canonical, q_bez_aliasu)."""
-    for alias, canonical in candidates:
-        pattern = r"\b" + re.escape(alias.lower()) + r"\b"
-        if re.search(pattern, q):
-            return canonical, re.sub(pattern, " ", q)
+    for pattern, canonical in candidates:
+        if pattern.search(q):
+            return canonical, pattern.sub(" ", q)
     return "", q
 
 
@@ -329,31 +465,31 @@ def normalize_query(query):
     q = original.lower()
 
     card_number = ""
-    m = re.search(r"\b(\d{1,4})\s*/\s*(\d{1,4})\b", q)
+    m = _CARDNUM_RE.search(q)
     if m:
         card_number = f"{m.group(1)}/{m.group(2)}"
-        q = re.sub(r"\b\d{1,4}\s*/\s*\d{1,4}\b", " ", q, count=1)
+        q = _CARDNUM_RE.sub(" ", q, count=1)
 
     product_type = ""
-    for canonical, pattern in PRODUCT_PATTERNS:
-        if re.search(pattern, q):
+    for canonical, pattern in _PRODUCT_RE:
+        if pattern.search(q):
             product_type = canonical
-            q = re.sub(pattern, " ", q)
+            q = pattern.sub(" ", q)
             break
 
-    set_name, q = _extract(q, _SETS_SORTED)
+    set_name, q = _extract(q, _SETS_RE)
     if not set_name:
-        set_name, q = _extract(q, [(c, c) for c in KNOWN_SETS])
+        set_name, q = _extract(q, _KNOWN_SETS_RE)
 
-    pokemon, q = _extract(q, _POKEMON_SORTED)
+    pokemon, q = _extract(q, _POKEMON_RE)
 
     suffix = ""
-    m = re.search(r"\b(vmax|vstar|ex|gx|v)\b", q, re.I)
+    m = _SUFFIX_RE.search(q)
     if m:
         suffix = m.group(1).lower()
-        q = re.sub(r"\b(vmax|vstar|ex|gx|v)\b", " ", q, flags=re.I)
+        q = _SUFFIX_RE.sub(" ", q)
 
-    q = clean_text(re.sub(r"\bpokemon\b", " ", q, flags=re.I))
+    q = clean_text(re.sub(r"\bpok[eé]mon\b", " ", q, flags=re.I))
 
     if product_type == "elite trainer box":
         parts = [set_name, pokemon, suffix, card_number, "elite trainer box"]
@@ -410,7 +546,6 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
     if card_number:
         if card_number.replace(" ", "").lower() not in re.sub(r"\s+", "", searchable.lower()):
             return False, "card_number_not_found"
-    # loose_set: obchod v názve nemá set, stačí zhoda čísla karty (napr. 042/128)
     if set_name and not (loose_set and card_number) and not set_matches_text(searchable, set_name):
         return False, "set_not_found"
     if suffix and not text_contains_word(searchable, suffix):
@@ -444,6 +579,8 @@ _EX_VAT = re.compile(
     r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|Kč|CZK))\s*(?:bez\s+DPH|excl\.?\s*VAT)",
     re.I,
 )
+_EUR_RES = [re.compile(r"€\s*" + _NUM), re.compile(_NUM + r"\s*€")]
+_CZK_RES = [re.compile(_NUM + r"\s*(?:Kč|CZK)", re.I), re.compile(r"(?:Kč|CZK)\s*" + _NUM, re.I)]
 
 
 def _to_float(value):
@@ -468,15 +605,15 @@ def parse_price(text):
         return None
     text = _EX_VAT.sub(" ", text)
 
-    for pattern in (r"€\s*" + _NUM, _NUM + r"\s*€"):
-        m = re.search(pattern, text)
+    for pattern in _EUR_RES:
+        m = pattern.search(text)
         if m:
             v = _to_float(m.group(1))
             if v is not None:
                 return v
 
-    for pattern in (_NUM + r"\s*(?:Kč|CZK)", r"(?:Kč|CZK)\s*" + _NUM):
-        m = re.search(pattern, text, re.I)
+    for pattern in _CZK_RES:
+        m = pattern.search(text)
         if m:
             v = _to_float(m.group(1))
             if v is not None:
@@ -485,7 +622,7 @@ def parse_price(text):
 
 
 # =========================================================
-# JAZYK PRODUKTU (JP/KR/CN/ID verzie sa bežne nechcú)
+# JAZYK PRODUKTU
 # =========================================================
 
 LANG_PATTERNS = [
@@ -506,7 +643,7 @@ def detect_language(title):
 
 
 # =========================================================
-# MERCH FILTER (celé slová)
+# MERCH FILTER
 # =========================================================
 
 MERCH_WORDS = [
@@ -520,7 +657,8 @@ MERCH_WORDS = [
     "headphones", "earphones", "hračka", "hracka", "toy", "toys", "lampa",
     "lamp", "fľaša", "flasa", "bottle", "peňaženka", "penezenka", "wallet",
     "puzdro", "pouzdro", "phone case", "mobile case", "čepice", "cepice",
-    "cap", "deka", "blanket", "mystery", "blind box", "toploader", "stojan", "polštář", "polstar", "vankúš", "vankus",
+    "cap", "deka", "blanket", "mystery", "blind box", "toploader", "stojan",
+    "polštář", "polstar", "vankúš", "vankus",
 ]
 MERCH_RE = re.compile(
     r"(?<!\w)(?:" + "|".join(re.escape(w) for w in MERCH_WORDS) + r")(?!\w)",
@@ -541,7 +679,7 @@ def fetch(url, timeout=SEARCH_TIMEOUT):
     debug = {"url": url, "http_status": None, "elapsed_ms": 0,
              "status": "unknown", "error": ""}
     try:
-        resp = get_http_session().get(url, timeout=timeout, allow_redirects=True)
+        resp = get_http_session().get(url, timeout=(3, timeout), allow_redirects=True)
         debug["http_status"] = resp.status_code
         if resp.status_code != 200:
             debug.update(status="http_error", error=f"HTTP {resp.status_code}")
@@ -565,8 +703,16 @@ def absolute_url(base_url, href):
     return urllib.parse.urljoin(base_url, href)
 
 
+def is_allowed_link(url):
+    try:
+        p = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    return p.scheme in ("http", "https") and p.netloc.lower() in ALLOWED_HOSTS
+
+
 # =========================================================
-# CARDYX PARSING
+# PARSING
 # =========================================================
 
 IMG_ATTRS = ["src", "data-src", "data-lazy-src", "data-original",
@@ -574,7 +720,6 @@ IMG_ATTRS = ["src", "data-src", "data-lazy-src", "data-original",
 
 
 def img_url(image, base_url):
-    """Najlepšia URL obrázka z <img> (src atribúty, potom srcset)."""
     for attr in IMG_ATTRS:
         value = clean_text(image.get(attr, ""))
         if value and not value.startswith("data:image/"):
@@ -600,7 +745,7 @@ def img_url(image, base_url):
     return ""
 
 
-def cardyx_extract_title(anchor):
+def extract_title(anchor):
     title = clean_text(anchor.get_text(" ", strip=True))
     if title:
         return title
@@ -617,7 +762,7 @@ def cardyx_extract_title(anchor):
     return ""
 
 
-def cardyx_extract_image(anchor, base_url="https://www.cardyx.sk/"):
+def extract_image(anchor, base_url):
     image = anchor.find("img")
     current = anchor
     for _ in range(3):
@@ -630,7 +775,7 @@ def cardyx_extract_image(anchor, base_url="https://www.cardyx.sk/"):
     return img_url(image, base_url) if image is not None else ""
 
 
-def cardyx_extract_product_page_image(soup, product_url):
+def extract_product_page_image(soup, product_url):
     for selector in ('meta[property="og:image"]', 'meta[property="og:image:url"]',
                      'meta[name="og:image"]', 'meta[name="twitter:image"]',
                      'meta[property="twitter:image"]'):
@@ -643,7 +788,6 @@ def cardyx_extract_product_page_image(soup, product_url):
                     return absolute
 
     markers = ("product", "produkt", "gallery", "main-image", "main image", "woocommerce")
-    images = soup.find_all("img")
 
     def priority(img):
         marker = " ".join([
@@ -653,14 +797,19 @@ def cardyx_extract_product_page_image(soup, product_url):
         ]).lower()
         return 0 if any(t in marker for t in markers) else 1
 
-    for img in sorted(images, key=priority):
+    for img in sorted(soup.find_all("img"), key=priority):
         url = img_url(img, product_url)
         if url:
             return url
     return ""
 
 
-def cardyx_fetch_product_image(product_url):
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\'](?:og:image(?::url)?|twitter:image)["\'][^>]*>', re.I)
+_CONTENT_RE = re.compile(r'content=["\']([^"\']+)["\']', re.I)
+
+
+def fetch_product_image(product_url):
     product_url = clean_text(product_url)
     if not product_url:
         return ""
@@ -671,44 +820,32 @@ def cardyx_fetch_product_image(product_url):
     try:
         resp, _ = fetch(product_url, timeout=IMAGE_FETCH_TIMEOUT)
         if resp:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            image_url = cardyx_extract_product_page_image(soup, product_url)
+            html = resp.text
+            # rýchla cesta: og:image regexom, bez parsovania celej stránky
+            m = _OG_IMAGE_RE.search(html)
+            if m:
+                c = _CONTENT_RE.search(m.group(0))
+                if c and not c.group(1).startswith("data:image/"):
+                    image_url = absolute_url(product_url, c.group(1))
+            if not image_url:
+                soup = BeautifulSoup(html, HTML_PARSER)
+                image_url = extract_product_page_image(soup, product_url)
     except Exception:
         pass
     image_cache.set(product_url, image_url)
     return image_url
 
 
-def cardyx_enrich_missing_images(results, debug=None):
-    missing = [r for r in results
-               if not clean_text(r.get("image", "")) and clean_text(r.get("link", ""))]
-    if not missing:
-        return results
-
-    found = 0
-    ex = ThreadPoolExecutor(max_workers=IMAGE_FETCH_WORKERS)
-    try:
-        futures = {ex.submit(cardyx_fetch_product_image, r["link"]): r
-                   for r in missing[:IMAGE_ENRICH_MAX]}
-        for fut in as_completed(futures, timeout=IMAGE_ENRICH_BUDGET):
-            try:
-                url = fut.result()
-            except Exception:
-                url = ""
-            futures[fut]["image"] = url
-            found += bool(url)
-    except Exception:
-        pass  # časový limit: zvyšok sa dotiahne na pozadí do image_cache
-    finally:
-        ex.shutdown(wait=False, cancel_futures=True)
-
-    if debug is not None:
-        debug["image_fallback_candidates"] = len(missing)
-        debug["image_fallback_found"] = found
+def fill_images_from_cache(results):
+    for r in results:
+        if not clean_text(r.get("image", "")) and r.get("link"):
+            cached = image_cache.get(r["link"])
+            if cached:
+                r["image"] = cached
     return results
 
 
-def cardyx_find_product_block(anchor):
+def find_product_block(anchor):
     current, best = anchor, ""
     for level in range(1, 7):
         current = current.parent
@@ -725,7 +862,7 @@ def cardyx_find_product_block(anchor):
 
 
 # =========================================================
-# CARDYX SEARCH
+# SHOP SEARCH
 # =========================================================
 
 def _log(debug, **entry):
@@ -733,31 +870,19 @@ def _log(debug, **entry):
         debug["sample_decisions"].append(entry)
 
 
-def shop_search(shop, query, return_debug=False, enrich_images=True,
-                cache_result=True, timeout=None):
+CACHEABLE_STATUSES = ("ok", "no_results")
+
+
+def _scrape(shop, query, timeout):
     start = time.monotonic()
-    cache_key = shop["name"].lower() + "|" + clean_text(query).lower()
-    timeout = timeout or SEARCH_TIMEOUT
-
-    def finish(results, debug):
-        debug["elapsed_ms"] = round((time.monotonic() - start) * 1000)
-        return (results, debug) if return_debug else results
-
-    # Cache hit (autocomplete môže použiť aj plné výsledky)
-    cached = search_cache.get(cache_key)
-    if cached is not None:
-        cached["debug"]["cache"] = "hit"
-        add_suggestions_from_results(cached["results"])
-        return finish(cached["results"], cached["debug"])
-
     results = []
     debug = {
         "shop": shop["name"], "query": query, "url": "", "status": "starting",
         "http_status": None, "results": 0, "links_scanned": 0, "unique_links": 0,
-        "price_found": 0, "merch_filtered": 0, "match_filtered": 0, "accepted": 0,
-        "images_found": 0, "images_missing": 0, "image_fallback_candidates": 0,
-        "image_fallback_found": 0, "image_fallback_skipped": not enrich_images,
-        "elapsed_ms": 0, "cache": "miss", "error": "", "sample_decisions": [],
+        "price_found": 0, "merch_filtered": 0, "match_filtered": 0,
+        "language_filtered": 0, "accepted": 0, "images_found": 0,
+        "images_missing": 0, "elapsed_ms": 0, "cache": "miss", "error": "",
+        "sample_decisions": [],
     }
 
     try:
@@ -769,14 +894,16 @@ def shop_search(shop, query, return_debug=False, enrich_images=True,
         if not response:
             debug["status"] = http_debug.get("status", "http_error")
             debug["error"] = http_debug.get("error", "")
-            return finish(results, debug)
+            debug["elapsed_ms"] = round((time.monotonic() - start) * 1000)
+            return results, debug
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(response.text, HTML_PARSER)
         links = soup.select(shop["link_selector"])
         debug["links_scanned"] = len(links)
 
         parsed = normalize_query(query)
         kind = classify_query(parsed)
+        foreign_ok = FOREIGN_QUERY_RE.search(query) is not None
         seen = set()
 
         for anchor in links:
@@ -788,33 +915,24 @@ def shop_search(shop, query, return_debug=False, enrich_images=True,
                 continue
             seen.add(key)
 
-            title = cardyx_extract_title(anchor)
+            title = extract_title(anchor)
             if not title:
                 _log(debug, title="", decision="filtered", reason="no_title")
                 continue
 
-            block_text = cardyx_find_product_block(anchor)
-            price = parse_price(block_text)
-            if price is None and anchor.parent:
-                price = parse_price(anchor.parent.get_text(" ", strip=True))
-            if price is None:
-                _log(debug, title=title, decision="filtered", reason="no_price")
-                continue
-            if price <= 0:
-                _log(debug, title=title, decision="filtered", reason="zero_price")
-                continue
-            debug["price_found"] += 1
-
+            # lacné filtre najprv (pred hľadaním ceny v DOM)
             if is_merch(title):
                 debug["merch_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason="merch")
                 continue
 
             lang = detect_language(title)
-            if lang and not FOREIGN_QUERY_RE.search(query):
-                debug["language_filtered"] = debug.get("language_filtered", 0) + 1
+            if lang and not foreign_ok:
+                debug["language_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason="language_" + lang)
                 continue
+
+            block_text = find_product_block(anchor)
 
             if kind == "card":
                 matched, reason = card_matches_query(
@@ -826,7 +944,18 @@ def shop_search(shop, query, return_debug=False, enrich_images=True,
                 _log(debug, title=title, decision="filtered", reason=reason)
                 continue
 
-            image_url = cardyx_extract_image(anchor, shop["base_url"])
+            price = parse_price(block_text)
+            if price is None and anchor.parent:
+                price = parse_price(anchor.parent.get_text(" ", strip=True))
+            if price is None:
+                _log(debug, title=title, decision="filtered", reason="no_price")
+                continue
+            if price <= 0:
+                _log(debug, title=title, decision="filtered", reason="zero_price")
+                continue
+            debug["price_found"] += 1
+
+            image_url = extract_image(anchor, shop["base_url"])
             results.append({
                 "title": title, "shop": shop["name"], "country": shop["country"],
                 "condition": "Nové", "language": lang, "price_eur": round(price, 2),
@@ -837,10 +966,7 @@ def shop_search(shop, query, return_debug=False, enrich_images=True,
                  image=bool(image_url), decision="accepted", reason=reason)
 
         debug["unique_links"] = len(seen)
-
-        if enrich_images:
-            cardyx_enrich_missing_images(results, debug)
-
+        fill_images_from_cache(results)
         debug["images_found"] = sum(1 for r in results if clean_text(r.get("image", "")))
         debug["images_missing"] = len(results) - debug["images_found"]
 
@@ -853,13 +979,57 @@ def shop_search(shop, query, return_debug=False, enrich_images=True,
         debug["error"] = str(e)
 
     debug["elapsed_ms"] = round((time.monotonic() - start) * 1000)
+    return results, debug
 
-    # Do hlavnej cache len plné výsledky (s obrázkami)
-    if cache_result and enrich_images:
-        search_cache.set(cache_key, {"results": results, "debug": debug})
 
-    add_suggestions_from_results(results)
-    return (results, debug) if return_debug else results
+def _from_cache(cache_key):
+    cached = search_cache.get(cache_key)
+    if cached is None:
+        return None
+    cached["debug"]["cache"] = "hit"
+    fill_images_from_cache(cached["results"])
+    return cached["results"], cached["debug"]
+
+
+def shop_search(shop, query, return_debug=False, cache_result=True, timeout=None):
+    start = time.monotonic()
+    cache_key = shop["name"].lower() + "|" + clean_text(query).lower()
+    timeout = timeout or SEARCH_TIMEOUT
+
+    def finish(results, debug):
+        debug["elapsed_ms"] = round((time.monotonic() - start) * 1000)
+        add_suggestions_from_results(results)
+        return (results, debug) if return_debug else results
+
+    hit = _from_cache(cache_key)
+    if hit:
+        return finish(*hit)
+
+    # single-flight: ak to isté práve hľadá iné vlákno, počkáme na jeho výsledok
+    owner = False
+    if cache_result:
+        with _inflight_lock:
+            event = _inflight.get(cache_key)
+            if event is None:
+                event = _inflight[cache_key] = threading.Event()
+                owner = True
+        if not owner:
+            event.wait(timeout + 3)
+            hit = _from_cache(cache_key)
+            if hit:
+                return finish(*hit)
+
+    try:
+        results, debug = _scrape(shop, query, timeout)
+        if cache_result and debug["status"] in CACHEABLE_STATUSES:
+            search_cache.set(cache_key, {"results": results, "debug": debug})
+    finally:
+        if owner:
+            with _inflight_lock:
+                _inflight.pop(cache_key, None)
+            event.set()
+
+    return finish(results, debug)
 
 
 # =========================================================
@@ -867,31 +1037,32 @@ def shop_search(shop, query, return_debug=False, enrich_images=True,
 # =========================================================
 
 def search_all(query, return_debug=False):
-    """Hľadá vo všetkých aktívnych obchodoch paralelne."""
     diagnostics, results = [], []
 
     def run(shop):
         start = time.monotonic()
         try:
-            res, dbg = shop_search(shop, query, return_debug=True,
-                                   enrich_images=True, cache_result=True)
+            res, dbg = shop_search(shop, query, return_debug=True, cache_result=True)
         except Exception as e:
             res, dbg = [], {"shop": shop["name"], "query": query,
                             "status": "runner_error", "results": 0, "error": str(e)}
         dbg["elapsed_ms"] = round((time.monotonic() - start) * 1000)
         return res, dbg
 
-    if ACTIVE_SHOPS:
-        with ThreadPoolExecutor(max_workers=len(ACTIVE_SHOPS)) as ex:
-            for res, dbg in ex.map(run, ACTIVE_SHOPS):
-                results.extend(res)
-                diagnostics.append(dbg)
+    futures = [SHOP_EXECUTOR.submit(run, s) for s in ACTIVE_SHOPS]
+    for shop, fut in zip(ACTIVE_SHOPS, futures):
+        try:
+            res, dbg = fut.result(timeout=SEARCH_TIMEOUT + 6)
+        except Exception as e:
+            res, dbg = [], {"shop": shop["name"], "query": query,
+                            "status": "timeout", "results": 0, "error": str(e)}
+        results.extend(res)
+        diagnostics.append(dbg)
 
     unique = {}
     for r in results:
         key = (clean_text(r.get("shop", "")).lower(),
-               clean_text(r.get("title", "")).lower(),
-               clean_text(r.get("link", "")).lower())
+               clean_text(r.get("link", "")).lower().rstrip("/"))
         unique[key] = r
     results = sorted(unique.values(), key=lambda r: float(r.get("price_eur", 999999)))
 
@@ -909,6 +1080,17 @@ def build_summary(results):
         "lowest_eur": round(min(prices), 2),
         "average_eur": round(sum(prices) / len(prices), 2),
     }
+
+
+def shops_status(debug):
+    return [{
+        "name": d.get("shop", ""),
+        "status": d.get("status", ""),
+        "ok": d.get("status") in CACHEABLE_STATUSES,
+        "results": d.get("results", 0),
+        "elapsed_ms": d.get("elapsed_ms", 0),
+        "cache": d.get("cache", ""),
+    } for d in debug.get("shops", [])]
 
 
 # =========================================================
@@ -938,6 +1120,7 @@ def make_suggestion_from_title(title):
 
 def suggestions_from_results(results):
     out = {}
+    score = lambda x: bool(x["image"]) + (x["price_eur"] is not None)
     for r in results or []:
         s = make_suggestion_from_title(r.get("title", ""))
         if not s:
@@ -954,7 +1137,6 @@ def suggestions_from_results(results):
         if not key:
             continue
         old = out.get(key)
-        score = lambda x: bool(x["image"]) + (x["price_eur"] is not None)
         if old is None or score(s) > score(old):
             out[key] = s
     return list(out.values())
@@ -967,7 +1149,7 @@ def add_suggestions_from_results(results):
     with _catalog_lock:
         for s in items:
             key = clean_text(s["query"]).lower()
-            SUGGESTION_CATALOG.pop(key, None)  # presun na koniec
+            SUGGESTION_CATALOG.pop(key, None)
             SUGGESTION_CATALOG[key] = s
         while len(SUGGESTION_CATALOG) > 500:
             SUGGESTION_CATALOG.pop(next(iter(SUGGESTION_CATALOG)))
@@ -997,6 +1179,8 @@ def api_suggestions():
     q = clean_text(request.args.get("q", ""))
     if len(q) < 2:
         return jsonify({"query": q, "normalized_query": "", "suggestions": []})
+    if not suggest_limiter.allow(client_ip()):
+        return too_many()
 
     normalized = normalize_query(q).get("normalized", "")
 
@@ -1016,10 +1200,10 @@ def api_suggestions():
     ]
 
     remote_used = False
-    if len(candidates) < MIN_LOCAL_SUGGESTIONS:
+    if len(candidates) < MIN_LOCAL_SUGGESTIONS and ACTIVE_SHOPS:
         remote_used = True
-        remote = shop_search(ACTIVE_SHOPS[0], q, return_debug=False, enrich_images=False,
-                             cache_result=False, timeout=SUGGESTION_TIMEOUT) if ACTIVE_SHOPS else []
+        remote = shop_search(ACTIVE_SHOPS[0], q, return_debug=False,
+                             cache_result=True, timeout=SUGGESTION_TIMEOUT)
         known = {clean_text(c.get("query", "")).lower() for c in candidates}
         for s in suggestions_from_results(remote):
             if clean_text(s["query"]).lower() not in known:
@@ -1052,12 +1236,24 @@ def api_suggestions():
     suggestion_cache.set(q.lower(), output)
     return jsonify({"query": q, "normalized_query": normalized,
                     "suggestions": output,
-                    "source": "cardyx" if remote_used else "catalog"})
+                    "source": "remote" if remote_used else "catalog"})
 
 
 # =========================================================
 # API
 # =========================================================
+
+@app.get("/api/config")
+def api_config():
+    resp = jsonify({
+        "version": VERSION,
+        "czk_per_eur": CZK_PER_EUR,
+        "shops": [{"name": s["name"], "country": s["country"], "url": s["base_url"]}
+                  for s in ACTIVE_SHOPS],
+    })
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
 
 @app.get("/api/parse")
 def api_parse():
@@ -1068,9 +1264,11 @@ def api_parse():
 
 @app.get("/api/search")
 def api_search():
-    original = clean_text(request.args.get("q", ""))
+    original = clean_text(request.args.get("q", ""))[:150]
     if not original:
-        return jsonify({"error": "Chýba vyhľadávanie."}), 400
+        return jsonify({"error": "Zadaj, čo chceš hľadať."}), 400
+    if not search_limiter.allow(client_ip()):
+        return too_many()
 
     parsed = normalize_query(original)
     normalized = parsed.get("normalized", original)
@@ -1083,15 +1281,56 @@ def api_search():
     elif parsed.get("pokemon"):
         info["subtitle"] = "Pokémon: " + parsed["pokemon"]
 
-    return jsonify({
+    payload = {
         "query": original, "normalized_query": normalized, "parsed": parsed,
         "results": results, "summary": build_summary(results),
-        "czk_per_eur": CZK_PER_EUR, "info": info, "debug": debug,
-    })
+        "czk_per_eur": CZK_PER_EUR, "info": info, "shops": shops_status(debug),
+    }
+    if is_admin():
+        payload["debug"] = debug
+    return jsonify(payload)
+
+
+@app.post("/api/images")
+def api_images():
+    """Dotiahne obrázky z produktových stránok: {"links": [...]} -> {"images": {link: url}}"""
+    if not images_limiter.allow(client_ip()):
+        return too_many()
+    data = request.get_json(silent=True) or {}
+    raw = data.get("links") or []
+    if not isinstance(raw, list):
+        return jsonify({"error": "links musí byť zoznam"}), 400
+
+    links = list(dict.fromkeys(
+        clean_text(l) for l in raw[:IMAGE_BATCH_MAX]
+        if isinstance(l, str) and is_allowed_link(clean_text(l))
+    ))
+
+    out, pending = {}, {}
+    for link in links:
+        cached = image_cache.get(link)
+        if cached is not None:
+            out[link] = cached
+        else:
+            pending[IMAGE_EXECUTOR.submit(fetch_product_image, link)] = link
+
+    if pending:
+        try:
+            for fut in as_completed(pending, timeout=IMAGE_BATCH_BUDGET):
+                try:
+                    out[pending[fut]] = fut.result()
+                except Exception:
+                    out[pending[fut]] = ""
+        except Exception:
+            pass  # časový limit; zvyšok dobehne na pozadí do image_cache
+
+    return jsonify({"images": out})
 
 
 @app.get("/api/debug/search")
 def api_debug_search():
+    if not debug_allowed():
+        return jsonify({"error": "Nepovolené."}), 403
     original = clean_text(request.args.get("q", ""))
     if not original:
         return jsonify({"error": "Chýba vyhľadávanie."}), 400
@@ -1105,6 +1344,8 @@ def api_debug_search():
 @app.get("/api/debug/shop")
 def api_debug_shop():
     """Test jedného obchodu (aj vypnutého): /api/debug/shop?name=CardyX&q=pikachu"""
+    if not debug_allowed():
+        return jsonify({"error": "Nepovolené."}), 403
     name = clean_text(request.args.get("name", "")).lower()
     q = clean_text(request.args.get("q", ""))
     shop = next((x for x in SHOPS if x["name"].lower() == name), None)
@@ -1112,21 +1353,22 @@ def api_debug_shop():
         return jsonify({"error": "Zadaj ?name=<obchod>&q=<hľadaný text>",
                         "shops": [x["name"] for x in SHOPS]}), 400
     normalized = normalize_query(q).get("normalized", q)
-    results, debug = shop_search(shop, normalized, return_debug=True,
-                                 enrich_images=False, cache_result=False)
+    results, debug = shop_search(shop, normalized, return_debug=True, cache_result=False)
     return jsonify({"shop": shop["name"], "normalized_query": normalized,
                     "debug": debug, "results": results})
 
 
 @app.get("/api/debug/cache")
 def api_debug_cache():
+    if not debug_allowed():
+        return jsonify({"error": "Nepovolené."}), 403
     s_items, s_active = search_cache.stats()
     sg_items, _ = suggestion_cache.stats()
     i_items, i_active = image_cache.stats()
     with _catalog_lock:
         catalog_items = len(SUGGESTION_CATALOG)
     return jsonify({
-        "status": "ok", "version": VERSION,
+        "status": "ok", "version": VERSION, "html_parser": HTML_PARSER,
         "cache_items": s_items, "active": s_active, "expired": s_items - s_active,
         "suggestion_cache_items": sg_items,
         "suggestion_catalog_items": catalog_items,
@@ -1136,7 +1378,7 @@ def api_debug_cache():
 
 @app.get("/api/debug/cache/clear")
 def api_debug_cache_clear():
-    if not ADMIN_KEY or request.args.get("key", "") != ADMIN_KEY:
+    if not is_admin():
         return jsonify({"error": "Nepovolené."}), 403
     search_cache.clear()
     suggestion_cache.clear()
@@ -1148,12 +1390,12 @@ def api_debug_cache_clear():
 
 @app.get("/health")
 def health():
-    index_path = find_index()
     with _catalog_lock:
         catalog_items = len(SUGGESTION_CATALOG)
     return jsonify({
         "service": "CardRadar", "status": "ok", "version": VERSION,
-        "index_exists": bool(index_path), "active_shops": [f"{x['name']} ({x['country']})" for x in ACTIVE_SHOPS],
+        "index_exists": bool(find_index()), "html_parser": HTML_PARSER,
+        "active_shops": [f"{x['name']} ({x['country']})" for x in ACTIVE_SHOPS],
         "suggestion_catalog_items": catalog_items,
         "image_cache_items": image_cache.stats()[0],
     })
@@ -1161,17 +1403,41 @@ def health():
 
 @app.get("/")
 def home():
-    index_path = find_index()
-    if not index_path:
-        return Response("<h1>CardRadar</h1><p>index.html nebol nájdený.</p>",
-                        status=500, mimetype="text/html")
     try:
-        with open(index_path, "r", encoding="utf-8") as f:
-            return Response(f.read(), mimetype="text/html")
+        html = load_index()
     except Exception as e:
         return Response(f"<h1>CardRadar</h1><p>Chyba pri načítaní stránky.</p><pre>{e}</pre>",
                         status=500, mimetype="text/html")
+    if html is None:
+        return Response("<h1>CardRadar</h1><p>index.html nebol nájdený.</p>",
+                        status=500, mimetype="text/html")
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+# =========================================================
+# GZIP + BEZPEČNOSTNÉ HLAVIČKY
+# =========================================================
+
+@app.after_request
+def finalize(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+
+    if (resp.status_code != 200 or resp.direct_passthrough
+            or "Content-Encoding" in resp.headers
+            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()
+            or resp.mimetype not in ("application/json", "text/html")):
+        return resp
+    data = resp.get_data()
+    if len(data) < 1024:
+        return resp
+    resp.set_data(gzip.compress(data, compresslevel=5))
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers.add("Vary", "Accept-Encoding")
+    return resp
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")), threaded=True)
