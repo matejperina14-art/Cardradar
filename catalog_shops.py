@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.4
+CARD RADAR – rozšírenia 6.5
+ - 6.5: kontrola pred spustením na /admin/test?key=ADMIN_KEY
  - 6.4: katalógy sa po reštarte servera načítajú hneď a postupne
 ===========================
  - 6.3: rýchlejšie opakované hľadanie, správna cena pri zľavách, bezpečnostné opravy
@@ -925,6 +926,140 @@ def _install_fixes(g):
         app.view_functions["alerts_confirm"] = alerts_confirm
     if "manifest" in app.view_functions:
         app.view_functions["manifest"] = manifest
+    app.add_url_rule("/admin/test", "admin_test", admin_test)
+
+
+# =========================================================
+# KONTROLA PRED SPUSTENÍM (6.5): /admin/test?key=ADMIN_KEY
+# Prejde typické hľadania vo všetkých obchodoch a ukáže, čo nesedí.
+# =========================================================
+
+SELFTEST_QUERIES = [
+    "pitch black booster box", "pitch black etb", "chaos rising etb",
+    "destined rivals etb", "destined rivals booster box", "prismatic evolutions etb",
+    "surging sparks booster bundle", "151 etb", "ascended heroes etb",
+    "charizard ex", "pikachu ex", "umbreon vmax",
+]
+
+
+def _cat(t):
+    t = t or ""
+    if re.search(r"elite\s+trainer\s+box|\betb\b", t, re.I):
+        return "etb"
+    if re.search(r"booster\s*(?:box|display)", t, re.I):
+        return "box"
+    if re.search(r"booster|bundle|collection|kolekci|\btins?\b|blister|battle\s+deck|premium|display", t, re.I):
+        return "other"
+    return "card"
+
+
+def _check_query(q):
+    g = G
+    parsed = g["normalize_query"](q)
+    norm = parsed.get("normalized") or q
+    t0 = time.monotonic()
+    results, debug = g["search_all"](norm, return_debug=True)
+    ms = round((time.monotonic() - t0) * 1000)
+    set_name, ptype = parsed.get("set_name"), parsed.get("product_type")
+    want_cat = {"elite trainer box": "etb", "booster box": "box"}.get(ptype)
+    issues, merge = [], {}
+    for r in results:
+        t, p = r.get("title", ""), r.get("price_eur") or 0
+        c = _cat(t)
+        asia = r.get("language") in g["ASIAN_LANGS"]
+        why = []
+        if p <= 0 or p > 3000:
+            why.append("nezmyselná cena")
+        if c == "etb" and p < 30 and not asia:
+            why.append("ETB pod 30 €")
+        if c == "box" and p < 70 and not asia:
+            why.append("booster box pod 70 €")
+        if c == "box" and p > 700:
+            why.append("booster box nad 700 €")
+        if set_name and not g["set_matches_text"](t, set_name):
+            why.append("iný set")
+        if want_cat and c != want_cat:
+            why.append("iný typ produktu")
+        if not r.get("image"):
+            why.append("bez obrázka")
+        if not r.get("stock"):
+            why.append("sklad neuvedený")
+        if why:
+            issues.append({"shop": r.get("shop"), "title": t, "price": p, "why": why})
+        if c != "card":
+            pp = g["normalize_query"](t)
+            k = (pp.get("set_name") or "", c, (pp.get("pokemon") or "").lower(), r.get("language") or "EN")
+            merge.setdefault(k, []).append(r)
+    missed = []
+    for k, rs in merge.items():
+        if k[0] and len({r.get("shop") for r in rs}) > 1 and len({r.get("group") for r in rs}) > 1:
+            missed.append([f"{r.get('shop')}: {r.get('title')}" for r in rs])
+    return {"query": q, "normalized": norm, "ms": ms, "results": len(results),
+            "shops": debug.get("shops", []), "issues": issues, "missed_merges": missed}
+
+
+def _selftest_html(report):
+    e = _html.escape
+    shops = {}
+    for qr in report:
+        for d in qr["shops"]:
+            s = shops.setdefault(d.get("shop", "?"), {"ok": 0, "n": 0, "res": 0, "ms": 0, "errs": set()})
+            s["n"] += 1
+            s["ms"] += d.get("elapsed_ms", 0) or 0
+            s["res"] += d.get("results", 0) or 0
+            if d.get("status") in G["CACHEABLE_STATUSES"]:
+                s["ok"] += 1
+            else:
+                s["errs"].add(str(d.get("status")))
+    total_issue_types = {}
+    for qr in report:
+        for it in qr["issues"]:
+            for w in it["why"]:
+                total_issue_types[w] = total_issue_types.get(w, 0) + 1
+
+    rows = "".join(
+        f"<tr><td>{e(n)}</td><td class='{'g' if s['ok'] == s['n'] else 'r'}'>{s['ok']}/{s['n']}</td>"
+        f"<td>{s['res']}</td><td>{round(s['ms'] / max(1, s['n']))} ms</td><td>{e(', '.join(sorted(s['errs'])))}</td></tr>"
+        for n, s in shops.items())
+    kinds = "".join(f"<li><b>{e(k)}</b>: {v}×</li>" for k, v in
+                    sorted(total_issue_types.items(), key=lambda x: -x[1])) or "<li>Nič 🎉</li>"
+    blocks = ""
+    for qr in report:
+        serious = [i for i in qr["issues"] if set(i["why"]) - {"bez obrázka", "sklad neuvedený"}]
+        lines = "".join(
+            f"<li><b>{e(i['shop'])}</b> · {e(i['title'])} · {i['price']:.2f} € "
+            f"<span class='w'>{e(', '.join(i['why']))}</span></li>" for i in serious[:15])
+        miss = "".join(f"<li>{'<br>'.join(e(x) for x in m)}</li>" for m in qr["missed_merges"][:6])
+        blocks += (f"<details{' open' if serious or miss else ''}><summary><b>{e(qr['query'])}</b> · "
+                   f"{qr['results']} ponúk · {qr['ms']} ms · "
+                   f"{len(serious)} problémov{' · ' + str(len(qr['missed_merges'])) + ' nespojených' if miss else ''}"
+                   f"</summary>{'<p>Podozrivé:</p><ul>' + lines + '</ul>' if lines else ''}"
+                   f"{'<p>Rovnaký produkt v rôznych obchodoch, ale nespojený:</p><ul>' + miss + '</ul>' if miss else ''}"
+                   f"{'' if lines or miss else '<p class=g>Bez problémov.</p>'}</details>")
+    return f"""<!doctype html><html lang="sk"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kontrola CardRadar</title>
+<style>body{{margin:0;background:#0d1530;color:#e2e8f0;font:14px/1.5 -apple-system,Segoe UI,sans-serif}}
+main{{max-width:900px;margin:0 auto;padding:18px 14px 60px}}h1{{color:#ffd23f;font-size:1.4rem}}
+table{{width:100%;border-collapse:collapse;margin:8px 0 18px}}td,th{{padding:7px 6px;border-bottom:1px solid #2c3b6e;text-align:left}}
+.g{{color:#4ade80}}.r{{color:#ff4d5e}}.w{{color:#fbbf24}}details{{background:#141f44;border:1px solid #2c3b6e;border-radius:12px;padding:10px 12px;margin:8px 0}}
+summary{{cursor:pointer}}ul{{padding-left:18px;margin:6px 0}}li{{margin:4px 0}}.wrap{{overflow-x:auto}}</style>
+<main><h1>Kontrola pred spustením</h1>
+<p>{len(report)} testovacích hľadaní vo všetkých zapnutých obchodoch.</p>
+<h2>Obchody</h2><div class="wrap"><table><tr><th>Obchod</th><th>Odpovedal</th><th>Ponúk</th><th>Čas</th><th>Chyby</th></tr>{rows}</table></div>
+<h2>Typy problémov</h2><ul>{kinds}</ul>
+<h2>Hľadania</h2>{blocks}</main>"""
+
+
+def admin_test():
+    from flask import Response, jsonify, request
+    if not G["debug_allowed"]():
+        return jsonify({"error": "Nepovolené. Pridaj ?key=ADMIN_KEY"}), 403
+    queries = [q for q in request.args.get("q", "").split(",") if q.strip()] or SELFTEST_QUERIES
+    with _TPE(max_workers=3) as ex:
+        report = list(ex.map(_check_query, queries[:20]))
+    if request.args.get("format") == "json":
+        return jsonify(report)
+    return Response(_selftest_html(report), mimetype="text/html")
 
 
 # =========================================================
