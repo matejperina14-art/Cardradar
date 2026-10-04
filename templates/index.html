@@ -8,15 +8,67 @@
 <meta name="theme-color" content="#090d16">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 <link rel="preconnect" href="https://www.cardyx.sk" crossorigin>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#090d16;--panel:#1e293b;--input:#0f172a;--text:#f8fafc;--sub:#94a3b8;--border:#334155;--accent:#facc15;--green:#4ade80;--blue:#2563eb;--warn:#fbbf24}
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%;background:#090d16}
-body{margin:0;padding:22px 14px;min-height:100vh;background:linear-gradient(135deg,#090d16,#0f172a,#172033) fixed;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
-.wrap{max-width:1000px;width:100%;margin:0 auto;flex:1}
-h1{text-align:center;color:var(--accent);font-size:2.3rem;margin:10px 0 4px;letter-spacing:-.02em}
-h1 a{color:inherit;text-decoration:none}
-.sub{text-align:center;color:var(--sub);margin-bottom:22px}
+html{-webkit-text-size-adjust:100%;background:radial-gradient(ellipse at 50% 45%,#13203a 0%,#0b1324 45%,#070b14 100%) fixed #070b14}
+body{margin:0;padding:22px 14px;min-height:100vh;background:transparent;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
+.wrap{max-width:1200px;width:100%;margin:0 auto;flex:1}
+
+/* pozadie: radar + karty */
+.bg{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none}
+.bg svg{position:absolute;left:50%;top:50%;width:1400px;height:1400px;transform:translate(-50%,-50%)}
+.sweep{position:absolute;left:50%;top:50%;width:1040px;height:1040px;margin:-520px 0 0 -520px;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(250,204,21,.13),rgba(250,204,21,.03) 40deg,transparent 70deg);animation:spin 9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.bg .ring{fill:none;stroke:rgba(148,163,184,.16);stroke-width:1.5}
+.bg .ring.d{stroke-dasharray:4 10}
+.bg .axis{stroke:rgba(148,163,184,.10);stroke-width:1}
+.bg .fl{animation:float 7s ease-in-out infinite}
+.bg .fl:nth-child(2n){animation-duration:9s;animation-delay:-3s}
+.bg .fl:nth-child(3n){animation-duration:11s;animation-delay:-5s}
+@keyframes float{50%{transform:translateY(-14px)}}
+.bg .blip{fill:#facc15;animation:blip 3s ease-out infinite;transform-box:fill-box;transform-origin:center}
+.bg .blip:nth-of-type(2n){animation-delay:-1s}.bg .blip:nth-of-type(3n){animation-delay:-2s}
+@keyframes blip{0%{opacity:0;transform:scale(.4)}15%{opacity:.9;transform:scale(1)}100%{opacity:0;transform:scale(1.8)}}
+
+/* hlavička */
+.hero{text-align:center;margin:8px 0 22px}
+.kicker{font-family:"Bungee",Impact,"Arial Black",sans-serif;font-size:clamp(1rem,3.4vw,1.35rem);letter-spacing:.32em;color:#fde68a;opacity:.9;margin-left:.32em}
+h1{font-family:"Bungee",Impact,"Arial Black",sans-serif;font-weight:400;font-size:clamp(2.6rem,9vw,4.6rem);line-height:1;margin:6px 0 10px;letter-spacing:.01em}
+h1 a{text-decoration:none;background:linear-gradient(180deg,#fff4b0 0%,#facc15 45%,#f59e0b 100%);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 4px 0 #7c2d12) drop-shadow(0 10px 18px rgba(250,204,21,.25))}
+.sub{text-align:center;color:var(--sub);margin:0}
+.search-wrap,.chips{max-width:760px;margin-left:auto;margin-right:auto}
+.hero~.chips{justify-content:center}
+.cat-bar{display:none}
+
+/* rozloženie: panel + výsledky */
+.layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:20px;margin-top:22px;align-items:start}
+.side{position:sticky;top:14px;background:#0f172ae6;border:1px solid var(--border);border-radius:16px;padding:14px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);max-height:calc(100vh - 28px);overflow-y:auto}
+.side-head{display:none}
+.side h3{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--sub);margin:4px 4px 8px;font-weight:700}
+.side-sec+.side-sec{margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
+.cat{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 10px;margin:2px 0;border:1px solid transparent;background:none;border-radius:10px;font-size:14px}
+.cat:hover{background:#1e293b}
+.cat.on{background:var(--accent);color:#111827;font-weight:800}
+.cat .ic{width:22px;text-align:center}
+.cat .n,.shop .n{margin-left:auto;font-size:12px;opacity:.75}
+.shop{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;cursor:pointer;font-size:14px}
+.shop:hover{background:#1e293b}
+.shop input{width:16px;height:16px;accent-color:var(--accent);margin:0}
+.shop .dot{width:8px;height:8px;border-radius:50%;background:#475569;flex:none}
+.shop .dot.ok{background:var(--green)}.shop .dot.bad{background:#fb7185}
+.shop .cc{font-size:10px;color:var(--sub);border:1px solid var(--border);border-radius:4px;padding:0 4px}
+.shop.off{opacity:.5}
+.side select{width:100%;padding:9px 10px;font-size:14px}
+.side .out-toggle{margin:0;padding:4px 6px}
+.side .link-btn{background:none;border:0;color:var(--sub);text-decoration:underline;font-size:12px;padding:4px}
+.filter-btn{display:none}
+.side-backdrop{display:none}
 .input,select,button{border:1px solid var(--border);background:var(--input);color:var(--text);border-radius:9px;padding:11px 13px;font-size:16px;font-family:inherit}
 .input{outline:none}
 .input:focus{border-color:#64748b}
@@ -48,8 +100,8 @@ button:disabled{opacity:.6;cursor:default}
 .chips .link{border:0;background:none;color:var(--sub);text-decoration:underline;padding:4px;font-size:12px}
 
 /* status */
-.notice{margin:16px 0 0;padding:10px 14px;border:1px solid #92400e;background:#451a0399;color:#fde68a;border-radius:10px;font-size:14px}
-.summary{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:16px 0 10px;padding:11px 14px;background:#111827cc;border:1px solid var(--border);border-radius:10px;color:var(--sub);font-size:14px}
+.notice{margin:0 0 12px;padding:10px 14px;border:1px solid #92400e;background:#451a0399;color:#fde68a;border-radius:10px;font-size:14px}
+.summary{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0 0 12px;padding:11px 14px;background:#111827cc;border:1px solid var(--border);border-radius:10px;color:var(--sub);font-size:14px}
 .summary strong{color:var(--text)}
 .summary .g{color:var(--green);font-weight:800}
 .summary .share{margin-left:auto;padding:6px 10px;font-size:13px}
@@ -66,8 +118,8 @@ button:disabled{opacity:.6;cursor:default}
 .toolbar.shops{margin-bottom:12px}
 
 /* grid */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
-.card{display:flex;flex-direction:column;background:#1e293bcc;border:1px solid var(--border);border-radius:14px;overflow:hidden;transition:transform .15s,border-color .15s;content-visibility:auto;contain-intrinsic-size:auto 420px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.card{display:flex;flex-direction:column;background:#152036e6;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid var(--border);border-radius:14px;overflow:hidden;transition:transform .15s,border-color .15s;content-visibility:auto;contain-intrinsic-size:auto 420px}
 .card:hover{transform:translateY(-2px);border-color:#64748b}
 .card.best{border-color:#16a34a}
 .c-img{display:flex;align-items:center;justify-content:center;aspect-ratio:3/4;background:var(--input);text-decoration:none;font-size:42px}
@@ -78,7 +130,7 @@ button:disabled{opacity:.6;cursor:default}
 .c-title{font-weight:700;line-height:1.3;font-size:14px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .badges{display:flex;flex-wrap:wrap;gap:4px}
 .badge{font-size:11px;background:#334155;padding:3px 7px;border-radius:5px}
-.b-best{background:#16a34a}.b-card{background:var(--blue)}.b-prod{background:#7c3aed}
+.b-best{background:#16a34a}.b-card{background:var(--blue)}.b-prod{background:#7c3aed}.b-box{background:#c2410c}.b-etb{background:#7c3aed}.b-other{background:#0f766e}
 .c-foot{margin-top:auto;display:flex;align-items:flex-end;justify-content:space-between;gap:8px}
 .price{font-size:1.25rem;color:var(--green);font-weight:800;white-space:nowrap;line-height:1.15}
 .price small{display:block;font-size:12px;color:var(--sub);font-weight:600}
@@ -147,12 +199,32 @@ button:disabled{opacity:.6;cursor:default}
 .stats b{font-size:15px}
 .stats .g{color:var(--green)}
 
-footer{max-width:1000px;width:100%;margin:40px auto 0;padding:18px 4px 4px;border-top:1px solid var(--border);color:var(--sub);font-size:13px;line-height:1.6;text-align:center}
+footer{max-width:1200px;width:100%;margin:40px auto 0;padding:18px 4px 4px;border-top:1px solid var(--border);color:var(--sub);font-size:13px;line-height:1.6;text-align:center}
 footer a{color:var(--sub)}
+.tm{max-width:1200px;width:100%;margin:10px auto 0;color:#64748b;font-size:11px;text-align:center;line-height:1.5}
 
+@media(max-width:900px){
+  .layout{grid-template-columns:minmax(0,1fr);margin-top:16px}
+  .main{min-width:0}
+  .side{position:fixed;top:0;left:0;bottom:0;width:min(300px,86vw);max-height:none;z-index:1500;border-radius:0 16px 16px 0;
+    transform:translateX(-105%);transition:transform .22s ease;padding-top:calc(14px + env(safe-area-inset-top,0px));background:#0b1220f7}
+  .side.open{transform:none;box-shadow:20px 0 50px rgba(0,0,0,.5)}
+  .side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .side-head b{font-size:16px}
+  .side-backdrop{position:fixed;inset:0;z-index:1400;background:rgba(2,6,23,.6)}
+  .side-backdrop.show{display:block}
+  .filter-btn{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:9px 14px;font-size:14px;font-weight:700}
+  .filter-btn .badge{background:var(--accent);color:#111827}
+  .cat-bar{display:flex;gap:6px;overflow-x:auto;margin:0 -10px 12px;padding:0 10px 4px;scrollbar-width:none}
+  .cat-bar::-webkit-scrollbar{display:none}
+  .cat-bar .cat{width:auto;flex:none;border:1px solid var(--border);background:#0f172ae6;padding:8px 12px;margin:0}
+  .cat-bar .cat.on{border-color:var(--accent);background:var(--accent);color:#111827}
+  .cat-bar .cat .n{margin-left:4px}
+}
 @media(max-width:650px){
   body{padding:16px 10px}
-  h1{font-size:2rem}
+  .bg svg{width:1000px;height:1000px}
+  .sweep{width:740px;height:740px;margin:-370px 0 0 -370px}
   .search{flex-direction:column}
   .search button{width:100%}
   .grid{grid-template-columns:repeat(2,1fr);gap:8px}
@@ -172,9 +244,68 @@ footer a{color:var(--sub)}
 </style>
 </head>
 <body>
+<div class="bg" aria-hidden="true">
+  <div class="sweep"></div>
+  <svg viewBox="-700 -700 1400 1400" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="core" cx="50%" cy="45%" r="60%">
+        <stop offset="0" stop-color="#fff7c2"/><stop offset=".45" stop-color="#facc15"/><stop offset="1" stop-color="#b45309"/>
+      </radialGradient>
+      <radialGradient id="halo"><stop offset="0" stop-color="#facc15" stop-opacity=".35"/><stop offset="1" stop-color="#facc15" stop-opacity="0"/></radialGradient>
+      <linearGradient id="cY" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fde68a"/><stop offset="1" stop-color="#d97706"/></linearGradient>
+      <linearGradient id="cB" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#93c5fd"/><stop offset="1" stop-color="#1d4ed8"/></linearGradient>
+      <linearGradient id="cP" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d8b4fe"/><stop offset="1" stop-color="#6d28d9"/></linearGradient>
+      <linearGradient id="cG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#86efac"/><stop offset="1" stop-color="#047857"/></linearGradient>
+      <linearGradient id="cR" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fda4af"/><stop offset="1" stop-color="#be123c"/></linearGradient>
+      <g id="card">
+        <rect x="-34" y="-47" width="68" height="94" rx="7" fill="#0f172a" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
+        <rect x="-29" y="-42" width="58" height="84" rx="5"/>
+        <rect x="-23" y="-34" width="46" height="34" rx="3" fill="rgba(15,23,42,.55)"/>
+        <path d="M0 -26 l4 8 9 1 -7 6 2 9 -8 -5 -8 5 2 -9 -7 -6 9 -1z" fill="rgba(255,255,255,.75)"/>
+        <rect x="-23" y="6" width="46" height="4" rx="2" fill="rgba(15,23,42,.45)"/>
+        <rect x="-23" y="14" width="34" height="4" rx="2" fill="rgba(15,23,42,.35)"/>
+        <rect x="-23" y="22" width="40" height="4" rx="2" fill="rgba(15,23,42,.35)"/>
+      </g>
+      <g id="pack">
+        <path d="M-32 -50 l8 -6 8 6 8 -6 8 6 8 -6 8 6 8 -6 8 6 V50 l-8 6 -8 -6 -8 6 -8 -6 -8 6 -8 -6 -8 6 -8 -6z" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
+        <rect x="-32" y="-36" width="64" height="10" fill="rgba(15,23,42,.35)"/>
+        <circle cx="0" cy="6" r="17" fill="rgba(255,255,255,.22)"/>
+        <circle cx="0" cy="6" r="8" fill="rgba(255,255,255,.55)"/>
+      </g>
+    </defs>
+    <circle r="560" fill="url(#halo)" opacity=".35"/>
+    <circle class="ring" r="130"/><circle class="ring" r="240"/><circle class="ring" r="350"/>
+    <circle class="ring d" r="460"/><circle class="ring d" r="570"/>
+    <line class="axis" x1="-640" y1="0" x2="640" y2="0"/><line class="axis" x1="0" y1="-640" x2="0" y2="640"/>
+    <line class="axis" x1="-450" y1="-450" x2="450" y2="450"/><line class="axis" x1="450" y1="-450" x2="-450" y2="450"/>
+    <circle class="blip" cx="170" cy="-120" r="6"/><circle class="blip" cx="-260" cy="90" r="5"/>
+    <circle class="blip" cx="90" cy="300" r="6"/><circle class="blip" cx="-120" cy="-310" r="5"/>
+    <circle class="blip" cx="380" cy="190" r="5"/><circle class="blip" cx="-400" cy="-200" r="6"/>
+    <circle r="70" fill="url(#halo)"/>
+    <circle r="40" fill="url(#core)"/><circle r="40" fill="none" stroke="#fff7c2" stroke-opacity=".6" stroke-width="2"/>
+    <circle r="16" fill="#0f172a" opacity=".55"/><circle r="7" fill="#fff7c2"/>
+    <g opacity=".55">
+      <g transform="translate(-470 -330) rotate(-14)"><use href="#card" class="fl" fill="url(#cY)"/></g>
+      <g transform="translate(470 -350) rotate(12)"><use href="#card" class="fl" fill="url(#cB)"/></g>
+      <g transform="translate(-575 70) rotate(9)"><use href="#pack" class="fl" fill="url(#cR)"/></g>
+      <g transform="translate(575 110) rotate(-10)"><use href="#card" class="fl" fill="url(#cP)"/></g>
+      <g transform="translate(-380 400) rotate(16)"><use href="#card" class="fl" fill="url(#cG)"/></g>
+      <g transform="translate(390 410) rotate(-16)"><use href="#pack" class="fl" fill="url(#cY)"/></g>
+      <g transform="translate(0 -560)"><use href="#pack" class="fl" fill="url(#cB)"/></g>
+      <g transform="translate(-200 -470) rotate(-8) scale(.8)"><use href="#card" class="fl" fill="url(#cR)"/></g>
+      <g transform="translate(230 -470) rotate(10) scale(.8)"><use href="#card" class="fl" fill="url(#cG)"/></g>
+      <g transform="translate(220 560) rotate(8) scale(.9)"><use href="#card" class="fl" fill="url(#cB)"/></g>
+      <g transform="translate(-220 570) rotate(-6) scale(.85)"><use href="#pack" class="fl" fill="url(#cP)"/></g>
+    </g>
+  </svg>
+</div>
+
 <div class="wrap">
-  <h1><a href="/" id="home">CardRadar 🔍</a></h1>
-  <div class="sub" id="sub">Reálne ceny Pokémon kariet zo slovenských obchodov</div>
+  <header class="hero">
+    <div class="kicker">Pokémon TCG</div>
+    <h1><a href="/" id="home">CardRadar</a></h1>
+    <div class="sub" id="sub">Reálne ceny Pokémon kariet zo slovenských obchodov</div>
+  </header>
 
   <div class="search-wrap">
     <div class="search" role="search">
@@ -188,10 +319,17 @@ footer a{color:var(--sub)}
   <div class="chips" id="tags"></div>
   <div class="chips" id="recent"></div>
 
-  <div id="status" aria-live="polite"></div>
-  <div id="toolbar"></div>
-  <div id="results"></div>
+  <div class="layout">
+    <aside id="side" class="side" aria-label="Filtre"></aside>
+    <main class="main">
+      <div id="catBar" class="cat-bar" role="toolbar" aria-label="Kategórie"></div>
+      <button id="filterBtn" class="filter-btn" type="button">☰ Obchody a zoradenie</button>
+      <div id="status" aria-live="polite"></div>
+      <div id="results"></div>
+    </main>
+  </div>
 </div>
+<div id="sideBackdrop" class="side-backdrop"></div>
 
 <div id="modal" class="modal"></div>
 
@@ -199,9 +337,10 @@ footer a{color:var(--sub)}
   Ceny sú orientačné a načítavajú sa priamo z obchodov. Pred nákupom ich over na stránke predajcu.<br>
   CardRadar nie je obchod – tlačidlo „Otvoriť“ ťa presmeruje k predajcovi.
 </footer>
+<div class="tm">Pokémon je ochranná známka spoločností Nintendo, Creatures a GAME FREAK. CardRadar je nezávislý porovnávač cien a nie je s nimi nijako spojený.</div>
 
 <script>
-/* CARD RADAR FRONTEND 5.30 */
+/* CARD RADAR FRONTEND 5.31 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -234,6 +373,7 @@ fetch('/api/config').then(r => r.ok ? r.json() : null).then(c => {
     'Ceny sú orientačné a načítavajú sa priamo z obchodov. Pred nákupom ich over na stránke predajcu. ' +
     `Prepočet: 1 € = ${String(CZK_RATE).replace('.', ',')} Kč.<br>` +
     'CardRadar nie je obchod – tlačidlo „Otvoriť“ ťa presmeruje k predajcovi.';
+  renderSide();
 }).catch(() => {});
 
 /* ---------- quick tags + recent ---------- */
@@ -253,7 +393,7 @@ document.addEventListener('click', e => {
   if (b) { search(b.dataset.q); return; }
   if (e.target.id === 'clearRecent') { setRecent([]); renderRecent(); }
   if (e.target.closest('#shareBtn')) share();
-  if (e.target.closest('#resetFilters')) { typeFilter = 'all'; shopFilter = 'all'; renderView(); }
+  if (e.target.closest('#resetFilters')) { cat = 'all'; shopOff.clear(); renderView(); }
   if (e.target.closest('#showOutBtn')) { showOut = true; renderView(); }
   if (e.target.closest('#favBtn')) { mode === 'fav' ? leaveFavorites() : showFavorites(); }
   if (e.target.closest('#backBtn')) leaveFavorites();
@@ -272,7 +412,7 @@ function rememberImages(items){
     const img = imageOf(x);
     if (!img) continue;
     if (x.link) imgByLink.set(x.link, img);
-    if (x._p) continue;  // pre meno Pokémona radšej obrázok karty než boxu
+    if (x._c && x._c !== 'card') continue;  // pre meno Pokémona radšej obrázok karty než boxu
     const t = String(x.title || '').toLowerCase();
     for (const p of LOCAL) { const k = p.toLowerCase(); if (!imgByName.has(k) && new RegExp('\\b' + k + '\\b').test(t)) imgByName.set(k, img); }
   }
@@ -399,13 +539,26 @@ $('q').addEventListener('keydown', e => {
 $('searchButton').addEventListener('click', () => search());
 
 /* ---------- state ---------- */
-let allResults = [], typeFilter = 'all', shopFilter = 'all', sortMode = 'asc', showOut = false;
+let allResults = [], cat = 'all', shopOff = new Set(), shopState = {}, sortMode = 'asc', showOut = false;
 let currentQuery = '', failedShops = [], resultsGen = 0, mode = 'search';
 let searchCtrl = null;
 const resCache = new Map();
 const ITEMS = new Map();   // data-id -> položka (výsledky aj obľúbené)
 
-const PRODUCT_RE = /elite trainer box|\betb\b|booster box|booster bundle|booster display|collection box|premium collection|blister|\btins?\b/i;
+const CATS = {
+  all:   ['Všetko', '🗂️', ''],
+  card:  ['Karty', '🃏', 'Karta'],
+  box:   ['Booster boxy', '📦', 'Booster box'],
+  etb:   ['ETB', '🎁', 'ETB'],
+  other: ['Ostatné balenia', '🧺', 'Balenie']
+};
+function categoryOf(t){
+  t = String(t || '');
+  if (/elite\s+trainer\s+box|\betb\b/i.test(t)) return 'etb';
+  if (/booster\s*(?:box|display)/i.test(t)) return 'box';
+  if (/booster|bundle|collection|kolekci|\btins?\b|blister|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|premium|display/i.test(t)) return 'other';
+  return 'card';
+}
 const STOCK = {
   in:       ['Skladom', 'b-in'],
   out:      ['Vypredané', 'b-out'],
@@ -424,8 +577,8 @@ function sortFn(a, b){
 
 function visible(){
   return allResults
-    .filter(i => (typeFilter === 'all' || (typeFilter === 'product') === i._p)
-              && (shopFilter === 'all' || i.shop === shopFilter)
+    .filter(i => (cat === 'all' || i._c === cat)
+              && !shopOff.has(i.shop)
               && (showOut || i.stock !== 'out'))
     .sort(sortFn);
 }
@@ -451,11 +604,10 @@ function renderFavBtn(){
 }
 
 async function showFavorites(){
-  mode = 'fav'; renderFavBtn(); hideSug();
+  mode = 'fav'; renderFavBtn(); hideSug(); renderSide();
   const favs = getFavs();
-  const items = favs.map((f, i) => ({...f, _id: 'f' + i, _p: PRODUCT_RE.test(f.title || ''), _fav: true}));
+  const items = favs.map((f, i) => ({...f, _id: 'f' + i, _c: categoryOf(f.title), _fav: true}));
   items.forEach(x => ITEMS.set(x._id, x));
-  $('toolbar').innerHTML = '';
   $('status').innerHTML = `<div class="summary"><strong>Obľúbené</strong><span>${favs.length} ${plural(favs.length,'položka','položky','položiek')}</span>` +
     (allResults.length ? `<button class="share" id="backBtn">← Späť na výsledky</button>` : '') + '</div>';
   if (!items.length) {
@@ -510,41 +662,75 @@ function renderStatus(list){
   $('status').innerHTML = h;
 }
 
-function renderToolbar(){
-  if (!allResults.length) { $('toolbar').innerHTML = ''; return; }
+function renderSide(){
+  const has = allResults.length > 0 && mode === 'search';
   const base = allResults.filter(i => showOut || i.stock !== 'out');
-  const inShop = base.filter(i => shopFilter === 'all' || i.shop === shopFilter);
-  const nCard = inShop.filter(i => !i._p).length, nProd = inShop.length - nCard;
-  const tb = (k, label, n) => `<button data-f="${k}" class="${typeFilter === k ? 'on' : ''}" aria-pressed="${typeFilter === k}">${label}<span class="cnt">${n}</span></button>`;
+  const catCount = k => base.filter(i => !shopOff.has(i.shop) && (k === 'all' || i._c === k)).length;
+  const shopCount = s => base.filter(i => i.shop === s && (cat === 'all' || i._c === cat)).length;
 
-  const shopCounts = {};
-  base.filter(i => typeFilter === 'all' || (typeFilter === 'product') === i._p)
-      .forEach(i => shopCounts[i.shop] = (shopCounts[i.shop] || 0) + 1);
-  const shopNames = [...new Set(allResults.map(i => i.shop))].filter(s => shopCounts[s] || s === shopFilter);
-  const sb = (k, label, n) => `<button data-s="${esc(k)}" class="${shopFilter === k ? 'on' : ''}" aria-pressed="${shopFilter === k}">${esc(label)}<span class="cnt">${n}</span></button>`;
+  const names = [...new Set([...SHOPS.map(s => s.name), ...allResults.map(i => i.shop)])];
+  const country = Object.fromEntries(SHOPS.map(s => [s.name, s.country]));
   const hasPack = allResults.some(i => num(i.price_per_pack) !== null);
   if (!hasPack && sortMode === 'pack') sortMode = 'asc';
   const nOut = allResults.filter(i => i.stock === 'out').length;
 
-  $('toolbar').innerHTML =
-    `<div class="toolbar">${tb('all','Všetko',inShop.length)}${tb('card','Karty',nCard)}${tb('product','Produkty',nProd)}
+  $('side').innerHTML = `
+    <div class="side-head"><b>Filtre</b><button class="m-x" id="sideClose" aria-label="Zavrieť">✕</button></div>
+    <div class="side-sec"><h3>Kategórie</h3>
+      ${Object.entries(CATS).map(([k, [label, icon]]) =>
+        `<button class="cat${cat === k ? ' on' : ''}" data-cat="${k}" aria-pressed="${cat === k}">
+           <span class="ic">${icon}</span>${label}${has ? `<span class="n">${catCount(k)}</span>` : ''}</button>`).join('')}
+    </div>
+    <div class="side-sec"><h3>Obchody</h3>
+      ${names.length ? names.map(s => `
+        <label class="shop${shopOff.has(s) ? ' off' : ''}">
+          <input type="checkbox" data-shop="${esc(s)}"${shopOff.has(s) ? '' : ' checked'}>
+          <span class="dot ${shopState[s] || ''}" title="${shopState[s] === 'bad' ? 'Neodpovedá' : shopState[s] === 'ok' ? 'Odpovedá' : ''}"></span>
+          ${esc(s)}${country[s] ? ` <span class="cc">${esc(country[s])}</span>` : ''}
+          ${has ? `<span class="n">${shopCount(s)}</span>` : ''}
+        </label>`).join('') : '<p class="m-note">Načítavam…</p>'}
+      ${shopOff.size ? '<button class="link-btn" id="allShops">Zobraziť všetky obchody</button>' : ''}
+    </div>
+    ${has ? `<div class="side-sec"><h3>Zoradiť</h3>
       <select id="sortSel" aria-label="Zoradenie">
         <option value="asc"${sortMode==='asc'?' selected':''}>Najlacnejšie</option>
         <option value="desc"${sortMode==='desc'?' selected':''}>Najdrahšie</option>
         ${hasPack ? `<option value="pack"${sortMode==='pack'?' selected':''}>Najlacnejší booster</option>` : ''}
-      </select></div>` +
-    (shopNames.length > 1
-      ? `<div class="toolbar shops">${sb('all','Všetky obchody', Object.values(shopCounts).reduce((a,b)=>a+b,0))}${shopNames.map(s => sb(s, s, shopCounts[s] || 0)).join('')}</div>`
-      : '') +
-    (nOut ? `<label class="out-toggle"><input type="checkbox" id="outChk"${showOut ? ' checked' : ''}> Zobraziť aj vypredané (${nOut})</label>` : '');
+      </select>
+      ${nOut ? `<label class="out-toggle" style="margin-top:10px"><input type="checkbox" id="outChk"${showOut ? ' checked' : ''}> Aj vypredané (${nOut})</label>` : ''}
+    </div>` : ''}`;
+
+  $('catBar').innerHTML = Object.entries(CATS).map(([k, [label, icon]]) =>
+    `<button class="cat${cat === k ? ' on' : ''}" data-cat="${k}" aria-pressed="${cat === k}"><span>${icon}</span> ${label}${has ? `<span class="n">${catCount(k)}</span>` : ''}</button>`).join('');
+  const active = (cat !== 'all') + shopOff.size;
+  $('filterBtn').innerHTML = `☰ Obchody a zoradenie${active ? ` <span class="badge">${active}</span>` : ''}`;
 }
-$('toolbar').addEventListener('click', e => {
-  const f = e.target.closest('[data-f]');
-  if (f) { typeFilter = f.dataset.f; renderView(); return; }
-  const s = e.target.closest('[data-s]');
-  if (s) { shopFilter = s.dataset.s; renderView(); }
+function openSide(){ $('side').classList.add('open'); $('sideBackdrop').classList.add('show'); }
+function closeSide(){ $('side').classList.remove('open'); $('sideBackdrop').classList.remove('show'); }
+$('filterBtn').addEventListener('click', openSide);
+$('catBar').addEventListener('click', e => {
+  const c = e.target.closest('[data-cat]'); if (!c) return;
+  cat = c.dataset.cat; if (mode === 'fav') leaveFavorites(); renderView();
 });
-$('toolbar').addEventListener('change', e => {
+$('sideBackdrop').addEventListener('click', closeSide);
+$('side').addEventListener('click', e => {
+  if (e.target.closest('#sideClose')) { closeSide(); return; }
+  const c = e.target.closest('[data-cat]');
+  if (c) {
+    cat = c.dataset.cat;
+    if (mode === 'fav') leaveFavorites();
+    renderView();
+    if (window.innerWidth <= 900) closeSide();
+    return;
+  }
+  if (e.target.closest('#allShops')) { shopOff.clear(); renderView(); }
+});
+$('side').addEventListener('change', e => {
+  if (e.target.dataset.shop !== undefined) {
+    const s = e.target.dataset.shop;
+    e.target.checked ? shopOff.delete(s) : shopOff.add(s);
+    renderView();
+  }
   if (e.target.id === 'sortSel') { sortMode = e.target.value; renderView(); }
   if (e.target.id === 'outChk') { showOut = e.target.checked; renderView(); }
 });
@@ -588,7 +774,7 @@ function cardHtml(x, best){
     <div class="c-body">
       <div class="c-title">${esc(x.title)}</div>
       <div class="badges">
-        <span class="badge ${x._p ? 'b-prod' : 'b-card'}">${x._p ? 'Produkt' : 'Karta'}</span>
+        <span class="badge b-${x._c || 'card'}">${CATS[x._c || 'card'][2]}</span>
         ${x.shop ? `<span class="badge">${esc(x.shop)}</span>` : ''}
         ${st ? `<span class="badge ${st[1]}">${st[0]}</span>` : ''}
         ${x.language ? `<span class="badge">${esc(x.language)}</span>` : ''}
@@ -617,7 +803,7 @@ function renderGrid(list){
     const onlyOut = !showOut && allResults.every(i => i.stock === 'out');
     $('results').innerHTML = onlyOut
       ? '<div class="empty">Všetky nájdené ponuky sú momentálne vypredané.<br><button id="showOutBtn">Zobraziť vypredané</button></div>'
-      : '<div class="empty">Pre zvolený filter nie sú žiadne ponuky.<br><button id="resetFilters">Zobraziť všetko</button></div>';
+      : `<div class="empty">V kategórii „${CATS[cat][0]}“${shopOff.size ? ' vo vybraných obchodoch' : ''} sme nič nenašli.<br><button id="resetFilters">Zobraziť všetko</button></div>`;
     return;
   }
   const prices = list.filter(i => i.stock !== 'out').map(priceOf).filter(p => p !== null);
@@ -627,10 +813,10 @@ function renderGrid(list){
 }
 
 function renderView(){
+  renderSide();
   if (mode === 'fav') return;
   const list = visible();
   renderStatus(list);
-  renderToolbar();
   renderGrid(list);
 }
 
@@ -826,7 +1012,7 @@ function updateUrl(q, push){
 function resetView(){
   if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
   resultsGen++; allResults = []; currentQuery = ''; failedShops = []; mode = 'search'; renderFavBtn();
-  $('q').value = ''; $('status').innerHTML = ''; $('toolbar').innerHTML = ''; $('results').innerHTML = '';
+  $('q').value = ''; $('status').innerHTML = ''; $('results').innerHTML = ''; renderSide();
   $('searchButton').disabled = false;
   document.title = 'CardRadar – reálne ceny Pokémon kariet';
 }
@@ -850,9 +1036,10 @@ function showData(q, data, push){
   mode = 'search'; renderFavBtn();
   currentQuery = norm;
   allResults = Array.isArray(data.results) ? data.results : [];
-  allResults.forEach((x, i) => { x._id = 'r' + i; x._p = PRODUCT_RE.test(x.title || ''); ITEMS.set(x._id, x); });
+  allResults.forEach((x, i) => { x._id = 'r' + i; x._c = categoryOf(x.title); ITEMS.set(x._id, x); });
   failedShops = (data.shops || []).filter(s => s.ok === false).map(s => s.name);
-  typeFilter = 'all'; shopFilter = 'all'; showOut = false;
+  shopState = {}; (data.shops || []).forEach(s => shopState[s.name] = s.ok === false ? 'bad' : 'ok');
+  showOut = false;  // kategória a vybrané obchody ostávajú aj pre ďalšie hľadanie
 
   rememberImages(allResults);
   updateUrl(norm, push);
@@ -879,7 +1066,6 @@ async function search(qArg, opts = {}){
   mode = 'search'; renderFavBtn();
   const n = SHOPS.length;
   $('status').innerHTML = `<div class="summary loading"><span class="spin"></span>Prehľadávam ${n ? n + ' ' + plural(n,'obchod','obchody','obchodov') : 'obchody'}…</div>`;
-  $('toolbar').innerHTML = '';
   skeleton();
   if (window.innerWidth < 650) $('q').blur();
 
@@ -901,8 +1087,7 @@ async function search(qArg, opts = {}){
   } catch (e) {
     if (e.name === 'AbortError') return;
     allResults = [];
-    $('toolbar').innerHTML = '';
-    $('results').innerHTML = '';
+      $('results').innerHTML = '';
     $('status').innerHTML = `<div class="panel error"><b>Chyba:</b> ${esc(e.message || 'Neznáma chyba.')}</div>`;
   } finally {
     if (searchCtrl === ctrl) { searchCtrl = null; btn.disabled = false; }
@@ -911,6 +1096,7 @@ async function search(qArg, opts = {}){
 
 /* ---------- štart ---------- */
 renderFavBtn();
+renderSide();
 try {
   const iq = new URLSearchParams(location.search).get('q');
   if (iq) search(iq, {push: false});
