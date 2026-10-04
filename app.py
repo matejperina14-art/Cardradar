@@ -48,7 +48,7 @@ from flask import Flask, jsonify, request, Response
 #  - história cien v pozadí + automatické mazanie starých záznamov
 # =========================================================
 
-VERSION = "6.0"
+VERSION = "6.0.1"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
@@ -158,6 +158,8 @@ ACTIVE_SHOPS = [s for s in SHOPS if s.get("enabled", True)]
 
 # Nové sety na úvodnej stránke – NAJNOVŠÍ HORE. Uprav, keď vyjde nový set.
 NEW_SETS = [
+    {"name": "Delta Reign", "query": "delta reign"},
+    {"name": "30th Celebration", "query": "30th celebration"},
     {"name": "Ascended Heroes", "query": "ascended heroes"},
     {"name": "Phantasmal Flames", "query": "phantasmal flames"},
     {"name": "Mega Evolution", "query": "mega evolution"},
@@ -555,6 +557,7 @@ KNOWN_SETS = sorted(
         "twilight masquerade", "stellar crown", "temporal forces",
         "obsidian flames", "mega evolution", "phantasmal flames",
         "ascended heroes", "perfect order", "black bolt", "white flare",
+        "delta reign", "30th celebration", "30th anniversary celebrations",
         "paldean fates", "shrouded fable", "paldea evolved",
     },
     key=len, reverse=True,
@@ -740,7 +743,10 @@ def sealed_matches_query(title, extra_text, parsed):
 # PRICE
 # =========================================================
 
-_NUM = r"(\d{1,3}(?:[ ]\d{3})+(?:[.,]\d{1,2})?|\d{1,8}(?:[.,]\d{1,2})?)"
+_NUM = (r"(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?(?!\d)"        # 1.099,00 / 1.099
+        r"|\d{1,3}(?:,\d{3})+\.\d{1,2}(?!\d)"                 # 1,099.00
+        r"|\d{1,3}(?:[ ]\d{3})+(?:[.,]\d{1,2})?"              # 1 099,00
+        r"|\d{1,8}(?:[.,]\d{1,2})?)")
 _EX_VAT = re.compile(
     r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|Kč|CZK))\s*(?:bez\s+DPH|excl\.?\s*VAT)",
     re.I,
@@ -751,6 +757,8 @@ _CZK_RES = [re.compile(_NUM + r"\s*(?:Kč|CZK)", re.I), re.compile(r"(?:Kč|CZK)
 
 def _to_float(value):
     value = value.replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):   # 1.099 = tisíc, nie desatinné
+        value = value.replace(".", "")
     if "," in value and "." in value:
         if value.rfind(",") > value.rfind("."):
             value = value.replace(".", "").replace(",", ".")
@@ -1269,20 +1277,76 @@ def fill_images_from_cache(results):
     return results
 
 
-def find_product_block(anchor):
-    current, best = anchor, ""
+def find_product_block_el(anchor):
+    """Najbližší rodič, ktorý obsahuje cenu (dlaždica produktu)."""
+    current, best = anchor, None
     for level in range(1, 7):
         current = current.parent
         if not current:
             break
         text = clean_text(current.get_text(" ", strip=True))
         if text and any(c in text for c in ("€", "Kč", "CZK")) and len(text) < 1800:
-            best = text
+            best = current
             if level >= 2:
                 break
-    if best:
-        return best
-    return clean_text(anchor.parent.get_text(" ", strip=True)) if anchor.parent else ""
+    return best or anchor.parent
+
+
+def find_product_block(anchor):
+    el = find_product_block_el(anchor)
+    return clean_text(el.get_text(" ", strip=True)) if el is not None else ""
+
+
+_HIDDEN_CLASSES = {"hidden", "hide", "d-none", "is-hidden", "u-hidden", "visually-hidden-hidden"}
+
+
+def _is_hidden(tag):
+    if tag.has_attr("hidden") or str(tag.get("aria-hidden", "")).lower() == "true":
+        return True
+    if _HIDDEN_CLASSES & set(tag.get("class") or []):
+        return True
+    style = str(tag.get("style", "")).replace(" ", "").lower()
+    return "display:none" in style or "visibility:hidden" in style
+
+
+def visible_text(el):
+    """Text dlaždice bez skrytých prvkov (napr. skryté 'Vypredané' v Shopify)."""
+    if el is None:
+        return ""
+    parts = []
+    for s in el.find_all(string=True):
+        p, hidden = s.parent, False
+        while p is not None and p is not el:
+            if getattr(p, "name", None) in ("script", "style", "template", "noscript") or _is_hidden(p):
+                hidden = True
+                break
+            p = p.parent
+        if not hidden:
+            parts.append(str(s))
+    return clean_text(" ".join(parts))
+
+
+def detect_stock_el(el):
+    """Sklad z dlaždice: najprv tlačidlo košíka, potom viditeľný text."""
+    if el is None:
+        return ""
+    for btn in el.select('button[name="add"], button[type="submit"], .add-to-cart, .btn-cart, .btn-add-to-cart'):
+        label = clean_text(btn.get_text(" ", strip=True)).lower()
+        if btn.has_attr("disabled") or "disabled" in (btn.get("class") or []):
+            if STOCK_PRE_RE.search(label):
+                return "preorder"
+            return "out"
+    stock = detect_stock(visible_text(el))
+    if not stock:
+        for btn in el.select('button[name="add"], button[type="submit"], .add-to-cart, .btn-cart'):
+            if btn.has_attr("disabled"):
+                continue
+            label = visible_text(btn).lower()
+            if STOCK_PRE_RE.search(label):
+                return "preorder"
+            if re.search(r"do\s+ko[šs][íi]ka|add\s+to\s+cart|koupit|k[úu]pi[ťt]", label):
+                return "in"
+    return stock
 
 
 # =========================================================
@@ -1356,7 +1420,8 @@ def _scrape(shop, query, timeout):
 
             lang = detect_language(title)
 
-            block_text = find_product_block(anchor)
+            block_el = find_product_block_el(anchor)
+            block_text = clean_text(block_el.get_text(" ", strip=True)) if block_el is not None else ""
 
             if kind == "card":
                 matched, reason = card_matches_query(
@@ -1385,7 +1450,7 @@ def _scrape(shop, query, timeout):
                 "title": title, "shop": shop["name"], "country": shop["country"],
                 "condition": "Nové", "language": lang, "price_eur": round(price, 2),
                 "link": href, "image": image_url,
-                "stock": detect_stock(block_text),
+                "stock": detect_stock_el(block_el),
                 "packs": packs,
                 "price_per_pack": round(price / packs, 2) if packs and packs > 1 else None,
                 "group": group_key(title, lang),
