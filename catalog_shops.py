@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.6
+CARD RADAR – rozšírenia 6.7
+ - 6.7: kontrola beží na pozadí s ukazovateľom priebehu, oprava offline režimu
  - 6.6: CardyX – sklad a obrázky priamo z obchodu
  - 6.5: kontrola pred spustením na /admin/test?key=ADMIN_KEY
  - 6.4: katalógy sa po reštarte servera načítajú hneď a postupne
@@ -1016,6 +1017,8 @@ def _install_fixes(g):
     if "manifest" in app.view_functions:
         app.view_functions["manifest"] = manifest
     app.add_url_rule("/admin/test", "admin_test", admin_test)
+    if "service_worker" in app.view_functions:
+        app.view_functions["service_worker"] = service_worker
 
 
 # =========================================================
@@ -1139,16 +1142,141 @@ summary{{cursor:pointer}}ul{{padding-left:18px;margin:6px 0}}li{{margin:4px 0}}.
 <h2>Hľadania</h2>{blocks}</main>"""
 
 
+def _st_get():
+    import json as _json
+    conn = _db()
+    try:
+        row = conn.execute("SELECT v FROM meta WHERE k = 'selftest'").fetchone()
+    except Exception:
+        row = None
+    finally:
+        conn.close()
+    try:
+        return _json.loads(row[0]) if row else None
+    except Exception:
+        return None
+
+
+def _st_set(state):
+    import json as _json
+    conn = _db()
+    try:
+        conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('selftest', ?)",
+                     (_json.dumps(state, ensure_ascii=False, default=str),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_selftest(queries):
+    from concurrent.futures import as_completed
+    state = {"status": "running", "started": time.time(), "done": 0,
+             "total": len(queries), "report": []}
+    _st_set(state)
+    results = {}
+    try:
+        with _TPE(max_workers=2) as ex:
+            futs = {ex.submit(_check_query, q): q for q in queries}
+            for f in as_completed(futs):
+                q = futs[f]
+                try:
+                    results[q] = f.result()
+                except Exception as e:
+                    results[q] = {"query": q, "normalized": q, "ms": 0, "results": 0, "shops": [],
+                                  "issues": [{"shop": "-", "title": "Chyba testu: " + str(e)[:150],
+                                              "price": 0, "why": ["chyba testu"]}],
+                                  "missed_merges": []}
+                state["done"] = len(results)
+                _st_set(state)
+    finally:
+        state["report"] = [results[q] for q in queries if q in results]
+        state["status"] = "done"
+        state["finished"] = time.time()
+        _st_set(state)
+
+
+def _wait_page(state, refresh_url):
+    done, total = state.get("done", 0), state.get("total", 0)
+    pct = round(done / max(1, total) * 100)
+    return f"""<!doctype html><html lang="sk"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="4;url={_html.escape(refresh_url)}"><title>Kontrola beží…</title>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0d1530;color:#e2e8f0;font:16px/1.5 -apple-system,Segoe UI,sans-serif;padding:20px">
+<div style="max-width:420px;width:100%;text-align:center"><h1 style="color:#ffd23f;font-size:1.4rem">Kontrola beží…</h1>
+<p>Hotových {done} z {total} hľadaní</p>
+<div style="height:12px;background:#141f44;border-radius:99px;overflow:hidden;border:1px solid #2c3b6e">
+<div style="height:100%;width:{pct}%;background:#3fe0c5"></div></div>
+<p style="color:#a5b4d4;font-size:14px">Stránka sa obnovuje sama. Nechaj ju otvorenú, trvá to asi 1 – 2 minúty.</p></div>"""
+
+
 def admin_test():
     from flask import Response, jsonify, request
     if not G["debug_allowed"]():
         return jsonify({"error": "Nepovolené. Pridaj ?key=ADMIN_KEY"}), 403
-    queries = [q for q in request.args.get("q", "").split(",") if q.strip()] or SELFTEST_QUERIES
-    with _TPE(max_workers=3) as ex:
-        report = list(ex.map(_check_query, queries[:20]))
+    key = request.args.get("key", "")
+    base = "/admin/test?key=" + urllib.parse.quote(key)
+    state = _st_get()
+    running = bool(state and state.get("status") == "running"
+                   and time.time() - state.get("started", 0) < 600)
+    if request.args.get("start") or not state or (state.get("status") == "running" and not running):
+        if not running:
+            queries = [q.strip() for q in request.args.get("q", "").split(",") if q.strip()] or SELFTEST_QUERIES
+            threading.Thread(target=_run_selftest, args=(queries[:20],), daemon=True,
+                             name="selftest").start()
+            state = {"status": "running", "done": 0, "total": len(queries[:20])}
+        return Response(_wait_page(state, base), mimetype="text/html",
+                        headers={"Cache-Control": "no-store"})
+    if running:
+        return Response(_wait_page(state, base), mimetype="text/html",
+                        headers={"Cache-Control": "no-store"})
     if request.args.get("format") == "json":
-        return jsonify(report)
-    return Response(_selftest_html(report), mimetype="text/html")
+        return jsonify(state)
+    page = _selftest_html(state.get("report", []))
+    when = datetime.fromtimestamp(state.get("finished", time.time()), timezone.utc).strftime("%d.%m. %H:%M UTC")
+    page = page.replace("<h2>Obchody</h2>",
+                        f"<p>Dokončené {when}. <a style='color:#ffd23f' href='{_html.escape(base)}&start=1'>"
+                        f"Spustiť kontrolu znova</a></p><h2>Obchody</h2>", 1)
+    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-store"})
+
+
+SERVICE_WORKER_FIX = """
+const CACHE = 'cardradar-v7';
+const SHELL = ['/', '/static/icon-192.png', '/static/logo.svg'];
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', e => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin/')) return;
+  if (e.request.mode === 'navigate') {
+    if (url.pathname !== '/') return;   // offline kópiu ukladáme len pre hlavnú stránku
+    e.respondWith(fetch(e.request).then(r => {
+      if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put('/', copy)); }
+      return r;
+    }).catch(() => caches.match('/')));
+    return;
+  }
+  if (url.pathname.startsWith('/static/')) {
+    e.respondWith(caches.match(e.request).then(m => m || fetch(e.request).then(r => {
+      const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return r;
+    })));
+  }
+});
+"""
+
+
+def service_worker():
+    from flask import Response
+    resp = Response(SERVICE_WORKER_FIX, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 
 # =========================================================
