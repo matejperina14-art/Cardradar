@@ -16,15 +16,17 @@ from flask import Flask, jsonify, request, Response
 # CARD RADAR 5.23 - CardyX
 # =========================================================
 
-VERSION = "5.23"
+VERSION = "5.25"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
 CZK_PER_EUR = 24.4618
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
-CACHE_TTL = 120
-CACHE_MAX_ITEMS = 50
+CACHE_TTL = 600  # opakované hľadanie je okamžité (ceny sa tak často nemenia)
+CACHE_MAX_ITEMS = 100
+IMAGE_ENRICH_MAX = 12      # max. produktových stránok na doťahovanie obrázkov
+IMAGE_ENRICH_BUDGET = 4    # max. sekúnd čakania na obrázky
 SUGGESTION_CACHE_TTL = 300
 SUGGESTION_CACHE_MAX_ITEMS = 200
 IMAGE_CACHE_TTL = 3600
@@ -34,6 +36,62 @@ SUGGESTION_TIMEOUT = 4
 IMAGE_FETCH_WORKERS = 8
 IMAGE_FETCH_TIMEOUT = 3
 MIN_LOCAL_SUGGESTIONS = 4  # ak je menej, doplníme z CardyX
+
+# =========================================================
+# OBCHODY (pridanie obchodu = jeden záznam v tomto zozname)
+#   name           názov v zobrazení
+#   country        "SK" alebo "CZ"
+#   base_url       základná URL (na skladanie odkazov a obrázkov)
+#   search_url     URL vyhľadávania, {q} sa nahradí hľadaným textom
+#   link_selector  CSS selektor odkazov na produkty vo výsledkoch
+#   enabled        False = obchod sa nepoužije (dá sa ho stále testovať)
+# =========================================================
+
+SHOPS = [
+    {
+        "name": "CardyX", "country": "SK", "enabled": True,
+        "base_url": "https://www.cardyx.sk/",
+        "search_url": "https://www.cardyx.sk/search?q={q}",
+        "link_selector": 'a[href*="/products/"]',
+    },
+    # --- Shoptet obchody (SK). Vyhľadávanie: /vyhladavanie/?string=... ---
+    {
+        "name": "TCG Zone Nitra", "country": "SK", "enabled": True,
+        "base_url": "https://www.tcgzonenitra.sk/",
+        "search_url": "https://www.tcgzonenitra.sk/vyhladavanie/?string={q}",
+        "link_selector": "div.product a.name",
+        "loose_set": True,  # v názvoch kariet je len číslo (042/128), bez setu
+    },
+    {
+        "name": "Beardex", "country": "SK", "enabled": True,
+        "base_url": "https://www.beardex.eu/",
+        "search_url": "https://www.beardex.eu/vyhladavanie/?string={q}",
+        "link_selector": "div.product a.name",
+    },
+    {
+        "name": "CardEmpire", "country": "SK", "enabled": True,
+        "base_url": "https://www.cardempire.sk/",
+        "search_url": "https://www.cardempire.sk/vyhladavanie/?string={q}",
+        "link_selector": "div.product a.name",
+    },
+    # --- CZ (Upgates): produkty majú URL /p/..., ceny v Kč. VYPNUTÉ, kým sa
+    # neoverí vyhľadávacia URL (zistite ju vyhľadaním na webe a skopírovaním z prehliadača)
+    {
+        "name": "Gengar.cz", "country": "CZ", "enabled": False,
+        "base_url": "https://www.gengar.cz/",
+        "search_url": "https://www.gengar.cz/search?q={q}",
+        "link_selector": 'a[href*="/p/"]',
+    },
+    # ŠABLÓNA - odkomentujte a vyplňte po overení obchodu cez /api/debug/shop:
+    # {
+    #     "name": "NazovObchodu", "country": "CZ", "enabled": True,
+    #     "base_url": "https://www.priklad.cz/",
+    #     "search_url": "https://www.priklad.cz/vyhledavani?q={q}",
+    #     "link_selector": 'a[href*="/produkt/"]',
+    # },
+]
+
+ACTIVE_SHOPS = [s for s in SHOPS if s.get("enabled", True)]
 
 HEADERS = {
     "User-Agent": (
@@ -342,7 +400,7 @@ def set_matches_text(searchable, set_name):
     )
 
 
-def card_matches_query(title, extra_text, parsed):
+def card_matches_query(title, extra_text, parsed, loose_set=False):
     searchable = clean_text(title + " " + extra_text)
     pokemon, set_name = parsed.get("pokemon"), parsed.get("set_name")
     card_number, suffix = parsed.get("card_number"), parsed.get("suffix")
@@ -352,7 +410,8 @@ def card_matches_query(title, extra_text, parsed):
     if card_number:
         if card_number.replace(" ", "").lower() not in re.sub(r"\s+", "", searchable.lower()):
             return False, "card_number_not_found"
-    if set_name and not set_matches_text(searchable, set_name):
+    # loose_set: obchod v názve nemá set, stačí zhoda čísla karty (napr. 042/128)
+    if set_name and not (loose_set and card_number) and not set_matches_text(searchable, set_name):
         return False, "set_not_found"
     if suffix and not text_contains_word(searchable, suffix):
         return False, "suffix_not_found"
@@ -380,36 +439,70 @@ def sealed_matches_query(title, extra_text, parsed):
 # PRICE
 # =========================================================
 
+_NUM = r"(\d{1,3}(?:[ ]\d{3})+(?:[.,]\d{1,2})?|\d{1,8}(?:[.,]\d{1,2})?)"
+_EX_VAT = re.compile(
+    r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|Kč|CZK))\s*(?:bez\s+DPH|excl\.?\s*VAT)",
+    re.I,
+)
+
+
+def _to_float(value):
+    value = value.replace(" ", "")
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    else:
+        value = value.replace(",", ".")
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def parse_price(text):
+    """Vráti cenu v EUR (CZK sa prepočíta). Ceny 'bez DPH' sa ignorujú."""
     text = clean_text(text)
     if not text:
         return None
+    text = _EX_VAT.sub(" ", text)
 
-    for pattern in (r"(\d{1,6}(?:[.,]\d{1,2})?)\s*€", r"€\s*(\d{1,6}(?:[.,]\d{1,2})?)"):
+    for pattern in (r"€\s*" + _NUM, _NUM + r"\s*€"):
         m = re.search(pattern, text)
         if m:
-            value = m.group(1).replace(" ", "")
-            if "," in value and "." in value:
-                if value.rfind(",") > value.rfind("."):
-                    value = value.replace(".", "").replace(",", ".")
-                else:
-                    value = value.replace(",", "")
-            else:
-                value = value.replace(",", ".")
-            try:
-                return float(value)
-            except ValueError:
-                pass
+            v = _to_float(m.group(1))
+            if v is not None:
+                return v
 
-    for pattern in (r"(\d{1,8}(?:[.,]\d{1,2})?)\s*(?:Kč|CZK)",
-                    r"(?:Kč|CZK)\s*(\d{1,8}(?:[.,]\d{1,2})?)"):
+    for pattern in (_NUM + r"\s*(?:Kč|CZK)", r"(?:Kč|CZK)\s*" + _NUM):
         m = re.search(pattern, text, re.I)
         if m:
-            try:
-                return float(m.group(1).replace(",", ".")) / CZK_PER_EUR
-            except ValueError:
-                pass
+            v = _to_float(m.group(1))
+            if v is not None:
+                return v / CZK_PER_EUR
     return None
+
+
+# =========================================================
+# JAZYK PRODUKTU (JP/KR/CN/ID verzie sa bežne nechcú)
+# =========================================================
+
+LANG_PATTERNS = [
+    ("JP", re.compile(r"japon\w*|japan\w*|\bjpn\b", re.I)),
+    ("KR", re.compile(r"k[óo]rej\w*|korean\w*", re.I)),
+    ("CN", re.compile(r"[čc][ií]nsk\w*|[čc][ií]nšt\w*|chinese", re.I)),
+    ("ID", re.compile(r"indon[ée]z\w*|indonesian", re.I)),
+]
+FOREIGN_QUERY_RE = re.compile(
+    r"japon|japan|jpn|k[óo]rej|korean|[čc][ií]nsk|chinese|indon", re.I)
+
+
+def detect_language(title):
+    for code, pattern in LANG_PATTERNS:
+        if pattern.search(title or ""):
+            return code
+    return ""
 
 
 # =========================================================
@@ -427,7 +520,7 @@ MERCH_WORDS = [
     "headphones", "earphones", "hračka", "hracka", "toy", "toys", "lampa",
     "lamp", "fľaša", "flasa", "bottle", "peňaženka", "penezenka", "wallet",
     "puzdro", "pouzdro", "phone case", "mobile case", "čepice", "cepice",
-    "cap", "deka", "blanket", "polštář", "polstar", "vankúš", "vankus",
+    "cap", "deka", "blanket", "mystery", "blind box", "toploader", "stojan", "polštář", "polstar", "vankúš", "vankus",
 ]
 MERCH_RE = re.compile(
     r"(?<!\w)(?:" + "|".join(re.escape(w) for w in MERCH_WORDS) + r")(?!\w)",
@@ -593,18 +686,21 @@ def cardyx_enrich_missing_images(results, debug=None):
         return results
 
     found = 0
+    ex = ThreadPoolExecutor(max_workers=IMAGE_FETCH_WORKERS)
     try:
-        with ThreadPoolExecutor(max_workers=IMAGE_FETCH_WORKERS) as ex:
-            futures = {ex.submit(cardyx_fetch_product_image, r["link"]): r for r in missing}
-            for fut in as_completed(futures):
-                try:
-                    url = fut.result()
-                except Exception:
-                    url = ""
-                futures[fut]["image"] = url
-                found += bool(url)
+        futures = {ex.submit(cardyx_fetch_product_image, r["link"]): r
+                   for r in missing[:IMAGE_ENRICH_MAX]}
+        for fut in as_completed(futures, timeout=IMAGE_ENRICH_BUDGET):
+            try:
+                url = fut.result()
+            except Exception:
+                url = ""
+            futures[fut]["image"] = url
+            found += bool(url)
     except Exception:
-        pass
+        pass  # časový limit: zvyšok sa dotiahne na pozadí do image_cache
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
     if debug is not None:
         debug["image_fallback_candidates"] = len(missing)
@@ -637,9 +733,10 @@ def _log(debug, **entry):
         debug["sample_decisions"].append(entry)
 
 
-def cardyx_search(query, return_debug=False, enrich_images=True,
-                  cache_result=True, timeout=None):
+def shop_search(shop, query, return_debug=False, enrich_images=True,
+                cache_result=True, timeout=None):
     start = time.monotonic()
+    cache_key = shop["name"].lower() + "|" + clean_text(query).lower()
     timeout = timeout or SEARCH_TIMEOUT
 
     def finish(results, debug):
@@ -647,7 +744,7 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
         return (results, debug) if return_debug else results
 
     # Cache hit (autocomplete môže použiť aj plné výsledky)
-    cached = search_cache.get(clean_text(query).lower())
+    cached = search_cache.get(cache_key)
     if cached is not None:
         cached["debug"]["cache"] = "hit"
         add_suggestions_from_results(cached["results"])
@@ -655,7 +752,7 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
 
     results = []
     debug = {
-        "shop": "CardyX", "query": query, "url": "", "status": "starting",
+        "shop": shop["name"], "query": query, "url": "", "status": "starting",
         "http_status": None, "results": 0, "links_scanned": 0, "unique_links": 0,
         "price_found": 0, "merch_filtered": 0, "match_filtered": 0, "accepted": 0,
         "images_found": 0, "images_missing": 0, "image_fallback_candidates": 0,
@@ -664,7 +761,7 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
     }
 
     try:
-        url = "https://www.cardyx.sk/search?q=" + urllib.parse.quote(query)
+        url = shop["search_url"].format(q=urllib.parse.quote(query))
         debug["url"] = url
         response, http_debug = fetch(url, timeout=timeout)
         debug["http_status"] = http_debug.get("http_status")
@@ -675,7 +772,7 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
             return finish(results, debug)
 
         soup = BeautifulSoup(response.text, "html.parser")
-        links = soup.select('a[href*="/products/"]')
+        links = soup.select(shop["link_selector"])
         debug["links_scanned"] = len(links)
 
         parsed = normalize_query(query)
@@ -683,7 +780,7 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
         seen = set()
 
         for anchor in links:
-            href = absolute_url("https://www.cardyx.sk/", anchor.get("href"))
+            href = absolute_url(shop["base_url"], anchor.get("href"))
             if not href:
                 continue
             key = href.lower().rstrip("/")
@@ -703,6 +800,9 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
             if price is None:
                 _log(debug, title=title, decision="filtered", reason="no_price")
                 continue
+            if price <= 0:
+                _log(debug, title=title, decision="filtered", reason="zero_price")
+                continue
             debug["price_found"] += 1
 
             if is_merch(title):
@@ -710,17 +810,26 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
                 _log(debug, title=title, decision="filtered", reason="merch")
                 continue
 
-            matcher = card_matches_query if kind == "card" else sealed_matches_query
-            matched, reason = matcher(title, block_text, parsed)
+            lang = detect_language(title)
+            if lang and not FOREIGN_QUERY_RE.search(query):
+                debug["language_filtered"] = debug.get("language_filtered", 0) + 1
+                _log(debug, title=title, decision="filtered", reason="language_" + lang)
+                continue
+
+            if kind == "card":
+                matched, reason = card_matches_query(
+                    title, block_text, parsed, loose_set=shop.get("loose_set", False))
+            else:
+                matched, reason = sealed_matches_query(title, block_text, parsed)
             if not matched:
                 debug["match_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason=reason)
                 continue
 
-            image_url = cardyx_extract_image(anchor)
+            image_url = cardyx_extract_image(anchor, shop["base_url"])
             results.append({
-                "title": title, "shop": "CardyX", "country": "SK",
-                "condition": "Nové", "price_eur": round(price, 2),
+                "title": title, "shop": shop["name"], "country": shop["country"],
+                "condition": "Nové", "language": lang, "price_eur": round(price, 2),
                 "link": href, "image": image_url,
             })
             debug["accepted"] += 1
@@ -747,7 +856,7 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
 
     # Do hlavnej cache len plné výsledky (s obrázkami)
     if cache_result and enrich_images:
-        search_cache.set(clean_text(query).lower(), {"results": results, "debug": debug})
+        search_cache.set(cache_key, {"results": results, "debug": debug})
 
     add_suggestions_from_results(results)
     return (results, debug) if return_debug else results
@@ -758,19 +867,36 @@ def cardyx_search(query, return_debug=False, enrich_images=True,
 # =========================================================
 
 def search_all(query, return_debug=False):
-    start = time.monotonic()
-    try:
-        results, debug = cardyx_search(query, return_debug=True,
-                                       enrich_images=True, cache_result=True)
-    except Exception as e:
-        results, debug = [], {"shop": "CardyX", "query": query,
-                              "status": "runner_error", "results": 0, "error": str(e)}
-    debug["elapsed_ms"] = round((time.monotonic() - start) * 1000)
+    """Hľadá vo všetkých aktívnych obchodoch paralelne."""
+    diagnostics, results = [], []
 
-    results.sort(key=lambda r: float(r.get("price_eur", 999999)))
+    def run(shop):
+        start = time.monotonic()
+        try:
+            res, dbg = shop_search(shop, query, return_debug=True,
+                                   enrich_images=True, cache_result=True)
+        except Exception as e:
+            res, dbg = [], {"shop": shop["name"], "query": query,
+                            "status": "runner_error", "results": 0, "error": str(e)}
+        dbg["elapsed_ms"] = round((time.monotonic() - start) * 1000)
+        return res, dbg
+
+    if ACTIVE_SHOPS:
+        with ThreadPoolExecutor(max_workers=len(ACTIVE_SHOPS)) as ex:
+            for res, dbg in ex.map(run, ACTIVE_SHOPS):
+                results.extend(res)
+                diagnostics.append(dbg)
+
+    unique = {}
+    for r in results:
+        key = (clean_text(r.get("shop", "")).lower(),
+               clean_text(r.get("title", "")).lower(),
+               clean_text(r.get("link", "")).lower())
+        unique[key] = r
+    results = sorted(unique.values(), key=lambda r: float(r.get("price_eur", 999999)))
 
     if return_debug:
-        return results, {"query": query, "shops": [debug], "total_results": len(results)}
+        return results, {"query": query, "shops": diagnostics, "total_results": len(results)}
     return results
 
 
@@ -803,7 +929,7 @@ def make_suggestion_from_title(title):
     is_card = not p.get("product_type")
     return {
         "title": title, "query": query,
-        "subtitle": "Reálna karta z CardyX",
+        "subtitle": "Reálna karta z obchodu",
         "type": "card" if is_card else "product",
         "type_label": "Karta" if is_card else "Produkt",
         "image": "", "price_eur": None, "price": None, "link": "",
@@ -892,8 +1018,8 @@ def api_suggestions():
     remote_used = False
     if len(candidates) < MIN_LOCAL_SUGGESTIONS:
         remote_used = True
-        remote = cardyx_search(q, return_debug=False, enrich_images=False,
-                               cache_result=False, timeout=SUGGESTION_TIMEOUT)
+        remote = shop_search(ACTIVE_SHOPS[0], q, return_debug=False, enrich_images=False,
+                             cache_result=False, timeout=SUGGESTION_TIMEOUT) if ACTIVE_SHOPS else []
         known = {clean_text(c.get("query", "")).lower() for c in candidates}
         for s in suggestions_from_results(remote):
             if clean_text(s["query"]).lower() not in known:
@@ -976,6 +1102,22 @@ def api_debug_search():
                     "parsed": parsed, "debug": debug, "results": results})
 
 
+@app.get("/api/debug/shop")
+def api_debug_shop():
+    """Test jedného obchodu (aj vypnutého): /api/debug/shop?name=CardyX&q=pikachu"""
+    name = clean_text(request.args.get("name", "")).lower()
+    q = clean_text(request.args.get("q", ""))
+    shop = next((x for x in SHOPS if x["name"].lower() == name), None)
+    if not shop or not q:
+        return jsonify({"error": "Zadaj ?name=<obchod>&q=<hľadaný text>",
+                        "shops": [x["name"] for x in SHOPS]}), 400
+    normalized = normalize_query(q).get("normalized", q)
+    results, debug = shop_search(shop, normalized, return_debug=True,
+                                 enrich_images=False, cache_result=False)
+    return jsonify({"shop": shop["name"], "normalized_query": normalized,
+                    "debug": debug, "results": results})
+
+
 @app.get("/api/debug/cache")
 def api_debug_cache():
     s_items, s_active = search_cache.stats()
@@ -1011,7 +1153,7 @@ def health():
         catalog_items = len(SUGGESTION_CATALOG)
     return jsonify({
         "service": "CardRadar", "status": "ok", "version": VERSION,
-        "index_exists": bool(index_path), "active_shops": ["CardyX"],
+        "index_exists": bool(index_path), "active_shops": [f"{x['name']} ({x['country']})" for x in ACTIVE_SHOPS],
         "suggestion_catalog_items": catalog_items,
         "image_cache_items": image_cache.stats()[0],
     })
