@@ -1,6 +1,8 @@
 """
-CARD RADAR – rozšírenia 6.2
+CARD RADAR – rozšírenia 6.4
+ - 6.4: katalógy sa po reštarte servera načítajú hneď a postupne
 ===========================
+ - 6.3: rýchlejšie opakované hľadanie, správna cena pri zľavách, bezpečnostné opravy
  - obchody v katalógovom režime (iHRYsko, imago)
  - XML feedy (Heureka / Google), stačí vyplniť "feed" pri obchode
  - presnejšie hľadanie sealed produktov aj pri setoch, ktoré app.py nepozná
@@ -101,7 +103,7 @@ CATALOG_SHOPS = [
 ]
 
 REFRESH_MIN = float(os.environ.get("CATALOG_REFRESH_MIN", "60"))
-PAGE_DELAY = 1.5        # sekundy medzi stranami jedného obchodu (šetrne)
+PAGE_DELAY = 1.0        # sekundy medzi stranami jedného obchodu (šetrne)
 MEM_TTL = 60            # sekundy, kým sa katalóg znova načíta z DB
 
 # Nové sety Mega Evolution, ktoré v app.py chýbali
@@ -354,6 +356,7 @@ def crawl_shop(shop):
     host = urllib.parse.urlparse(shop["base_url"]).netloc.lower()
     items, pages, errors = {}, 0, []
     start = time.monotonic()
+    first_load = not _load_catalog(shop["name"])[0]   # po reštarte servera je katalóg prázdny
 
     for url in shop["catalog"]:
         n, visited = 1, set()
@@ -376,6 +379,9 @@ def crawl_shop(shop):
             n += 1
             if url:
                 time.sleep(PAGE_DELAY)
+        if first_load and items:
+            # priebežne uložiť, aby sa obchod dal hľadať hneď po prvej kategórii
+            _save_catalog(shop["name"], list(items.values()))
 
     result = list(items.values())
     updated = ""
@@ -410,7 +416,7 @@ def _crawl_bg(shop):
 
 
 def _loop():
-    time.sleep(20)
+    time.sleep(3)   # hneď po štarte: všetky obchody naraz, každý vo vlastnom vlákne
     while True:
         for shop in CATALOG_SHOPS:
             if not shop.get("enabled", True):
@@ -418,7 +424,7 @@ def _loop():
             try:
                 _, updated = _load_catalog(shop["name"])
                 if _is_stale(updated):
-                    crawl_shop(shop)
+                    _crawl_bg(shop)
             except Exception:
                 pass
         time.sleep(300)
@@ -749,6 +755,179 @@ def _inject_footer(resp):
 
 
 # =========================================================
+# OPRAVY A ZRÝCHLENIE 6.3 (opravy pre app.py, bez úpravy app.py)
+# =========================================================
+from concurrent.futures import ThreadPoolExecutor as _TPE
+
+FAST_TIMEOUT = 6            # max. sekúnd čakania na jeden obchod (bolo 8)
+SWR_FRESH = 600             # 10 min: výsledok je čerstvý
+SWR_STALE = 6 * 3600        # do 6 h: ukáže sa hneď a na pozadí sa obnoví
+SWR_MAX = 800
+_swr = {}
+_swr_lock = threading.Lock()
+_swr_busy = set()
+_swr_pool = _TPE(max_workers=4, thread_name_prefix="swr")
+
+
+def _swr_key(shop, query):
+    return shop["name"].lower() + "|" + G["clean_text"](query).lower()
+
+
+def _swr_put(key, results, debug):
+    with _swr_lock:
+        if key not in _swr and len(_swr) >= SWR_MAX:
+            _swr.pop(min(_swr, key=lambda k: _swr[k][0]), None)
+        _swr[key] = (time.monotonic(), copy.deepcopy(results), copy.deepcopy(debug))
+
+
+def _make_shop_search(original):
+    """Opakované hľadanie je okamžité: starší výsledok sa ukáže hneď
+    a čerstvý sa stiahne na pozadí (stale-while-revalidate)."""
+    def run(shop, query, timeout):
+        res, dbg = original(shop, query, return_debug=True, cache_result=True, timeout=timeout)
+        if dbg.get("status") in G["CACHEABLE_STATUSES"]:
+            _swr_put(_swr_key(shop, query), res, dbg)
+        return res, dbg
+
+    def refresh(shop, query, key):
+        try:
+            run(shop, query, FAST_TIMEOUT)
+        except Exception:
+            pass
+        finally:
+            with _swr_lock:
+                _swr_busy.discard(key)
+
+    def shop_search(shop, query, return_debug=False, cache_result=True, timeout=None):
+        timeout = timeout or FAST_TIMEOUT
+        if not cache_result:
+            res, dbg = original(shop, query, return_debug=True, cache_result=False, timeout=timeout)
+            return (res, dbg) if return_debug else res
+        key = _swr_key(shop, query)
+        with _swr_lock:
+            ent = _swr.get(key)
+        if ent:
+            age = time.monotonic() - ent[0]
+            if age < SWR_STALE:
+                if age >= SWR_FRESH:
+                    with _swr_lock:
+                        start = key not in _swr_busy
+                        _swr_busy.add(key)
+                    if start:
+                        _swr_pool.submit(refresh, shop, query, key)
+                res, dbg = copy.deepcopy(ent[1]), copy.deepcopy(ent[2])
+                dbg["cache"] = "stale" if age >= SWR_FRESH else "hit"
+                G["fill_images_from_cache"](res)
+                return (res, dbg) if return_debug else res
+        res, dbg = run(shop, query, timeout)
+        return (res, dbg) if return_debug else res
+    return shop_search
+
+
+_STRIKE_APP = _STRIKE_SELECTOR + ", [class*='standard'], [class*='compare'], [class*='regular']"
+
+
+def _make_block_fix(original):
+    """Dlaždica bez prečiarknutej ceny – pri zľave sa brala pôvodná (vyššia) cena."""
+    def find_product_block_el(anchor):
+        el = original(anchor)
+        if el is None:
+            return el
+        try:
+            if not el.select(_STRIKE_APP):
+                return el
+            c = copy.copy(el)
+            for old in c.select(_STRIKE_APP):
+                old.decompose()
+            if G["parse_price"](c.get_text(" ", strip=True)) is None:
+                return el
+            return c
+        except Exception:
+            return el
+    return find_product_block_el
+
+
+def client_ip():
+    """Skutočná IP návštevníka (Render beží za Cloudflare)."""
+    from flask import request
+    for h in ("CF-Connecting-IP", "True-Client-IP"):
+        v = request.headers.get(h, "").strip()
+        if v:
+            return v[:64]
+    xff = request.headers.get("X-Forwarded-For", "")
+    return (xff.split(",")[0].strip() if xff else "") or request.remote_addr or "?"
+
+
+def debug_allowed():
+    """Debug len s ADMIN_KEY. Bez kľúča iba lokálne na vlastnom počítači."""
+    from flask import request
+    if G["_g"]["ADMIN_KEY"]:
+        return G["is_admin"]()
+    return request.remote_addr in ("127.0.0.1", "::1") and not request.headers.get("X-Forwarded-For")
+
+
+def alerts_confirm():
+    """Rovnaké ako v app.py, ale názov produktu je ošetrený (XSS)."""
+    from flask import request
+    token = G["clean_text"](request.args.get("token", ""))
+    conn = _db()
+    try:
+        row = conn.execute("SELECT id, target, title FROM alerts WHERE token = ?", (token,)).fetchone()
+        if row:
+            conn.execute("UPDATE alerts SET confirmed = 1 WHERE id = ?", (row[0],))
+            conn.commit()
+    finally:
+        conn.close()
+    page = G["_simple_page"]
+    if not row:
+        return page("Odkaz neplatí", "Tento strážca už neexistuje alebo bol odkaz zmenený.")
+    base = G["_g"]["PUBLIC_URL"] or request.url_root.rstrip("/")
+    stop = _html.escape(f"{base}/alerts/stop?token={urllib.parse.quote(token)}")
+    title = _html.escape(row[2] or "produkt")
+    return page("Strážca je zapnutý 🔔",
+                f"Napíšeme ti, keď {title} klesne na {row[1]:.2f} € alebo menej."
+                f"<br><br><a href='{stop}' style='color:#94a3b8'>Zrušiť strážcu</a>")
+
+
+def manifest():
+    from flask import Response
+    import json as _json
+    data = {
+        "name": "CardRadar – ceny Pokémon kariet", "short_name": "CardRadar",
+        "description": "Porovnanie cien Pokémon kariet, ETB a booster boxov.",
+        "start_url": "/?source=pwa", "scope": "/", "display": "standalone",
+        "background_color": "#0d1530", "theme_color": "#0d1530", "lang": "sk",
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            {"src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png",
+             "purpose": "maskable"},
+        ],
+    }
+    resp = Response(_json.dumps(data, ensure_ascii=False), mimetype="application/manifest+json")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+def _install_fixes(g):
+    g["SEARCH_TIMEOUT"] = FAST_TIMEOUT
+    for name, fn in (("client_ip", client_ip), ("debug_allowed", debug_allowed)):
+        g[name] = fn
+        G[name] = fn
+    fixed_block = _make_block_fix(g["find_product_block_el"])
+    g["find_product_block_el"] = fixed_block
+    G["find_product_block_el"] = fixed_block
+    fast = _make_shop_search(g["shop_search"])
+    g["shop_search"] = fast
+    G["shop_search"] = fast
+    app = g["app"]
+    if "alerts_confirm" in app.view_functions:
+        app.view_functions["alerts_confirm"] = alerts_confirm
+    if "manifest" in app.view_functions:
+        app.view_functions["manifest"] = manifest
+
+
+# =========================================================
 # DEBUG ENDPOINT
 # =========================================================
 
@@ -845,3 +1024,6 @@ def install(g):
     app.after_request(_inject_footer)   # beží pred gzipom v app.py
     threading.Thread(target=_daily_loop, daemon=True, name="daily").start()
     _start_worker()
+
+    # 8) opravy a zrýchlenie app.py (6.3)
+    _install_fixes(g)
