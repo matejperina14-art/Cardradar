@@ -13,17 +13,17 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CardRadar">
-<link rel="preconnect" href="https://www.cardyx.sk" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Nunito:wght@500;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Nunito:wght@500;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Bungee&family=Nunito:wght@500;700;800;900&display=swap" rel="stylesheet"></noscript>
 <style>
 /* CARD RADAR DIZAJN 7.0 – vlastný maskot Scanix, typové čipy, holo najlacnejšia ponuka */
 :root{
   --bg:#0d1530;--panel:#18234a;--input:#101a3a;--text:#f8fafc;--sub:#a5b4d4;--border:#2c3b6e;
   --accent:#ffd23f;--accent-dk:#e0a800;--green:#4ade80;--blue:#2f6bff;--red:#ff4d5e;--warn:#fbbf24;
   --navy:#1b2a5c;--mint:#3fe0c5;
-  --card:#141f44ee;--card-in:#0e1734;
+  --card:#141f44f7;--card-in:#0e1734;
   --holo:conic-gradient(from var(--a,0deg),#ff4d5e,#ffd23f,#4ade80,#38bdf8,#a78bfa,#ff4d5e);
 }
 @property --a{syntax:'<angle>';inherits:false;initial-value:0deg}
@@ -137,6 +137,8 @@ button:disabled{opacity:.6;cursor:default}
 
 /* status */
 .notice{margin:0 0 12px;padding:10px 14px;border:1px solid #92400e;background:#451a0399;color:#fde68a;border-radius:12px;font-size:14px}
+.notice.info{border-color:#2f6bff;background:#1d3a8a55;color:#cfe0ff;display:flex;align-items:center;gap:10px}
+.notice.info .spin{flex:none;border-top-color:var(--mint)}
 .summary{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0 0 12px;padding:11px 14px;background:#121c3fcc;border:1px solid var(--border);border-radius:14px;color:var(--sub);font-size:14px}
 .summary strong{color:var(--text);font-weight:900}
 .summary .g{color:var(--green);font-weight:900}
@@ -161,7 +163,7 @@ button:disabled{opacity:.6;cursor:default}
 
 /* grid */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
-.card{display:flex;flex-direction:column;background:var(--card);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid var(--border);border-radius:14px;overflow:hidden;transition:transform .15s,border-color .15s;content-visibility:auto;contain-intrinsic-size:auto 420px}
+.card{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;transition:transform .15s,border-color .15s;content-visibility:auto;contain-intrinsic-size:auto 420px}
 .card:hover{transform:translateY(-2px);border-color:#4b5f9e}
 .card.best{border-color:#16a34a}
 .c-img{display:flex;align-items:center;justify-content:center;aspect-ratio:3/4;background:var(--input);text-decoration:none;font-size:42px}
@@ -249,7 +251,7 @@ button:disabled{opacity:.6;cursor:default}
 /* produkt (skupina ponúk) */
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
 .pcard{position:relative;background:var(--card);border:1px solid var(--border);border-radius:18px;padding:12px;display:flex;flex-direction:column;gap:10px;
-  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:border-color .15s;content-visibility:auto;contain-intrinsic-size:auto 260px}
+  transition:border-color .15s;content-visibility:auto;contain-intrinsic-size:auto 260px}
 .pcard:hover{border-color:#4b5f9e}
 /* najlacnejšia ponuka = holo karta */
 .pcard.best{border:2px solid transparent;background:linear-gradient(#141f44,#141f44) padding-box,var(--holo) border-box;
@@ -393,6 +395,10 @@ footer a{color:var(--sub)}
   #tags::-webkit-scrollbar{display:none}
   #tags button{flex:none}
 }
+@media(max-width:650px){
+  .bg .fl,.bg .blip{animation:none}
+  .bg .blip{opacity:.5}
+}
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}
 }
@@ -528,7 +534,7 @@ footer a{color:var(--sub)}
 <div class="tm">Pokémon je ochranná známka spoločností Nintendo, Creatures a GAME FREAK. CardRadar je nezávislý porovnávač cien a nie je s nimi nijako spojený. Maskot Scanix je vlastná postava CardRadaru.</div>
 
 <script>
-/* CARD RADAR FRONTEND 7.0 */
+/* CARD RADAR FRONTEND 7.2 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -782,7 +788,7 @@ function categoryOf(t){
 }
 
 let allResults = [], groups = [], cat = 'all', shopOff = new Set(), shopState = {}, sortMode = 'asc', showOut = false;
-let currentQuery = '', failedShops = [], resultsGen = 0, mode = 'home', revealNext = false;
+let currentQuery = '', failedShops = [], loadingShops = [], retryTimer = null, resultsGen = 0, mode = 'home', revealNext = false;
 let searchCtrl = null, homeData = null;
 const resCache = new Map();
 const ITEMS = new Map();   // data-id -> skupina (produkt)
@@ -910,6 +916,10 @@ function skeleton(){
 
 function renderStatus(list){
   let h = '';
+  if (loadingShops.length) {
+    const many = loadingShops.length > 1;
+    h += `<div class="notice info"><span class="spin"></span><span>${esc(loadingShops.join(' a '))} si ${many ? 'práve načítavajú' : 'práve načítava'} ponuky. Ich ceny sem doplníme automaticky o chvíľu.</span></div>`;
+  }
   if (failedShops.length) {
     const many = failedShops.length > 1;
     h += `<div class="notice">⚠️ ${esc(failedShops.join(', '))} teraz ${many ? 'neodpovedajú' : 'neodpovedá'}, ponuky z ${many ? 'nich' : 'neho'} môžu chýbať. Skús hľadať znova o chvíľu.</div>`;
@@ -1387,7 +1397,7 @@ $('home').addEventListener('click', e => {
 });
 
 /* ---------- search ---------- */
-function showData(q, data, push){
+function showData(q, data, push, opts = {}){
   const norm = (data.normalized_query || '').trim() || q;
   $('q').value = norm;
   if (num(data.czk_per_eur)) CZK_RATE = data.czk_per_eur;
@@ -1398,17 +1408,29 @@ function showData(q, data, push){
   allResults = Array.isArray(data.results) ? data.results : [];
   ITEMS.clear(); openGroups.clear();
   groups = buildGroups(allResults, 'g');
-  failedShops = (data.shops || []).filter(s => s.ok === false).map(s => s.name);
-  shopState = {}; (data.shops || []).forEach(s => shopState[s.name] = s.ok === false ? 'bad' : 'ok');
+  const sh = data.shops || [];
+  loadingShops = sh.filter(s => s.status === 'catalog_loading').map(s => s.name);
+  failedShops = sh.filter(s => s.ok === false && s.status !== 'catalog_loading').map(s => s.name);
+  shopState = {}; sh.forEach(s => shopState[s.name] = s.status === 'catalog_loading' ? '' : s.ok === false ? 'bad' : 'ok');
   showOut = false;  // kategória, obchody a jazyky ostávajú aj pre ďalšie hľadanie
   if (data.query_lang) langOff.delete(data.query_lang);
 
   rememberImages(allResults);
   updateUrl(norm, push);
-  revealNext = true;
+  revealNext = !opts.quiet;
   renderView();
   if (allResults.length) addRecent(norm);
   loadMissingImages(resultsGen);
+  // obchody, ktoré sa ešte načítavajú: o chvíľu sa potichu opýtať znova
+  clearTimeout(retryTimer);
+  const tries = opts.retry || 0;
+  if (loadingShops.length && tries < 4) {
+    retryTimer = setTimeout(() => {
+      if (mode !== 'search' || currentQuery !== norm) return;
+      resCache.delete(norm.toLowerCase()); resCache.delete(q.toLowerCase());
+      search(norm, {push: false, quiet: true, retry: tries + 1});
+    }, 25000);
+  }
 }
 
 async function search(qArg, opts = {}){
@@ -1423,16 +1445,20 @@ async function search(qArg, opts = {}){
   const c = resCache.get(key);
   if (c && Date.now() - c.t < RES_TTL) { showData(q, c.data, push); return; }
 
+  const quiet = !!opts.quiet;
   const ctrl = searchCtrl = new AbortController();
   const btn = $('searchButton');
-  btn.disabled = true;
-  mode = 'search'; renderFavBtn(); setLayout(); renderSide();
-  const n = SHOPS.length;
-  $('status').innerHTML = `<div class="scan">${radik()}<div>Scanix skenuje ${n ? n + ' ' + plural(n,'obchod','obchody','obchodov') : 'obchody'}…<small>Hľadám „${esc(q)}“</small></div><span class="scope" aria-hidden="true"></span></div>`;
-  skeleton();
-  if (window.innerWidth < 650) $('q').blur();
-  const top = document.querySelector('.layout').getBoundingClientRect().top + scrollY - 10;
-  if (scrollY > top) window.scrollTo({top, behavior: 'smooth'});
+  if (!quiet) {
+    clearTimeout(retryTimer);
+    btn.disabled = true;
+    mode = 'search'; renderFavBtn(); setLayout(); renderSide();
+    const n = SHOPS.length;
+    $('status').innerHTML = `<div class="scan">${radik()}<div>Scanix skenuje ${n ? n + ' ' + plural(n,'obchod','obchody','obchodov') : 'obchody'}…<small>Hľadám „${esc(q)}“</small></div><span class="scope" aria-hidden="true"></span></div>`;
+    skeleton();
+    if (window.innerWidth < 650) $('q').blur();
+    const top = document.querySelector('.layout').getBoundingClientRect().top + scrollY - 10;
+    if (scrollY > top) window.scrollTo({top, behavior: 'smooth'});
+  }
 
   try {
     const r = await fetch('/api/search?q=' + encodeURIComponent(q), {signal: ctrl.signal});
@@ -1448,9 +1474,9 @@ async function search(qArg, opts = {}){
     if (nk) resCache.set(nk, entry);
     if (resCache.size > 50) resCache.delete(resCache.keys().next().value);
 
-    showData(q, data, push);
+    showData(q, data, push, opts);
   } catch (e) {
-    if (e.name === 'AbortError') return;
+    if (e.name === 'AbortError' || quiet) return;
     allResults = []; groups = [];
     $('results').innerHTML = '';
     $('status').innerHTML = `<div class="panel error"><b>Chyba:</b> ${esc(e.message || 'Neznáma chyba.')}</div>`;
