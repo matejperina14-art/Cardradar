@@ -80,7 +80,7 @@ CATALOG_SHOPS = [
         "max_pages": 15,
     },
     {
-        "name": "Herný svet", "country": "SK", "enabled": True,
+        "name": "Herný svet", "country": "SK", "enabled": False, 
         "base_url": "https://www.hernysvet.sk/",
         "catalog": ["https://www.hernysvet.sk/tema/pokemon"],
         "max_pages": 15,
