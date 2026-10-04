@@ -2,7 +2,7 @@
 <html lang="sk">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>CardRadar – reálne ceny Pokémon kariet</title>
 <meta name="description" content="Porovnaj ceny Pokémon kariet, ETB a booster boxov v slovenských obchodoch na jednom mieste.">
 <meta name="theme-color" content="#090d16">
@@ -11,7 +11,7 @@
 <style>
 :root{--bg:#090d16;--panel:#1e293b;--input:#0f172a;--text:#f8fafc;--sub:#94a3b8;--border:#334155;--accent:#facc15;--green:#4ade80;--blue:#2563eb;--warn:#fbbf24}
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;background:#090d16}
 body{margin:0;padding:22px 14px;min-height:100vh;background:linear-gradient(135deg,#090d16,#0f172a,#172033) fixed;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
 .wrap{max-width:1000px;width:100%;margin:0 auto;flex:1}
 h1{text-align:center;color:var(--accent);font-size:2.3rem;margin:10px 0 4px;letter-spacing:-.02em}
@@ -35,7 +35,8 @@ button:disabled{opacity:.6;cursor:default}
 .suggestion:last-child{border-bottom:0}
 .suggestion:hover,.suggestion.active{background:#1e293b}
 .s-img{width:40px;height:52px;flex:none;border-radius:7px;background:var(--input);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden}
-.s-img img{width:100%;height:100%;object-fit:contain;padding:3px}
+.s-img img{width:100%;height:100%;object-fit:contain;padding:3px;animation:fade .2s ease}
+.s-img.wait{background:linear-gradient(90deg,#0f172a,#1b2740,#0f172a);background-size:200% 100%;animation:sh 1.2s infinite}
 .s-title{flex:1;min-width:0;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .s-price{flex:none;color:var(--green);font-weight:800;font-size:14px}
 .s-msg{padding:14px;text-align:center;color:var(--sub);font-size:14px}
@@ -95,6 +96,57 @@ button:disabled{opacity:.6;cursor:default}
 .empty{text-align:center;padding:30px;color:var(--sub);line-height:1.5}
 .empty button{margin-top:10px;padding:8px 12px;font-size:13px}
 
+
+/* karta: médiá, akcie, sklad */
+.c-media{position:relative}
+.fav{position:absolute;top:8px;right:8px;width:36px;height:36px;padding:0;border-radius:50%;background:#0f172acc;border:1px solid var(--border);font-size:17px;line-height:1;display:flex;align-items:center;justify-content:center}
+.fav:active{transform:scale(.9)}
+.card.sold .c-img{opacity:.45;filter:grayscale(.6)}
+.card.sold .price{color:var(--sub)}
+.b-in{background:#166534}.b-out{background:#9f1239}.b-pre{background:#1d4ed8}
+.ppp{font-size:12px;color:var(--text);background:#0f172a;border:1px solid var(--border);border-radius:6px;padding:4px 7px;align-self:flex-start}
+.ppp span{color:var(--sub)}
+.trend{font-size:12px;font-weight:700}
+.trend.down{color:var(--green)}.trend.up{color:#fb7185}
+.c-acts{display:flex;gap:6px;border-top:1px solid var(--border);padding-top:8px}
+.c-acts button{flex:1;padding:6px 4px;font-size:12px;background:none;border:1px solid var(--border);border-radius:7px;color:var(--sub)}
+.c-acts button:hover{color:var(--text);border-color:#64748b}
+.out-toggle{display:flex;align-items:center;gap:8px;color:var(--sub);font-size:13px;margin:0 0 12px;cursor:pointer}
+.out-toggle input{width:16px;height:16px;accent-color:var(--accent)}
+.chips .fav-btn.on{background:var(--accent);color:#111827;border-color:var(--accent);font-weight:700}
+.chips .cnt{opacity:.7;margin-left:5px}
+
+/* modal */
+.modal{position:fixed;inset:0;z-index:2000;background:rgba(2,6,23,.72);display:none;align-items:center;justify-content:center;padding:16px}
+.modal.show{display:flex}
+.m-box{width:100%;max-width:640px;max-height:calc(100vh - 32px);overflow-y:auto;background:#111827;border:1px solid var(--border);border-radius:16px;padding:18px 18px 20px;box-shadow:0 25px 60px rgba(0,0,0,.5);animation:pop .18s ease}
+@keyframes pop{from{transform:translateY(12px);opacity:0}}
+.m-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.m-head h2{margin:0;font-size:1.15rem}
+.m-x{background:none;border:0;color:var(--sub);font-size:18px;padding:6px 10px}
+.m-sub{color:var(--sub);font-size:13px;margin:6px 0 14px;line-height:1.4}
+.m-text{line-height:1.55;font-size:14px}
+.m-text.ok{color:var(--green);font-weight:700}
+.m-note{color:var(--sub);font-size:12px;line-height:1.5;margin:12px 0 0}
+.m-load{display:flex;align-items:center;gap:10px;color:var(--sub);padding:30px 0;justify-content:center}
+.m-form{display:flex;flex-direction:column;gap:14px}
+.m-form label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--sub)}
+.m-form .inrow{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:700}
+.m-form .inrow input{width:140px}
+.chart-wrap{overflow-x:auto}
+.chart{width:100%;min-width:320px;height:auto;display:block}
+.chart .gl{stroke:#334155;stroke-width:1;stroke-dasharray:3 4}
+.chart .gt{fill:#94a3b8;font-size:11px}
+.chart .ln{fill:none;stroke:var(--accent);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.chart .ar{fill:var(--accent);opacity:.08}
+.chart .dot{fill:#111827;stroke:var(--accent);stroke-width:2}
+.chart .dot.out{stroke:#fb7185}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.stats div{background:#0f172a;border:1px solid var(--border);border-radius:10px;padding:9px 10px;display:flex;flex-direction:column;gap:2px}
+.stats span{font-size:11px;color:var(--sub)}
+.stats b{font-size:15px}
+.stats .g{color:var(--green)}
+
 footer{max-width:1000px;width:100%;margin:40px auto 0;padding:18px 4px 4px;border-top:1px solid var(--border);color:var(--sub);font-size:13px;line-height:1.6;text-align:center}
 footer a{color:var(--sub)}
 
@@ -110,6 +162,9 @@ footer a{color:var(--sub)}
   .toolbar.shops{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
   .toolbar.shops button{flex:none}
   .summary .share{margin-left:0}
+  .modal{align-items:flex-end;padding:0}
+  .m-box{max-width:none;border-radius:16px 16px 0 0;max-height:88vh;padding-bottom:calc(20px + env(safe-area-inset-bottom,0px))}
+  .c-acts{flex-direction:column}
 }
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}
@@ -138,13 +193,15 @@ footer a{color:var(--sub)}
   <div id="results"></div>
 </div>
 
+<div id="modal" class="modal"></div>
+
 <footer id="footer">
   Ceny sú orientačné a načítavajú sa priamo z obchodov. Pred nákupom ich over na stránke predajcu.<br>
   CardRadar nie je obchod – tlačidlo „Otvoriť“ ťa presmeruje k predajcovi.
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 5.26 */
+/* CARD RADAR FRONTEND 5.30 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -153,7 +210,7 @@ const imageOf = i => String(i?.image || i?.image_url || '').trim();
 const plural = (n, one, few, many) => n === 1 ? one : (n >= 2 && n <= 4 ? few : many);
 
 let CZK_RATE = 24.4618;
-let SHOPS = [];
+let SHOPS = [], ALERTS = false;
 const eurFmt = new Intl.NumberFormat('sk-SK', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const czkFmt = new Intl.NumberFormat('cs-CZ', {maximumFractionDigits: 0});
 const eur = n => num(n) === null ? '–' : eurFmt.format(n) + ' €';
@@ -167,6 +224,7 @@ const DEBOUNCE = 350, MIN_CHARS = 3, SUG_TTL = 60000, RES_TTL = 120000, IMG_CHUN
 fetch('/api/config').then(r => r.ok ? r.json() : null).then(c => {
   if (!c) return;
   if (num(c.czk_per_eur)) CZK_RATE = c.czk_per_eur;
+  if (c.alerts_enabled && !ALERTS) { ALERTS = true; if (mode === 'search' && allResults.length) renderView(); }
   SHOPS = Array.isArray(c.shops) ? c.shops : [];
   if (!SHOPS.length) return;
   const n = SHOPS.length;
@@ -179,7 +237,7 @@ fetch('/api/config').then(r => r.ok ? r.json() : null).then(c => {
 }).catch(() => {});
 
 /* ---------- quick tags + recent ---------- */
-$('tags').innerHTML = QUICK.map(t => `<button data-q="${esc(t)}">${esc(t)}</button>`).join('');
+$('tags').innerHTML = '<button id="favBtn" class="fav-btn"></button>' + QUICK.map(t => `<button data-q="${esc(t)}">${esc(t)}</button>`).join('');
 
 function getRecent(){ try { return JSON.parse(localStorage.getItem('cr_recent') || '[]'); } catch(e){ return []; } }
 function setRecent(a){ try { localStorage.setItem('cr_recent', JSON.stringify(a)); } catch(e){} }
@@ -196,6 +254,9 @@ document.addEventListener('click', e => {
   if (e.target.id === 'clearRecent') { setRecent([]); renderRecent(); }
   if (e.target.closest('#shareBtn')) share();
   if (e.target.closest('#resetFilters')) { typeFilter = 'all'; shopFilter = 'all'; renderView(); }
+  if (e.target.closest('#showOutBtn')) { showOut = true; renderView(); }
+  if (e.target.closest('#favBtn')) { mode === 'fav' ? leaveFavorites() : showFavorites(); }
+  if (e.target.closest('#backBtn')) leaveFavorites();
   if (!e.target.closest('.search-wrap')) hideSug();
 });
 renderRecent();
@@ -203,6 +264,19 @@ renderRecent();
 /* ---------- autocomplete ---------- */
 let sugTimer = null, sugItems = [], sugIndex = -1, sugCtrl = null, gen = 0;
 const sugCache = new Map();
+const imgByLink = new Map();   // odkaz -> obrázok ('' = nemá, null = načítava sa)
+const imgByName = new Map();   // "pikachu" -> obrázok z niektorej reálnej karty
+
+function rememberImages(items){
+  for (const x of items || []) {
+    const img = imageOf(x);
+    if (!img) continue;
+    if (x.link) imgByLink.set(x.link, img);
+    if (x._p) continue;  // pre meno Pokémona radšej obrázok karty než boxu
+    const t = String(x.title || '').toLowerCase();
+    for (const p of LOCAL) { const k = p.toLowerCase(); if (!imgByName.has(k) && new RegExp('\\b' + k + '\\b').test(t)) imgByName.set(k, img); }
+  }
+}
 
 function localSuggestions(q){
   q = q.toLowerCase();
@@ -210,10 +284,11 @@ function localSuggestions(q){
   for (const p of LOCAL) {
     const l = p.toLowerCase();
     if (l.startsWith(q) || q.startsWith(l)) {
-      out.push({title:p, query:p, type:'pokemon'});
+      const image = imgByName.get(l) || '';
+      out.push({title:p, query:p, type:'pokemon', image});
       for (const s of ['ex','VMAX','VSTAR','V']) {
         const t = p + ' ' + s;
-        if (t.toLowerCase().startsWith(q)) out.push({title:t, query:t, type:'card'});
+        if (t.toLowerCase().startsWith(q)) out.push({title:t, query:t, type:'card', image});
       }
     }
   }
@@ -247,7 +322,9 @@ async function loadSug(q, g){
     if (r.ok) sugCache.set(key, {t: Date.now(), items: items.length ? items : localSuggestions(q)});
     sugItems = items.length ? items : localSuggestions(q);
     sugIndex = -1;
+    rememberImages(items);
     sugItems.length ? renderSug() : showMsg('Žiadny návrh. Stlač Enter a hľadaj.');
+    fillSugImages(g);
   } catch (e) {
     if (e.name === 'AbortError' || g !== gen) return;
     sugItems = localSuggestions(q);
@@ -258,18 +335,51 @@ async function loadSug(q, g){
 function showMsg(t){ $('suggestions').innerHTML = `<div class="s-msg">${t}</div>`; $('suggestions').classList.add('show'); }
 function hideSug(){ $('suggestions').classList.remove('show'); $('suggestions').innerHTML = ''; sugItems = []; sugIndex = -1; }
 
+const sugIcon = s => s.type === 'product' ? '📦' : s.type === 'pokemon' ? '⚡' : '🃏';
+function sugImgHtml(s){
+  const img = imageOf(s) || (s.link && imgByLink.get(s.link)) || '';
+  if (img) { s.image = img; return `<img src="${esc(img)}" alt="" decoding="async" onerror="this.replaceWith('${sugIcon(s)}')">`; }
+  return s.link && imgByLink.get(s.link) === null ? '' : sugIcon(s);
+}
+function sugWait(s){ return !imageOf(s) && s.link && imgByLink.get(s.link) === null ? ' wait' : ''; }
+
 function renderSug(){
   $('suggestions').innerHTML = sugItems.map((s,i) => {
-    const img = imageOf(s), p = priceOf(s);
-    const icon = s.type === 'product' ? '📦' : s.type === 'pokemon' ? '⚡' : '🃏';
+    const p = priceOf(s);
+    const html = sugImgHtml(s);
     return `<div class="suggestion" role="option" data-i="${i}">
-      <div class="s-img">${img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async" onerror="this.replaceWith('${icon}')">` : icon}</div>
+      <div class="s-img${sugWait(s)}">${html}</div>
       <div class="s-title">${esc(s.title)}</div>
       <div class="s-price">${p !== null ? eur(p) : ''}</div></div>`;
   }).join('');
   $('suggestions').classList.add('show');
   markActive();
 }
+function paintSugImages(){
+  document.querySelectorAll('.suggestion').forEach(row => {
+    const s = sugItems[+row.dataset.i]; if (!s) return;
+    const box = row.querySelector('.s-img');
+    box.className = 's-img' + sugWait(s);
+    box.innerHTML = sugImgHtml(s);
+  });
+}
+
+// karty v našepkávači bez obrázka: dotiahnuť z produktovej stránky
+async function fillSugImages(g){
+  const need = sugItems.filter(s => !imageOf(s) && s.link && !imgByLink.has(s.link));
+  if (!need.length) return;
+  need.forEach(s => imgByLink.set(s.link, null));
+  paintSugImages();
+  let m = {};
+  try {
+    const r = await fetch('/api/images', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({links: need.map(s => s.link).slice(0, 12)})});
+    m = r.ok ? ((await r.json()).images || {}) : {};
+  } catch (e) {}
+  need.forEach(s => { if (m[s.link] !== undefined) imgByLink.set(s.link, m[s.link]); else imgByLink.delete(s.link); });
+  if (g === gen) paintSugImages();
+}
+
 function markActive(){
   document.querySelectorAll('.suggestion').forEach((r,i) => r.classList.toggle('active', i === sugIndex));
   const a = document.querySelector('.suggestion.active'); if (a) a.scrollIntoView({block:'nearest'});
@@ -289,24 +399,90 @@ $('q').addEventListener('keydown', e => {
 $('searchButton').addEventListener('click', () => search());
 
 /* ---------- state ---------- */
-let allResults = [], typeFilter = 'all', shopFilter = 'all', sortMode = 'asc';
-let currentQuery = '', failedShops = [], resultsGen = 0;
+let allResults = [], typeFilter = 'all', shopFilter = 'all', sortMode = 'asc', showOut = false;
+let currentQuery = '', failedShops = [], resultsGen = 0, mode = 'search';
 let searchCtrl = null;
 const resCache = new Map();
+const ITEMS = new Map();   // data-id -> položka (výsledky aj obľúbené)
 
-const PRODUCT_RE = /elite trainer box|\betb\b|booster box|booster bundle|collection box|premium collection|blister|\btins?\b/i;
+const PRODUCT_RE = /elite trainer box|\betb\b|booster box|booster bundle|booster display|collection box|premium collection|blister|\btins?\b/i;
+const STOCK = {
+  in:       ['Skladom', 'b-in'],
+  out:      ['Vypredané', 'b-out'],
+  preorder: ['Predobjednávka', 'b-pre'],
+  order:    ['Na objednávku', '']
+};
+
+function sortFn(a, b){
+  const key = sortMode === 'pack' ? (x => num(x.price_per_pack)) : priceOf;
+  const pa = key(a), pb = key(b);
+  if (pa === null && pb === null) return (priceOf(a) ?? 1e9) - (priceOf(b) ?? 1e9);
+  if (pa === null) return 1;
+  if (pb === null) return -1;
+  return sortMode === 'desc' ? pb - pa : pa - pb;
+}
 
 function visible(){
   return allResults
     .filter(i => (typeFilter === 'all' || (typeFilter === 'product') === i._p)
-              && (shopFilter === 'all' || i.shop === shopFilter))
-    .sort((a,b) => {
-      const pa = priceOf(a), pb = priceOf(b);
-      if (pa === null && pb === null) return 0;
-      if (pa === null) return 1;
-      if (pb === null) return -1;
-      return sortMode === 'asc' ? pa - pb : pb - pa;
-    });
+              && (shopFilter === 'all' || i.shop === shopFilter)
+              && (showOut || i.stock !== 'out'))
+    .sort(sortFn);
+}
+
+/* ---------- obľúbené ---------- */
+function getFavs(){ try { return JSON.parse(localStorage.getItem('cr_fav') || '[]'); } catch(e){ return []; } }
+function setFavs(a){ try { localStorage.setItem('cr_fav', JSON.stringify(a)); } catch(e){} renderFavBtn(); }
+const isFav = link => getFavs().some(f => f.link === link);
+function toggleFav(x){
+  const favs = getFavs();
+  const i = favs.findIndex(f => f.link === x.link);
+  if (i >= 0) favs.splice(i, 1);
+  else favs.unshift({link: x.link, title: x.title, shop: x.shop, country: x.country, image: imageOf(x),
+                     price_eur: priceOf(x), saved_price: priceOf(x), packs: x.packs || null,
+                     saved_at: new Date().toISOString().slice(0,10)});
+  setFavs(favs.slice(0, 100));
+  return i < 0;
+}
+function renderFavBtn(){
+  const n = getFavs().length;
+  $('favBtn').innerHTML = `${n ? '❤️' : '🤍'} Obľúbené${n ? `<span class="cnt">${n}</span>` : ''}`;
+  $('favBtn').classList.toggle('on', mode === 'fav');
+}
+
+async function showFavorites(){
+  mode = 'fav'; renderFavBtn(); hideSug();
+  const favs = getFavs();
+  const items = favs.map((f, i) => ({...f, _id: 'f' + i, _p: PRODUCT_RE.test(f.title || ''), _fav: true}));
+  items.forEach(x => ITEMS.set(x._id, x));
+  $('toolbar').innerHTML = '';
+  $('status').innerHTML = `<div class="summary"><strong>Obľúbené</strong><span>${favs.length} ${plural(favs.length,'položka','položky','položiek')}</span>` +
+    (allResults.length ? `<button class="share" id="backBtn">← Späť na výsledky</button>` : '') + '</div>';
+  if (!items.length) {
+    $('results').innerHTML = '<div class="empty">Zatiaľ nemáš žiadne obľúbené.<br>Ťukni na 🤍 pri karte a uložíš si ju sem.</div>';
+    return;
+  }
+  const paint = () => { if (mode === 'fav') $('results').innerHTML = '<div class="grid">' + items.map(x => cardHtml(x, false)).join('') + '</div>'; };
+  paint();
+  try {
+    const r = await fetch('/api/latest', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({links: items.map(x => x.link)})});
+    const m = r.ok ? ((await r.json()).latest || {}) : {};
+    let changed = false;
+    for (const x of items) {
+      const l = m[x.link];
+      if (l && num(l.price_eur) !== null) { x.price_eur = l.price_eur; x.stock = l.stock; x.latest_day = l.day; changed = true; }
+    }
+    if (changed) {
+      setFavs(getFavs().map(f => { const it = items.find(x => x.link === f.link); return it ? {...f, price_eur: it.price_eur} : f; }));
+      paint();
+    }
+  } catch (e) {}
+}
+function leaveFavorites(){
+  if (mode !== 'fav') return;
+  mode = 'search'; renderFavBtn();
+  allResults.length ? renderView() : ($('status').innerHTML = '', $('results').innerHTML = '');
 }
 
 /* ---------- rendering ---------- */
@@ -321,7 +497,8 @@ function renderStatus(list){
     h += `<div class="notice">⚠️ ${esc(failedShops.join(', '))} teraz ${many ? 'neodpovedajú' : 'neodpovedá'}, ponuky z ${many ? 'nich' : 'neho'} môžu chýbať. Skús hľadať znova o chvíľu.</div>`;
   }
   if (allResults.length) {
-    const prices = list.map(priceOf).filter(p => p !== null);
+    const avail = list.filter(i => i.stock !== 'out');
+    const prices = avail.map(priceOf).filter(p => p !== null);
     const low = prices.length ? Math.min(...prices) : null;
     const avg = prices.length ? prices.reduce((a,b) => a + b, 0) / prices.length : null;
     const shopsN = new Set(list.map(i => i.shop)).size;
@@ -335,25 +512,31 @@ function renderStatus(list){
 
 function renderToolbar(){
   if (!allResults.length) { $('toolbar').innerHTML = ''; return; }
-  const inShop = allResults.filter(i => shopFilter === 'all' || i.shop === shopFilter);
+  const base = allResults.filter(i => showOut || i.stock !== 'out');
+  const inShop = base.filter(i => shopFilter === 'all' || i.shop === shopFilter);
   const nCard = inShop.filter(i => !i._p).length, nProd = inShop.length - nCard;
   const tb = (k, label, n) => `<button data-f="${k}" class="${typeFilter === k ? 'on' : ''}" aria-pressed="${typeFilter === k}">${label}<span class="cnt">${n}</span></button>`;
 
   const shopCounts = {};
-  allResults.filter(i => typeFilter === 'all' || (typeFilter === 'product') === i._p)
-            .forEach(i => shopCounts[i.shop] = (shopCounts[i.shop] || 0) + 1);
-  const shopNames = [...new Set(allResults.map(i => i.shop))];
+  base.filter(i => typeFilter === 'all' || (typeFilter === 'product') === i._p)
+      .forEach(i => shopCounts[i.shop] = (shopCounts[i.shop] || 0) + 1);
+  const shopNames = [...new Set(allResults.map(i => i.shop))].filter(s => shopCounts[s] || s === shopFilter);
   const sb = (k, label, n) => `<button data-s="${esc(k)}" class="${shopFilter === k ? 'on' : ''}" aria-pressed="${shopFilter === k}">${esc(label)}<span class="cnt">${n}</span></button>`;
+  const hasPack = allResults.some(i => num(i.price_per_pack) !== null);
+  if (!hasPack && sortMode === 'pack') sortMode = 'asc';
+  const nOut = allResults.filter(i => i.stock === 'out').length;
 
   $('toolbar').innerHTML =
     `<div class="toolbar">${tb('all','Všetko',inShop.length)}${tb('card','Karty',nCard)}${tb('product','Produkty',nProd)}
       <select id="sortSel" aria-label="Zoradenie">
         <option value="asc"${sortMode==='asc'?' selected':''}>Najlacnejšie</option>
         <option value="desc"${sortMode==='desc'?' selected':''}>Najdrahšie</option>
+        ${hasPack ? `<option value="pack"${sortMode==='pack'?' selected':''}>Najlacnejší booster</option>` : ''}
       </select></div>` +
     (shopNames.length > 1
       ? `<div class="toolbar shops">${sb('all','Všetky obchody', Object.values(shopCounts).reduce((a,b)=>a+b,0))}${shopNames.map(s => sb(s, s, shopCounts[s] || 0)).join('')}</div>`
-      : '');
+      : '') +
+    (nOut ? `<label class="out-toggle"><input type="checkbox" id="outChk"${showOut ? ' checked' : ''}> Zobraziť aj vypredané (${nOut})</label>` : '');
 }
 $('toolbar').addEventListener('click', e => {
   const f = e.target.closest('[data-f]');
@@ -363,6 +546,7 @@ $('toolbar').addEventListener('click', e => {
 });
 $('toolbar').addEventListener('change', e => {
   if (e.target.id === 'sortSel') { sortMode = e.target.value; renderView(); }
+  if (e.target.id === 'outChk') { showOut = e.target.checked; renderView(); }
 });
 
 function imgHtml(x){
@@ -371,29 +555,55 @@ function imgHtml(x){
   return x._imgPending ? '' : '🃏';
 }
 
+function trendHtml(x){
+  const t = x.trend, p = priceOf(x);
+  if (!t || num(t.price_eur) === null || p === null) return '';
+  const d = p - t.price_eur;
+  if (Math.abs(d) < 0.5) return '';
+  const days = Math.max(1, Math.round((Date.now() - new Date(t.since)) / 864e5));
+  return `<div class="trend ${d < 0 ? 'down' : 'up'}">${d < 0 ? '↓' : '↑'} ${eur(Math.abs(d))} za ${days} ${plural(days,'deň','dni','dní')}</div>`;
+}
+
 function cardHtml(x, best){
   const p = priceOf(x);
   const link = x.link ? esc(x.link) : '';
   const waitCls = !imageOf(x) && x._imgPending ? ' wait' : '';
+  const fav = x.link && isFav(x.link);
   const img = link
     ? `<a class="c-img${waitCls}" href="${link}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true">${imgHtml(x)}</a>`
     : `<div class="c-img${waitCls}">${imgHtml(x)}</div>`;
-  return `<div class="card${best ? ' best' : ''}" data-k="${x._k}">
-    ${img}
+  const st = STOCK[x.stock];
+  const ppp = num(x.price_per_pack);
+  let priceBlock;
+  if (p === null) priceBlock = '<div class="price none">Cena nezistená</div>';
+  else priceBlock = `<div class="price">${eur(p)}<small>≈ ${czk(p)}</small></div>`;
+  const savedLine = x._fav && num(x.saved_price) !== null && Math.abs(x.saved_price - (p ?? x.saved_price)) >= 0.01
+    ? `<div class="trend ${p < x.saved_price ? 'down' : 'up'}">pri uložení ${eur(x.saved_price)}</div>` : '';
+
+  return `<div class="card${best ? ' best' : ''}${x.stock === 'out' ? ' sold' : ''}" data-id="${x._id}">
+    <div class="c-media">
+      ${img}
+      ${link ? `<button class="fav${fav ? ' on' : ''}" data-act="fav" aria-label="${fav ? 'Odobrať z obľúbených' : 'Pridať do obľúbených'}" aria-pressed="${fav}">${fav ? '❤️' : '🤍'}</button>` : ''}
+    </div>
     <div class="c-body">
       <div class="c-title">${esc(x.title)}</div>
       <div class="badges">
         <span class="badge ${x._p ? 'b-prod' : 'b-card'}">${x._p ? 'Produkt' : 'Karta'}</span>
         ${x.shop ? `<span class="badge">${esc(x.shop)}</span>` : ''}
-        ${x.country ? `<span class="badge">${esc(x.country)}</span>` : ''}
+        ${st ? `<span class="badge ${st[1]}">${st[0]}</span>` : ''}
         ${x.language ? `<span class="badge">${esc(x.language)}</span>` : ''}
-        ${x.condition ? `<span class="badge">${esc(x.condition)}</span>` : ''}
         ${best ? '<span class="badge b-best">Najnižšia cena</span>' : ''}
       </div>
+      ${ppp !== null ? `<div class="ppp">${eur(ppp)} / booster <span>(${x.packs} ks)</span></div>` : ''}
+      ${trendHtml(x)}${savedLine}
       <div class="c-foot">
-        <div class="price${p === null ? ' none' : ''}">${p === null ? 'Cena nezistená' : eur(p) + `<small>≈ ${czk(p)}</small>`}</div>
+        ${priceBlock}
         ${link ? `<a class="buy" href="${link}" target="_blank" rel="noopener noreferrer">Otvoriť ↗</a>` : ''}
       </div>
+      ${link ? `<div class="c-acts">
+        <button data-act="hist">📈 Vývoj ceny</button>
+        ${ALERTS ? '<button data-act="alert">🔔 Strážiť</button>' : ''}
+      </div>` : ''}
     </div></div>`;
 }
 
@@ -404,24 +614,159 @@ function renderGrid(list){
     return;
   }
   if (!list.length) {
-    $('results').innerHTML = '<div class="empty">Pre zvolený filter nie sú žiadne ponuky.<br><button id="resetFilters">Zobraziť všetko</button></div>';
+    const onlyOut = !showOut && allResults.every(i => i.stock === 'out');
+    $('results').innerHTML = onlyOut
+      ? '<div class="empty">Všetky nájdené ponuky sú momentálne vypredané.<br><button id="showOutBtn">Zobraziť vypredané</button></div>'
+      : '<div class="empty">Pre zvolený filter nie sú žiadne ponuky.<br><button id="resetFilters">Zobraziť všetko</button></div>';
     return;
   }
-  const prices = list.map(priceOf).filter(p => p !== null);
+  const prices = list.filter(i => i.stock !== 'out').map(priceOf).filter(p => p !== null);
   const cheapest = prices.length ? Math.min(...prices) : null;
-  $('results').innerHTML = '<div class="grid">' + list.map(x => cardHtml(x, cheapest !== null && priceOf(x) === cheapest)).join('') + '</div>';
+  $('results').innerHTML = '<div class="grid">' +
+    list.map(x => cardHtml(x, cheapest !== null && x.stock !== 'out' && priceOf(x) === cheapest)).join('') + '</div>';
 }
 
 function renderView(){
+  if (mode === 'fav') return;
   const list = visible();
   renderStatus(list);
   renderToolbar();
   renderGrid(list);
 }
 
+/* ---------- akcie na kartách ---------- */
+$('results').addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const card = b.closest('.card'); const x = card && ITEMS.get(card.dataset.id); if (!x) return;
+  e.preventDefault();
+  if (b.dataset.act === 'fav') {
+    const on = toggleFav(x);
+    b.classList.toggle('on', on); b.textContent = on ? '❤️' : '🤍';
+    b.setAttribute('aria-pressed', on); b.setAttribute('aria-label', on ? 'Odobrať z obľúbených' : 'Pridať do obľúbených');
+    if (!on && mode === 'fav') showFavorites();
+  }
+  if (b.dataset.act === 'hist') openHistory(x);
+  if (b.dataset.act === 'alert') openAlert(x);
+});
+
+/* ---------- modal ---------- */
+let lastFocus = null;
+function openModal(title, body){
+  lastFocus = document.activeElement;
+  $('modal').innerHTML = `<div class="m-box" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <div class="m-head"><h2 id="mTitle">${title}</h2><button class="m-x" id="mClose" aria-label="Zavrieť">✕</button></div>
+    <div id="mBody">${body}</div></div>`;
+  $('modal').classList.add('show');
+  document.body.style.overflow = 'hidden';
+  $('mClose').focus();
+}
+function closeModal(){
+  $('modal').classList.remove('show'); $('modal').innerHTML = '';
+  document.body.style.overflow = '';
+  if (lastFocus) lastFocus.focus();
+}
+$('modal').addEventListener('click', e => { if (e.target.id === 'modal' || e.target.closest('#mClose')) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('modal').classList.contains('show')) closeModal(); });
+
+/* ---------- graf vývoja ceny ---------- */
+const dShort = d => { const [y, m, dd] = d.split('-'); return `${+dd}. ${+m}.`; };
+
+function chartSvg(points){
+  const W = 600, H = 230, L = 58, R = 14, T = 14, B = 30;
+  const t0 = new Date(points[0].day).getTime(), t1 = new Date(points[points.length - 1].day).getTime();
+  const ps = points.map(p => p.price_eur);
+  let lo = Math.min(...ps), hi = Math.max(...ps);
+  const padY = Math.max((hi - lo) * 0.15, hi * 0.03, 0.5); lo = Math.max(0, lo - padY); hi += padY;
+  const X = t => L + (t1 === t0 ? (W - L - R) / 2 : (t - t0) / (t1 - t0) * (W - L - R));
+  const Y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  const pts = points.map(p => [X(new Date(p.day).getTime()), Y(p.price_eur)]);
+  const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  const area = line + ` L${pts[pts.length-1][0].toFixed(1)} ${H - B} L${pts[0][0].toFixed(1)} ${H - B} Z`;
+  let grid = '';
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + (hi - lo) * i / 3, y = Y(v);
+    grid += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" class="gl"/><text x="${L - 8}" y="${y + 4}" text-anchor="end" class="gt">${eurFmt.format(v)} €</text>`;
+  }
+  const dots = pts.length <= 40 ? pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" class="${points[i].stock === 'out' ? 'dot out' : 'dot'}"><title>${dShort(points[i].day)}: ${eur(points[i].price_eur)}</title></circle>`).join('') : '';
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="Graf vývoja ceny">
+    ${grid}
+    <path d="${area}" class="ar"/><path d="${line}" class="ln"/>${dots}
+    <text x="${L}" y="${H - 8}" class="gt">${dShort(points[0].day)}</text>
+    <text x="${W - R}" y="${H - 8}" text-anchor="end" class="gt">${dShort(points[points.length - 1].day)}</text>
+  </svg>`;
+}
+
+async function openHistory(x){
+  openModal('📈 Vývoj ceny', `<p class="m-sub">${esc(x.title)} · ${esc(x.shop || '')}</p><div class="m-load"><span class="spin"></span>Načítavam…</div>`);
+  try {
+    const r = await fetch('/api/history?link=' + encodeURIComponent(x.link));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Chyba');
+    const pts = d.points || [];
+    if (!$('mBody')) return;
+    if (pts.length < 2) {
+      $('mBody').innerHTML = `<p class="m-sub">${esc(x.title)} · ${esc(x.shop || '')}</p>
+        <p class="m-text">${pts.length ? `Zatiaľ máme len jeden záznam: ${eur(pts[0].price_eur)} (${dShort(pts[0].day)}).` : 'Zatiaľ nemáme žiadne záznamy.'}
+        Graf sa doplní sám, cenu ukladáme každý deň, keď niekto produkt vyhľadá.${ALERTS ? ' Ak ju chceš sledovať aj bez hľadania, zapni si strážcu.' : ''}</p>`;
+      return;
+    }
+    const ps = pts.map(p => p.price_eur);
+    const min = Math.min(...ps), max = Math.max(...ps), cur = ps[ps.length - 1];
+    $('mBody').innerHTML = `<p class="m-sub">${esc(x.title)} · ${esc(x.shop || '')}</p>
+      <div class="chart-wrap">${chartSvg(pts)}</div>
+      <div class="stats">
+        <div><span>Teraz</span><b>${eur(cur)}</b></div>
+        <div><span>Najnižšia</span><b class="g">${eur(min)}</b></div>
+        <div><span>Najvyššia</span><b>${eur(max)}</b></div>
+      </div>
+      <p class="m-note">${pts.length} ${plural(pts.length,'záznam','záznamy','záznamov')} od ${dShort(pts[0].day)} ${pts[0].day.slice(0,4)}.</p>`;
+  } catch (e) {
+    if ($('mBody')) $('mBody').innerHTML = `<p class="m-text error">Históriu sa nepodarilo načítať. Skús to znova.</p>`;
+  }
+}
+
+/* ---------- strážca ceny ---------- */
+function openAlert(x){
+  const p = priceOf(x);
+  const target = p !== null ? Math.max(0.01, Math.floor(p * 0.9 * 100) / 100) : '';
+  let email = ''; try { email = localStorage.getItem('cr_email') || ''; } catch(e){}
+  openModal('🔔 Strážca ceny', `<p class="m-sub">${esc(x.title)} · ${esc(x.shop || '')}${p !== null ? ' · teraz ' + eur(p) : ''}</p>
+    <form id="alertForm" class="m-form" novalidate>
+      <label>Napíš mi, keď cena klesne na
+        <span class="inrow"><input id="aTarget" class="input" type="number" inputmode="decimal" step="0.01" min="0.01" value="${target}" required> €</span>
+      </label>
+      <label>Na e-mail
+        <input id="aEmail" class="input" type="email" inputmode="email" autocomplete="email" value="${esc(email)}" placeholder="meno@email.sk" required>
+      </label>
+      <button class="primary" type="submit" id="aSubmit">Zapnúť strážcu</button>
+      <p class="m-note">Pošleme ti jeden potvrdzovací e-mail. Cenu kontrolujeme niekoľkokrát denne a napíšeme ti len raz, keď klesne pod tvoj cieľ.</p>
+      <div id="aMsg" aria-live="polite"></div>
+    </form>`);
+  $('aTarget').focus();
+  $('alertForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const em = $('aEmail').value.trim(), tg = parseFloat(String($('aTarget').value).replace(',', '.'));
+    if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(em)) { $('aMsg').innerHTML = '<p class="m-text error">Zadaj platný e-mail.</p>'; return; }
+    if (!(tg > 0)) { $('aMsg').innerHTML = '<p class="m-text error">Zadaj cieľovú cenu.</p>'; return; }
+    try { localStorage.setItem('cr_email', em); } catch(e){}
+    $('aSubmit').disabled = true;
+    try {
+      const r = await fetch('/api/alerts', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({email: em, target: tg, link: x.link, title: x.title, shop: x.shop})});
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'Strážcu sa nepodarilo zapnúť.');
+      $('alertForm').innerHTML = `<p class="m-text ok">✓ ${esc(d.message || 'Hotovo.')}</p><button type="button" class="primary" id="mDone">Zavrieť</button>`;
+      $('mDone').addEventListener('click', closeModal);
+    } catch (err) {
+      $('aMsg').innerHTML = `<p class="m-text error">${esc(err.message)}</p>`;
+      $('aSubmit').disabled = false;
+    }
+  });
+}
+
 /* ---------- lazy obrázky ---------- */
 function paintImage(x){
-  const el = document.querySelector(`.card[data-k="${x._k}"] .c-img`);
+  const el = document.querySelector(`.card[data-id="${x._id}"] .c-img`);
   if (!el) return;
   el.classList.remove('wait');
   el.innerHTML = imgHtml(x);
@@ -431,10 +776,9 @@ async function loadMissingImages(myGen){
   const items = allResults.filter(x => !imageOf(x) && x.link && !x._imgTried).slice(0, IMG_MAX);
   if (!items.length) return;
   items.forEach(x => { x._imgTried = true; x._imgPending = true; });
-  // najprv obrázky z aktuálne viditeľného poradia
-  const order = new Map(visible().map((x, i) => [x._k, i]));
-  items.sort((a, b) => (order.get(a._k) ?? 1e9) - (order.get(b._k) ?? 1e9));
-  if (myGen === resultsGen) items.forEach(x => { const el = document.querySelector(`.card[data-k="${x._k}"] .c-img`); if (el) { el.classList.add('wait'); el.textContent = ''; } });
+  const order = new Map(visible().map((x, i) => [x._id, i]));
+  items.sort((a, b) => (order.get(a._id) ?? 1e9) - (order.get(b._id) ?? 1e9));
+  if (myGen === resultsGen) items.forEach(x => { const el = document.querySelector(`.card[data-id="${x._id}"] .c-img`); if (el) { el.classList.add('wait'); el.textContent = ''; } });
 
   const chunks = [];
   for (let i = 0; i < items.length; i += IMG_CHUNK) chunks.push(items.slice(i, i + IMG_CHUNK));
@@ -449,10 +793,15 @@ async function loadMissingImages(myGen){
       const m = d.images || {};
       for (const x of chunk) { if (m[x.link]) x.image = m[x.link]; }
     } catch (e) {}
+    rememberImages(chunk);
     for (const x of chunk) {
       x._imgPending = false;
       if (myGen === resultsGen) paintImage(x);
     }
+    // obľúbeným doplniť obrázok, ak ho nemali
+    const favs = getFavs(); let ch = false;
+    for (const f of favs) { const it = chunk.find(x => x.link === f.link); if (it && !f.image && imageOf(it)) { f.image = imageOf(it); ch = true; } }
+    if (ch) setFavs(favs);
   }));
 }
 
@@ -476,7 +825,7 @@ function updateUrl(q, push){
 }
 function resetView(){
   if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
-  resultsGen++; allResults = []; currentQuery = ''; failedShops = [];
+  resultsGen++; allResults = []; currentQuery = ''; failedShops = []; mode = 'search'; renderFavBtn();
   $('q').value = ''; $('status').innerHTML = ''; $('toolbar').innerHTML = ''; $('results').innerHTML = '';
   $('searchButton').disabled = false;
   document.title = 'CardRadar – reálne ceny Pokémon kariet';
@@ -498,12 +847,14 @@ function showData(q, data, push){
   if (num(data.czk_per_eur)) CZK_RATE = data.czk_per_eur;
 
   resultsGen++;
+  mode = 'search'; renderFavBtn();
   currentQuery = norm;
   allResults = Array.isArray(data.results) ? data.results : [];
-  allResults.forEach((x, i) => { x._k = i; x._p = PRODUCT_RE.test(x.title || ''); });
+  allResults.forEach((x, i) => { x._id = 'r' + i; x._p = PRODUCT_RE.test(x.title || ''); ITEMS.set(x._id, x); });
   failedShops = (data.shops || []).filter(s => s.ok === false).map(s => s.name);
-  typeFilter = 'all'; shopFilter = 'all';
+  typeFilter = 'all'; shopFilter = 'all'; showOut = false;
 
+  rememberImages(allResults);
   updateUrl(norm, push);
   renderView();
   if (allResults.length) addRecent(norm);
@@ -525,6 +876,7 @@ async function search(qArg, opts = {}){
   const ctrl = searchCtrl = new AbortController();
   const btn = $('searchButton');
   btn.disabled = true;
+  mode = 'search'; renderFavBtn();
   const n = SHOPS.length;
   $('status').innerHTML = `<div class="summary loading"><span class="spin"></span>Prehľadávam ${n ? n + ' ' + plural(n,'obchod','obchody','obchodov') : 'obchody'}…</div>`;
   $('toolbar').innerHTML = '';
@@ -557,11 +909,13 @@ async function search(qArg, opts = {}){
   }
 }
 
-/* ---------- ?q= v URL ---------- */
+/* ---------- štart ---------- */
+renderFavBtn();
 try {
   const iq = new URLSearchParams(location.search).get('q');
   if (iq) search(iq, {push: false});
 } catch (e) {}
 </script>
+
 </body>
 </html>
