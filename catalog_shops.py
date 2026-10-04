@@ -947,6 +947,27 @@ def _shopify_enrich(shop, query, results):
             r["stock"] = "in" if available else "out"
         if not r.get("image") and img:
             r["image"] = img
+    # zvyšok (mimo prvých 10): /products/<handle>.js, najviac 8 naraz
+    rest = [r for r in results if not r.get("stock") and "/products/" in (r.get("link") or "")][:8]
+    if rest:
+        with _TPE(max_workers=len(rest)) as ex:
+            list(ex.map(_shopify_product_js, rest))
+
+
+def _shopify_product_js(r):
+    try:
+        u = urllib.parse.urlsplit(r["link"])
+        resp, _ = G["fetch"](f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}.js", timeout=3)
+        if not resp:
+            return
+        d = resp.json()
+        if d.get("available") is not None:
+            r["stock"] = "in" if d["available"] else "out"
+        img = d.get("featured_image") or ""
+        if img and not r.get("image"):
+            r["image"] = ("https:" + img if img.startswith("//") else img)
+    except Exception:
+        pass
 
 
 def _make_scrape_fix(original):
