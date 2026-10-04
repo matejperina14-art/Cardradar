@@ -48,7 +48,7 @@ from flask import Flask, jsonify, request, Response
 #  - história cien v pozadí + automatické mazanie starých záznamov
 # =========================================================
 
-VERSION = "6.0.1"
+VERSION = "6.0.2"
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "cardradar.db")
@@ -1035,11 +1035,33 @@ _VARIANT_RES = [
 ]
 
 
+_COMBO_TYPES = [
+    re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    re.compile(r"booster\s*(?:box|display)", re.I),
+    re.compile(r"booster\s*bundle", re.I),
+    re.compile(r"blister", re.I),
+    re.compile(r"\btins?\b", re.I),
+    re.compile(r"collection|kolekci", re.I),
+]
+
+
+def is_combo(title):
+    """Viac produktov v jednom balení ("Booster Bundle + ETB", "2x ETB", "set ...")."""
+    t = clean_text(title)
+    kinds = sum(1 for rx in _COMBO_TYPES if rx.search(t))
+    if kinds >= 2:
+        return True
+    return bool(re.search(
+        r"(?<![\w/.,])(?:[2-9]|1[0-9])\s*(?:x|ks|kusy|pcs)(?![a-z])"   # 2x, 3 ks
+        r"|\bx\s*(?:[2-9]|1[0-9])\b"                                   # ETB x2
+        r"|\b(?:bundle\s+deal|komplet\w*|set\s+of|sada)\b", t, re.I))
+
+
 def group_key(title, lang=""):
     """Kľúč, podľa ktorého sa spoja rovnaké produkty z rôznych obchodov.
     None = nevieme s istotou povedať, o aký produkt ide (zobrazí sa samostatne)."""
     t = clean_text(title)
-    if not t:
+    if not t or is_combo(t):
         return None
     p = normalize_query(t)
     lang = lang or "EN"
@@ -1071,7 +1093,7 @@ PACKS_PAREN_RE = re.compile(r"booster\s*(?:box|display)\D{0,10}\((\d{1,2})\)", r
 def estimate_packs(title, lang=""):
     """Odhad počtu boosterov v produkte; None = nevieme / nemá zmysel."""
     t = clean_text(title).lower()
-    if not t:
+    if not t or is_combo(t):
         return None
     m = PACKS_EXPLICIT_RE.search(t) or PACKS_PAREN_RE.search(t)
     if m:
@@ -1123,6 +1145,23 @@ def absolute_url(base_url, href):
     if not href or href.startswith(("javascript:", "#")):
         return ""
     return urllib.parse.urljoin(base_url, href)
+
+
+_TRACKING_PARAM_RE = re.compile(r"^(?:_pos|_sid|_ss|_psq|_fid|_v|utm_\w+|fbclid|gclid|srsltid|ref|variant_id)$", re.I)
+
+
+def clean_link(url):
+    """Odkaz bez sledovacích parametrov (Shopify _pos/_sid/_ss, utm_...),
+    aby mal ten istý produkt vždy rovnakú adresu (história, obľúbené, strážca)."""
+    if not url:
+        return url
+    try:
+        p = urllib.parse.urlsplit(url)
+        q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+             if not _TRACKING_PARAM_RE.match(k)]
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), ""))
+    except Exception:
+        return url
 
 
 def is_allowed_link(url):
@@ -1394,7 +1433,7 @@ def _scrape(shop, query, timeout):
         seen = set()
 
         for anchor in links:
-            href = absolute_url(shop["base_url"], anchor.get("href"))
+            href = clean_link(absolute_url(shop["base_url"], anchor.get("href")))
             if not href:
                 continue
             key = href.lower().rstrip("/")
