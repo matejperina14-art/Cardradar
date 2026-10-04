@@ -3098,6 +3098,8 @@ def finalize(resp):
     resp.headers.add("Vary", "Accept-Encoding")
     return resp
 
+import catalog_shops
+catalog_shops.install(globals())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")), threaded=True)
