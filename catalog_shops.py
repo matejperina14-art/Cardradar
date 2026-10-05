@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.11
+CARD RADAR – rozšírenia 6.12
+ - 6.12: filter merchu už nevyhadzuje skutočné karty a produkty (Rare Candy, Switch, Poster/Binder Collection...)
  - 6.11: pekné HTML e-maily strážcu ceny (obrázok produktu, tlačidlo, slovenský formát ceny)
  - 6.10: /health ukazuje, kde je databáza (db_path, db_persistent)
  - 6.9: databáza na trvalom disku (premenná DB_PATH, napr. /var/data/cardradar.db)
@@ -818,7 +819,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.11"
+        data["extensions"] = "6.12"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -827,6 +828,40 @@ def _wrap_health(app):
 
     app.view_functions["health"] = health
 
+
+
+# =========================================================
+# FILTER MERCHU BEZ OMYLOV (6.12)
+# Filter v app.py vyhadzoval aj skutočné karty, lebo ich názov obsahuje
+# „merch“ slovo: Rare Candy (candy), Switch (Nintendo Switch), Puzzle of Time
+# (puzzle), Poster/Binder Collection (poster, binder), Nintendo promo karty.
+# Tieto známe TCG názvy sa pred kontrolou z textu vynechajú, zvyšok filtra
+# (plyšáky, tričká, hrnčeky...) funguje rovnako.
+# =========================================================
+
+_TCG_SAFE_RE = re.compile(
+    r"rare\s+candy|puzzle\s+of\s+time|poster\s+collection|binder\s+collection"
+    r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?",
+    re.I)
+_SWITCH_RE = re.compile(r"(?<!\w)(?:energy\s+)?switch(?:\s+cart)?(?!\w)", re.I)
+_CONSOLE_RE = re.compile(r"nintendo\s+switch|konzol\w*|console|oled|joy-?con|videohr\w*|video\s*game", re.I)
+
+
+def _make_merch_fix(original):
+    def clean(text):
+        text = text or ""
+        if not text:
+            return text
+        console = _CONSOLE_RE.search(text)
+        text = _TCG_SAFE_RE.sub(" ", text)
+        # karta Switch / Energy Switch / Switch Cart (nie herná konzola)
+        if not console and _SWITCH_RE.search(text) and G["CARD_MARKER_RE"].search(text):
+            text = _SWITCH_RE.sub(" ", text)
+        return text
+
+    def merch_reason(title, extra_text=""):
+        return original(clean(title), clean(extra_text))
+    return merch_reason
 
 
 # =========================================================
@@ -1730,6 +1765,11 @@ def install(g):
         return original(shop, query, timeout)
 
     g["_scrape"] = _scrape
+
+    # 6b) filter merchu bez omylov (6.12) – is_merch v app.py volá merch_reason
+    fixed_merch = _make_merch_fix(g["merch_reason"])
+    g["merch_reason"] = fixed_merch
+    G["merch_reason"] = fixed_merch
 
     # 6) presnejšie hľadanie sealed produktov (aj pre pôvodné obchody)
     fixed = _make_sealed_fix(g["sealed_matches_query"])
