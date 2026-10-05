@@ -1,5 +1,5 @@
 """
-CARD RADAR – vylepšenia 6.19 (nad catalog_shops 6.18)
+CARD RADAR – vylepšenia 6.20 (nad catalog_shops 6.18)
 
 Opravy:
  - sety s množným číslom („30th Celebrations“ vs. „30th Celebration“) sa už nerozchádzajú
@@ -24,6 +24,8 @@ pridaj:
 """
 
 import hashlib
+import json
+import os
 import hmac
 import re
 import sqlite3
@@ -185,6 +187,62 @@ def check_alerts_once():
         conn.close()
 
 
+# ---------- vlastné logo a ikony (6.20) ----------
+# Súbory nahraté do priečinka static/ (icon-192.png, favicon-32.png...) majú
+# prednosť pred ikonami zabudovanými v app.py. Nové logo = len nahrať súbory.
+
+ICON_V = "2"   # zvýš, keď zmeníš ikony, aby si ich prehliadače stiahli znova
+
+
+def _install_static_overrides(g):
+    folder = os.path.join(g["BASE_DIR"], "static")
+    if not os.path.isdir(folder):
+        return
+    mimes = {".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
+             ".jpg": "image/jpeg", ".ico": "image/x-icon"}
+    for name in os.listdir(folder):
+        mime = mimes.get(os.path.splitext(name)[1].lower())
+        path = os.path.join(folder, name)
+        if mime and os.path.isfile(path):
+            with open(path, "rb") as f:
+                g["EMBEDDED_STATIC"][name] = (f.read(), mime)
+
+
+def manifest():
+    from flask import Response
+    v = "?v=" + ICON_V
+    data = {
+        "name": "CardRadar – ceny Pokémon kariet", "short_name": "CardRadar",
+        "description": "Porovnanie cien Pokémon kariet, ETB a booster boxov.",
+        "start_url": "/?source=pwa", "scope": "/", "display": "standalone",
+        "background_color": "#0a1422", "theme_color": "#101b44", "lang": "sk",
+        "icons": [
+            {"src": "/static/icon-192.png" + v, "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png" + v, "sizes": "512x512", "type": "image/png"},
+            {"src": "/static/icon-maskable-512.png" + v, "sizes": "512x512", "type": "image/png",
+             "purpose": "maskable"},
+        ],
+    }
+    resp = Response(json.dumps(data, ensure_ascii=False), mimetype="application/manifest+json")
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+_NEON_HEADER = ("header a{font-weight:800;font-size:21px;letter-spacing:-.01em;text-decoration:none;"
+                "color:#38d8ff;text-shadow:0 0 4px rgba(56,216,255,.55),0 0 14px rgba(56,216,255,.45)}")
+
+
+def _install_branding(g):
+    _install_static_overrides(g)
+    app = g["app"]
+    if "manifest" in app.view_functions:
+        app.view_functions["manifest"] = manifest
+    # nová verzia offline pamäte, aby sa staré ikony v telefónoch vymenili
+    cs.SERVICE_WORKER_FIX = re.sub(r"cardradar-v\d+", "cardradar-v9", cs.SERVICE_WORKER_FIX)
+    # neónový názov aj na stránkach Podmienky, Ochrana údajov, Pre obchody
+    cs._PAGE_CSS = re.sub(r"header a\{[^}]*\}", _NEON_HEADER, cs._PAGE_CSS, count=1)
+
+
 # ---------- web ----------
 
 def _wrap_home(app):
@@ -215,7 +273,7 @@ def _wrap_health(app):
             data = resp.get_json() or {}
         except Exception:
             return resp
-        data["improvements"] = "6.19"
+        data["improvements"] = "6.20"
         return jsonify(data)
 
     app.view_functions["health"] = health
@@ -240,6 +298,8 @@ def install(g):
     g["save_history"] = _make_save_history(g["save_history"])
     g["is_admin"] = cs.G["is_admin"] = is_admin
     g["check_alerts_once"] = check_alerts_once
+
+    _install_branding(g)
 
     data, mime = g["EMBEDDED_STATIC"]["logo.svg"]
     g["EMBEDDED_STATIC"]["logo.svg"] = (
