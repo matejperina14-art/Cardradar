@@ -1,5 +1,7 @@
 """
-CARD RADAR – rozšírenia 6.15
+CARD RADAR – rozšírenia 6.16
+ - 6.16: čas overenia ceny pri každom obchode (fetched_at), písma bez Google Fonts,
+         nový dizajn webu (index.html 8.0)
  - 6.15: hľadanie bez Pokémona/setu (napr. „rare candy“) vyžaduje hľadané slová v názve,
          akrylové a ochranné boxy sú príslušenstvo, rôzne blistre a tiny sa nespájajú
  - 6.14: presnejšie výsledky (meno Pokémona a set musia byť v názve, skratky setov len ako
@@ -491,6 +493,10 @@ def catalog_scrape(shop, query):
     kind = g["classify_query"](parsed)
     results = []
     debug["links_scanned"] = debug["unique_links"] = len(items)
+    try:
+        debug["fetched_at"] = datetime.fromisoformat(updated).timestamp()
+    except Exception:
+        pass
 
     for it in items:
         title = it["title"]
@@ -695,6 +701,34 @@ def _daily_loop():
 # PODMIENKY A OCHRANA ÚDAJOV
 # =========================================================
 
+_PAGE_CSS = """
+body{margin:0;background:#f3f5fa;color:#0d1633;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+header{background:#101b44;padding:16px 20px}
+header a{font-weight:800;font-size:21px;letter-spacing:-.02em;text-decoration:none;
+  background:linear-gradient(100deg,#ff5a6e,#ffcf3a 22%,#3ddc84 44%,#3aa8ff 66%,#a07bff 86%);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+main{max-width:760px;margin:24px auto 60px;padding:28px 24px;background:#fff;border:1px solid #e2e6ef;border-radius:14px}
+h1{font-size:28px;line-height:1.2;margin:6px 0 14px;letter-spacing:-.01em}
+h2{font-size:18px;margin:1.6em 0 .4em}
+p,li{color:#3c4766}a{color:#2453d6}.back{font-size:14px;text-decoration:none}
+code{background:#f3f5fa;border-radius:5px;padding:1px 5px;font-size:.92em}
+.upd{margin-top:2em;font-size:13px;color:#8b94ad}
+.box{text-align:center}.box .btn{display:inline-block;margin-top:12px;background:#ffcf3a;color:#101b44;
+  padding:11px 18px;border-radius:10px;font-weight:800;text-decoration:none}
+"""
+
+
+def simple_page(title, text):
+    """Svetlá verzia potvrdzovacích stránok strážcu (zhodná s novým dizajnom)."""
+    from flask import Response
+    home = G["_g"].get("PUBLIC_URL") or "/"
+    page = f"""<!doctype html><html lang="sk"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} – CardRadar</title>
+<style>{_PAGE_CSS}</style><header><a href="{home}">CardRadar</a></header>
+<main class="box"><h1>{title}</h1><p>{text}</p><a class="btn" href="{home}">Späť na CardRadar</a></main>"""
+    return Response(page, mimetype="text/html")
+
+
 def _legal_page(title, body_html):
     from flask import Response
     home = G.get("PUBLIC_URL") or "/"
@@ -704,13 +738,10 @@ def _legal_page(title, body_html):
         "{PREVADZKOVATEL}", _html.escape(OPERATOR_NAME))
     page = f"""<!doctype html><html lang="sk"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} – CardRadar</title>
-<style>
-body{{margin:0;background:#0f172a;color:#e2e8f0;font:16px/1.6 -apple-system,Segoe UI,sans-serif}}
-main{{max-width:720px;margin:0 auto;padding:28px 20px 60px}}
-h1{{color:#facc15;font-size:1.6rem}} h2{{font-size:1.1rem;margin-top:1.6em;color:#f8fafc}}
-a{{color:#facc15}} p,li{{color:#cbd5e1}} .back{{display:inline-block;margin-bottom:12px}}
-</style><main><a class="back" href="{home}">← Späť na CardRadar</a><h1>{title}</h1>{body_html}
-<p style="margin-top:2em;font-size:.85rem;color:#64748b">Posledná aktualizácia: október 2026</p></main>"""
+<style>{_PAGE_CSS}</style>
+<header><a href="{home}">CardRadar</a></header>
+<main><a class="back" href="{home}">← Späť na CardRadar</a><h1>{title}</h1>{body_html}
+<p class="upd">Posledná aktualizácia: október 2026</p></main>"""
     return Response(page, mimetype="text/html")
 
 
@@ -751,8 +782,8 @@ Aktívny strážca trvá, kým ho nezrušíš odkazom v e-maile.</p>
 <h2>Kto k údajom má prístup</h2>
 <p>Web beží na serveroch spoločnosti Render Services, Inc. v dátovom centre vo Frankfurte (EÚ).
 E-maily strážcu ceny odosiela služba Resend zo serverov v Írsku (EÚ). Doménu a DNS spravuje
-Cloudflare. Písma stránky sa načítavajú zo služby Google Fonts, ktorá pri tom vidí IP adresu
-tvojho zariadenia. Údaje nepredávame ani nezdieľame na reklamné účely.</p>
+Cloudflare. Stránka nenačítava písma ani skripty od tretích strán. Údaje nepredávame
+ani nezdieľame na reklamné účely.</p>
 <h2>Cookies</h2>
 <p>CardRadar nepoužíva reklamné ani sledovacie cookies. Prehliadač si ukladá len súbory
 potrebné na rýchlejšie načítanie a obľúbené produkty.</p>
@@ -833,7 +864,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.15"
+        data["extensions"] = "6.16"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -1014,7 +1045,31 @@ def _make_group_fix(original):
     return group_key
 
 
+def _make_fresh_scrape(original):
+    """Každý výsledok z obchodu dostane čas stiahnutia; cache si ho pamätá,
+    takže web vie ukázať „cena overená pred 3 min“."""
+    def _scrape(shop, query, timeout):
+        res, dbg = original(shop, query, timeout)
+        dbg.setdefault("fetched_at", time.time())
+        return res, dbg
+    return _scrape
+
+
+def shops_status(debug):
+    return [{
+        "name": d.get("shop", ""),
+        "status": d.get("status", ""),
+        "ok": d.get("status") in G["CACHEABLE_STATUSES"],
+        "results": d.get("results", 0),
+        "elapsed_ms": d.get("elapsed_ms", 0),
+        "cache": d.get("cache", ""),
+        "fetched_at": round(d["fetched_at"]) if d.get("fetched_at") else None,
+    } for d in debug.get("shops", [])]
+
+
 def _install_quality(g):
+    g["_scrape"] = _make_fresh_scrape(g["_scrape"])
+    g["shops_status"] = shops_status
     norm = _make_normalize_fix(g["normalize_query"])
     g["normalize_query"] = G["normalize_query"] = norm
     g["set_matches_text"] = G["set_matches_text"] = set_matches_text
@@ -1926,7 +1981,7 @@ def admin_test():
 
 
 SERVICE_WORKER_FIX = """
-const CACHE = 'cardradar-v7';
+const CACHE = 'cardradar-v8';
 const SHELL = ['/', '/static/icon-192.png', '/static/logo.svg'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -2074,6 +2129,7 @@ def install(g):
     _install_fixes(g)
     _wrap_health(app)   # 6.10
     _install_quality(g)   # 6.14
+    g["_simple_page"] = G["_simple_page"] = simple_page   # 6.16: svetlý dizajn
     # 6.11: pekné e-maily strážcu
     g["check_alerts_once"] = check_alerts_once
     if "api_alerts_create" in app.view_functions:
