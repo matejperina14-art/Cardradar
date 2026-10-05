@@ -524,7 +524,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.1 */
+/* CARD RADAR FRONTEND 8.2 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -831,6 +831,16 @@ function buildGroups(items, prefix){
     const key = o.group || ('u:' + (o.link || o.title));
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(o);
+  }
+  // poistka: pri 3+ ponukách sa výrazne drahšia ponuka (iné balenie) oddelí do vlastného produktu
+  for (const [key, offers] of [...map.entries()]) {
+    const ps = offers.map(priceOf).filter(p => p !== null).sort((x, y) => x - y);
+    if (ps.length < 3) continue;
+    const med = ps[Math.floor((ps.length - 1) / 2)];
+    const odd = offers.filter(o => (priceOf(o) ?? 0) > med * 1.6);
+    if (!odd.length || odd.length * 2 >= offers.length) continue;
+    map.set(key, offers.filter(o => !odd.includes(o)));
+    odd.forEach((o, i) => map.set(key + '|x' + i, [o]));
   }
   let n = 0;
   return [...map.entries()].map(([key, offers]) => {
