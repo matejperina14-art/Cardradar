@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.10
+CARD RADAR – rozšírenia 6.11
+ - 6.11: pekné HTML e-maily strážcu ceny (obrázok produktu, tlačidlo, slovenský formát ceny)
  - 6.10: /health ukazuje, kde je databáza (db_path, db_persistent)
  - 6.9: databáza na trvalom disku (premenná DB_PATH, napr. /var/data/cardradar.db)
  - 6.8: presmerovanie na hlavnú doménu (PUBLIC_URL), napr. z onrender.com a www.
@@ -817,7 +818,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.10"
+        data["extensions"] = "6.11"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -825,6 +826,285 @@ def _wrap_health(app):
         return jsonify(data)
 
     app.view_functions["health"] = health
+
+
+
+# =========================================================
+# PEKNÉ E-MAILY STRÁŽCU CENY (6.11)
+# Nahrádza textové e-maily z app.py: HTML verzia s obrázkom produktu
+# a tlačidlom + textová verzia pre klientov bez HTML.
+# =========================================================
+
+def _eur(v):
+    try:
+        return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + " €"
+    except (TypeError, ValueError):
+        return "–"
+
+
+def _site():
+    try:
+        from flask import request
+        return G["_g"]["PUBLIC_URL"] or request.url_root.rstrip("/")
+    except Exception:
+        return G["_g"]["PUBLIC_URL"] or ""
+
+
+def _product_image(link):
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT image FROM price_daily WHERE link = ? AND image IS NOT NULL AND image != '' "
+            "ORDER BY day DESC LIMIT 1", (link,)).fetchone()
+    except Exception:
+        row = None
+    finally:
+        conn.close()
+    img = row[0] if row else ""
+    if not img:
+        try:
+            img = G["fetch_product_image"](link) or ""
+        except Exception:
+            img = ""
+    return img if img.startswith("https://") else ""
+
+
+def _email_html(*, preheader, heading, intro, title, shop, image, price_html,
+                button_text, button_url, extra_html="", footer_html="", site=""):
+    e = _html.escape
+    logo = f"{site}/static/icon-192.png" if site else ""
+    img_cell = (f'<td width="104" valign="top" style="padding:0 16px 0 0">'
+                f'<img src="{e(image)}" width="104" alt="" style="display:block;width:104px;max-width:104px;'
+                f'height:auto;border-radius:10px;border:1px solid #e3e7f1;background:#ffffff"></td>'
+                if image else "")
+    logo_img = (f'<img src="{e(logo)}" width="40" height="40" alt="" style="display:block;border-radius:10px">'
+                if logo else "")
+    return f"""<!doctype html>
+<html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light"><title>{e(heading)}</title></head>
+<body style="margin:0;padding:0;background:#eef1f8;-webkit-text-size-adjust:100%">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#eef1f8">{e(preheader)}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f8">
+<tr><td align="center" style="padding:24px 12px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:18px;overflow:hidden;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1b2a5c">
+  <tr><td style="background:#0d1530;padding:18px 24px">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+      <td style="padding-right:12px">{logo_img}</td>
+      <td style="font-size:22px;font-weight:800;color:#ffd23f;letter-spacing:.5px">CardRadar</td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="padding:28px 24px 8px">
+    <h1 style="margin:0 0 10px;font-size:22px;line-height:1.3;color:#1b2a5c">{e(heading)}</h1>
+    <p style="margin:0;font-size:15px;line-height:1.6;color:#46557d">{intro}</p>
+  </td></tr>
+  <tr><td style="padding:18px 24px">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f8fc;border:1px solid #e3e7f1;border-radius:14px">
+      <tr><td style="padding:16px">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          {img_cell}
+          <td valign="top">
+            <div style="font-size:15px;font-weight:700;line-height:1.4;color:#1b2a5c">{e(title)}</div>
+            <div style="margin-top:4px;font-size:13px;color:#6b7aa0">{e(shop)}</div>
+            <div style="margin-top:10px;font-size:15px;line-height:1.5;color:#1b2a5c">{price_html}</div>
+          </td>
+        </tr></table>
+      </td></tr>
+    </table>
+  </td></tr>
+  <tr><td align="center" style="padding:6px 24px 8px">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+      <td style="background:#ffd23f;border-radius:12px;border-bottom:3px solid #e0a800">
+        <a href="{e(button_url)}" style="display:inline-block;padding:14px 28px;font-size:16px;font-weight:800;color:#1b2a5c;text-decoration:none">{e(button_text)}</a>
+      </td>
+    </tr></table>
+  </td></tr>
+  {extra_html}
+  <tr><td style="padding:22px 24px 26px;border-top:1px solid #eef1f8;font-size:12px;line-height:1.6;color:#8a96b5">
+    {footer_html}
+  </td></tr>
+</table>
+<div style="padding:14px 12px 0;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;font-size:11px;color:#9aa5c2">
+CardRadar je nezávislý porovnávač cien. Pokémon je ochranná známka svojich vlastníkov.</div>
+</td></tr></table></body></html>"""
+
+
+def _send_html(to, subject, text, html_body, headers=None):
+    import smtplib
+    from email.message import EmailMessage
+    g = G["_g"]
+    msg = EmailMessage()
+    msg["From"] = g["SMTP_FROM"]
+    msg["To"] = to
+    msg["Subject"] = subject
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    msg.set_content(text)
+    msg.add_alternative(html_body, subtype="html")
+    if g["SMTP_PORT"] == 465:
+        server = smtplib.SMTP_SSL(g["SMTP_HOST"], g["SMTP_PORT"], timeout=15)
+    else:
+        server = smtplib.SMTP(g["SMTP_HOST"], g["SMTP_PORT"], timeout=15)
+        server.starttls()
+    try:
+        if g["SMTP_USER"]:
+            server.login(g["SMTP_USER"], g["SMTP_PASS"])
+        server.send_message(msg)
+    finally:
+        server.quit()
+
+
+def _confirm_mail(email, title, shop, link, target, token, site):
+    e = _html.escape
+    confirm = f"{site}/alerts/confirm?token={urllib.parse.quote(token)}"
+    image = _product_image(link)
+    text = (f"Ahoj,\n\nchceš dostať e-mail, keď cena klesne na {_eur(target)} alebo menej?\n\n"
+            f"{title} ({shop})\n{link}\n\nPotvrď kliknutím: {confirm}\n\n"
+            f"Ak si o to nežiadal, tento e-mail ignoruj.\n\nCardRadar")
+    html_body = _email_html(
+        preheader=f"Potvrď strážcu ceny pre {title}",
+        heading="Potvrď strážcu ceny 🔔",
+        intro=f"Napíšeme ti, keď cena klesne na <b>{e(_eur(target))}</b> alebo menej. "
+              f"Stačí jedno kliknutie na potvrdenie.",
+        title=title, shop=shop, image=image,
+        price_html=f'Tvoj cieľ: <b style="color:#16a34a">{e(_eur(target))}</b>',
+        button_text="Potvrdiť strážcu", button_url=confirm, site=site,
+        footer_html=(f'Ak si o strážcu nežiadal, tento e-mail pokojne ignoruj, nič sa nezapne.<br>'
+                     f'<a href="{e(site)}" style="color:#6b7aa0">{e(site.replace("https://", ""))}</a>'))
+    _send_html(email, "Potvrď strážcu ceny – CardRadar", text, html_body)
+
+
+def _drop_mail(email, title, shop, link, target, price, token, site):
+    e = _html.escape
+    stop = f"{site}/alerts/stop?token={urllib.parse.quote(token)}"
+    sug = G["make_suggestion_from_title"](title) or {}
+    compare = f"{site}/?q={urllib.parse.quote(sug.get('query') or title)}"
+    image = _product_image(link)
+    text = (f"Ahoj,\n\n{title} ({shop}) je teraz za {_eur(price)} "
+            f"(tvoj cieľ bol {_eur(target)}).\n\n{link}\n\n"
+            f"Porovnať ceny: {compare}\n\nStrážca sa tým vypína. Nový si nastavíš na {site}\n"
+            f"Zrušiť: {stop}\n\nCardRadar")
+    html_body = _email_html(
+        preheader=f"{title} je teraz za {_eur(price)}",
+        heading="Cena klesla! 🎉",
+        intro=f"Produkt, ktorý strážiš, je teraz za <b>{e(_eur(price))}</b>. "
+              f"Ceny sa menia rýchlo, tak neváhaj príliš dlho.",
+        title=title, shop=shop, image=image,
+        price_html=(f'<span style="font-size:22px;font-weight:800;color:#16a34a">{e(_eur(price))}</span>'
+                    f'<br><span style="font-size:13px;color:#6b7aa0">tvoj cieľ bol {e(_eur(target))}</span>'),
+        button_text=f"Otvoriť v obchode {shop}", button_url=link, site=site,
+        extra_html=(f'<tr><td align="center" style="padding:4px 24px 6px">'
+                    f'<a href="{e(compare)}" style="font-size:14px;color:#2f6bff;font-weight:700;'
+                    f'text-decoration:none">Porovnať ceny vo všetkých obchodoch →</a></td></tr>'),
+        footer_html=(f'Strážca sa po tomto upozornení vypína. Nový si nastavíš na '
+                     f'<a href="{e(site)}" style="color:#6b7aa0">{e(site.replace("https://", ""))}</a>.<br>'
+                     f'<a href="{e(stop)}" style="color:#6b7aa0">Zrušiť strážcu</a>'))
+    _send_html(email, f"Cena klesla: {title} za {_eur(price)}", text, html_body,
+               headers={"List-Unsubscribe": f"<{stop}>"})
+
+
+def api_alerts_create():
+    """Rovnaké ako v app.py, ale s pekným potvrdzovacím e-mailom."""
+    import secrets
+    from flask import jsonify, request
+    g = G["_g"]
+    if not g["ALERTS_ENABLED"]:
+        return jsonify({"error": "Strážca ceny zatiaľ nie je na serveri zapnutý."}), 503
+    if not g["alerts_limiter"].allow(g["client_ip"]()):
+        return g["too_many"]()
+    data = request.get_json(silent=True) or {}
+    clean = g["clean_text"]
+    email = clean(data.get("email", "")).lower()
+    link = clean(data.get("link", ""))
+    title = clean(data.get("title", ""))[:200]
+    shop = clean(data.get("shop", ""))[:60]
+    try:
+        target = round(float(data.get("target")), 2)
+    except (TypeError, ValueError):
+        target = 0
+    if not g["EMAIL_RE"].match(email):
+        return jsonify({"error": "Zadaj platný e-mail."}), 400
+    if not g["is_allowed_link"](link):
+        return jsonify({"error": "Neplatný produkt."}), 400
+    if not 0 < target < 100000:
+        return jsonify({"error": "Zadaj cieľovú cenu."}), 400
+
+    site = _site()
+    conn = _db()
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM alerts WHERE email = ?", (email,)).fetchone()[0]
+        if count >= g["ALERTS_PER_EMAIL"]:
+            return jsonify({"error": f"Na jeden e-mail môžeš mať najviac {g['ALERTS_PER_EMAIL']} strážcov."}), 400
+        existing = conn.execute(
+            "SELECT id, confirmed FROM alerts WHERE email = ? AND link = ?", (email, link)).fetchone()
+        token = secrets.token_urlsafe(24)
+        if existing:
+            conn.execute("UPDATE alerts SET target = ?, notified = NULL, token = ? WHERE id = ?",
+                         (target, token, existing[0]))
+            confirmed = bool(existing[1])
+        else:
+            conn.execute(
+                "INSERT INTO alerts (email, link, title, shop, target, token, confirmed, created, site) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (email, link, title, shop, target, token,
+                 datetime.now(timezone.utc).isoformat(), site))
+            confirmed = False
+        conn.commit()
+    finally:
+        conn.close()
+
+    if confirmed:
+        return jsonify({"status": "ok", "message": f"Strážca upravený na {_eur(target)}."})
+    try:
+        _confirm_mail(email, title, shop, link, target, token, site)
+    except Exception:
+        return jsonify({"error": "Potvrdzovací e-mail sa nepodarilo odoslať. Skús to neskôr."}), 502
+    return jsonify({"status": "ok",
+                    "message": "Poslali sme ti e-mail. Strážca začne fungovať po potvrdení."})
+
+
+def check_alerts_once():
+    """Rovnaké ako v app.py, ale s pekným e-mailom o poklese ceny."""
+    g = G["_g"]
+    conn = _db()
+    try:
+        alerts = conn.execute(
+            "SELECT id, email, link, title, shop, target, token, site FROM alerts "
+            "WHERE confirmed = 1 AND notified IS NULL").fetchall()
+    finally:
+        conn.close()
+
+    offers = {}
+    for link in {a[2] for a in alerts}:
+        try:
+            offers[link] = g["fetch_product_offer"](link)
+        except Exception:
+            offers[link] = (None, "")
+        time.sleep(1)  # šetrne k obchodom
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _db()
+    try:
+        for aid, email, link, title, shop, target, token, site in alerts:
+            price, stock = offers.get(link, (None, ""))
+            conn.execute("UPDATE alerts SET last_price = ?, last_checked = ? WHERE id = ?",
+                         (price, now, aid))
+            if price:
+                conn.execute("""
+                    INSERT INTO price_daily (link, day, shop, title, price_eur, stock)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(link, day) DO UPDATE SET price_eur = excluded.price_eur,
+                        stock = excluded.stock
+                """, (link, g["today_str"](), shop, title, price, stock))
+            if price and price <= target and stock != "out":
+                try:
+                    _drop_mail(email, title, shop, link, target, price, token,
+                               g["PUBLIC_URL"] or site or "")
+                    conn.execute("UPDATE alerts SET notified = ? WHERE id = ?", (now, aid))
+                except Exception:
+                    pass
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # =========================================================
@@ -1472,3 +1752,7 @@ def install(g):
     # 8) opravy a zrýchlenie app.py (6.3)
     _install_fixes(g)
     _wrap_health(app)   # 6.10
+    # 6.11: pekné e-maily strážcu
+    g["check_alerts_once"] = check_alerts_once
+    if "api_alerts_create" in app.view_functions:
+        app.view_functions["api_alerts_create"] = api_alerts_create
