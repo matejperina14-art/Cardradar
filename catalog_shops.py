@@ -1,5 +1,8 @@
 """
-CARD RADAR – rozšírenia 6.13
+CARD RADAR – rozšírenia 6.14
+ - 6.14: presnejšie výsledky (meno Pokémona a set musia byť v názve, skratky setov len ako
+         celé slová, case/6x boxy osobitne, „Mega Evolution – Pitch Black“ = set Pitch Black),
+         rýchlejšie hľadanie (pomalé obchody sa doplnia o chvíľu)
  - 6.13: stránka /pre-obchody, robot sa predstavuje ako CardRadarBot, web mimo Google
          (kým ALLOW_INDEXING=1), robots.txt, odkazy na obchody s utm_source=cardradar,
          presnejšia ochrana údajov
@@ -828,7 +831,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.13"
+        data["extensions"] = "6.14"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -838,6 +841,158 @@ def _wrap_health(app):
     app.view_functions["health"] = health
 
 
+
+
+
+# =========================================================
+# PRESNEJŠIE VÝSLEDKY + RÝCHLEJŠIE HĽADANIE (6.14)
+# =========================================================
+
+_SERIES_SETS = {"mega evolution"}
+_ALIAS_RE_CACHE = {}
+_BULK_RE = re.compile(r"\bcase\b|(?<![\w/.,])\d{1,2}\s*x(?![a-z0-9])(?!\s*\d)|\bx\s*\d{1,2}\b", re.I)
+_WANT_BULK_RE = re.compile(r"\bcase\b|display|\b\d{1,2}\s*x\b", re.I)
+_TCG_EXTRA_RE = re.compile(r"\bcards\b|miscellaneous", re.I)
+
+
+def _make_normalize_fix(original):
+    """„Mega Evolution – Pitch Black Booster Box“: set je Pitch Black, nie séria Mega Evolution."""
+    def normalize_query(query):
+        p = original(query)
+        if p.get("set_name") in _SERIES_SETS:
+            rest = re.sub(r"\bmega\s+evolution\b", " ", G["clean_text"](query), flags=re.I)
+            q = original(rest)
+            if q.get("set_name") and q["set_name"] not in _SERIES_SETS:
+                q["original"] = p.get("original", q.get("original", ""))
+                return q
+        return p
+    return normalize_query
+
+
+def _alias_re(alias):
+    rx = _ALIAS_RE_CACHE.get(alias)
+    if rx is None:
+        rx = _ALIAS_RE_CACHE[alias] = re.compile(
+            r"(?<![a-z0-9/])" + re.escape(_fold(alias)) + r"(?![a-z0-9/])")
+    return rx
+
+
+def set_matches_text(searchable, set_name):
+    """Ako v app.py, ale bez diakritiky (Pokémon = pokemon) a skratky setov
+    (sv10, 151...) len ako celé slová – „sv10“ už nesedí na kód „CSV10C“."""
+    s = _fold(G["clean_text"](searchable))
+    n = _fold(G["clean_text"](set_name))
+    if not s or not n:
+        return False
+    nw = _fold_words(n)
+    if nw and nw.issubset(_fold_words(s)):
+        return True
+    for alias, canonical in G["_g"]["SET_ALIASES"].items():
+        if _fold(canonical) == n and _alias_re(alias).search(s):
+            return True
+    return False
+
+
+def _make_title_checks(card_orig, sealed_orig):
+    tcw = lambda text, word: G["text_contains_word"](text, word)
+
+    def card_matches_query(title, extra_text, parsed, loose_set=False):
+        ok, why = card_orig(title, extra_text, parsed, loose_set=loose_set)
+        if not ok:
+            return ok, why
+        # meno Pokémona a typ karty musia byť v názve, nie len v texte okolo
+        if parsed.get("pokemon") and not tcw(title, parsed["pokemon"]):
+            return False, "pokemon_not_in_title"
+        if parsed.get("suffix") and not tcw(title, parsed["suffix"]):
+            return False, "suffix_not_in_title"
+        return ok, why
+
+    def sealed_matches_query(title, extra_text, parsed):
+        # niektoré obchody píšu len „Bundle“ namiesto „Booster Bundle“
+        if (parsed.get("product_type") == "booster bundle" and re.search(r"\bbundle\b", title, re.I)
+                and not re.search(r"booster\s*bundle", title, re.I)):
+            extra_text = (extra_text or "") + " booster bundle"
+        ok, why = sealed_orig(title, extra_text, parsed)
+        if not ok:
+            return ok, why
+        if parsed.get("set_name") and not set_matches_text(title, parsed["set_name"]):
+            return False, "set_not_in_title"
+        if parsed.get("pokemon") and not tcw(title, parsed["pokemon"]):
+            return False, "pokemon_not_in_title"
+        want_bulk = _WANT_BULK_RE.search(parsed.get("original", "") or "")
+        if not want_bulk:
+            if _BULK_RE.search(title):
+                return False, "bulk_product"
+            if parsed.get("product_type") == "booster bundle" and re.search(r"\bdisplay\b", title, re.I):
+                return False, "bulk_product"
+        return ok, why
+
+    return card_matches_query, sealed_matches_query
+
+
+def _make_tcg_fix(original):
+    def looks_like_tcg(title):
+        return original(title) or bool(_TCG_EXTRA_RE.search(G["clean_text"](title)))
+    return looks_like_tcg
+
+
+SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "2.8"))   # sekundy
+
+
+def fast_search_all(query, return_debug=False):
+    """Ako search_all v app.py, ale nečaká na najpomalší obchod: po SEARCH_BUDGET
+    sekundách vráti, čo má, a pomalé obchody označí ako „pending“. Tie dobehnú
+    na pozadí do cache a stránka si ich o chvíľu potichu dotiahne."""
+    from concurrent.futures import wait
+    g = G["_g"]
+
+    def run(shop):
+        start = time.monotonic()
+        try:
+            res, dbg = g["shop_search"](shop, query, return_debug=True, cache_result=True)
+        except Exception as e:
+            res, dbg = [], {"shop": shop["name"], "query": query, "status": "runner_error",
+                            "results": 0, "error": str(e)}
+        dbg["elapsed_ms"] = round((time.monotonic() - start) * 1000)
+        return res, dbg
+
+    futs = [(s, g["SHOP_EXECUTOR"].submit(run, s)) for s in list(g["ACTIVE_SHOPS"])]
+    wait([f for _, f in futs], timeout=SEARCH_BUDGET)
+    results, diagnostics = [], []
+    for shop, fut in futs:
+        if fut.done():
+            try:
+                res, dbg = fut.result()
+            except Exception as e:
+                res, dbg = [], {"shop": shop["name"], "status": "runner_error", "results": 0, "error": str(e)}
+        else:
+            res, dbg = [], {"shop": shop["name"], "query": query, "status": "pending", "results": 0,
+                            "elapsed_ms": round(SEARCH_BUDGET * 1000), "cache": ""}
+        results.extend(res)
+        diagnostics.append(dbg)
+
+    unique = {}
+    for r in results:
+        key = (g["clean_text"](r.get("shop", "")).lower(),
+               g["clean_text"](r.get("link", "")).lower().rstrip("/"))
+        unique[key] = r
+    results = sorted(unique.values(), key=lambda r: float(r.get("price_eur") or 999999))
+    if return_debug:
+        return results, {"query": query, "shops": diagnostics, "total_results": len(results)}
+    return results
+
+
+def _install_quality(g):
+    norm = _make_normalize_fix(g["normalize_query"])
+    g["normalize_query"] = G["normalize_query"] = norm
+    g["set_matches_text"] = G["set_matches_text"] = set_matches_text
+    card, sealed = _make_title_checks(g["card_matches_query"], g["sealed_matches_query"])
+    g["card_matches_query"] = G["card_matches_query"] = card
+    g["sealed_matches_query"] = G["sealed_matches_query"] = sealed
+    tcg = _make_tcg_fix(g["looks_like_tcg"])
+    g["looks_like_tcg"] = G["looks_like_tcg"] = tcg
+    # rýchle hľadanie len pre web; /admin/test (G) čaká na všetky obchody
+    g["search_all"] = fast_search_all
 
 
 # =========================================================
@@ -915,7 +1070,8 @@ def _install_shop_friendly(g):
 
 _TCG_SAFE_RE = re.compile(
     r"rare\s+candy|puzzle\s+of\s+time|poster\s+collection|binder\s+collection"
-    r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?",
+    r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?"
+    r"|trick\s+or\s+trade|grey\s+felt\s+hat",
     re.I)
 _SWITCH_RE = re.compile(r"(?<!\w)(?:energy\s+)?switch(?:\s+cart)?(?!\w)", re.I)
 _CONSOLE_RE = re.compile(r"nintendo\s+switch|konzol\w*|console|oled|joy-?con|videohr\w*|video\s*game", re.I)
@@ -1518,7 +1674,7 @@ SELFTEST_QUERIES = [
     "pitch black booster box", "pitch black etb", "chaos rising etb",
     "destined rivals etb", "destined rivals booster box", "prismatic evolutions etb",
     "surging sparks booster bundle", "151 etb", "ascended heroes etb",
-    "charizard ex", "pikachu ex", "umbreon vmax",
+    "charizard ex", "pikachu ex", "umbreon vmax", "rare candy", "trick or trade",
 ]
 
 
@@ -1876,6 +2032,7 @@ def install(g):
     # 8) opravy a zrýchlenie app.py (6.3)
     _install_fixes(g)
     _wrap_health(app)   # 6.10
+    _install_quality(g)   # 6.14
     # 6.11: pekné e-maily strážcu
     g["check_alerts_once"] = check_alerts_once
     if "api_alerts_create" in app.view_functions:
