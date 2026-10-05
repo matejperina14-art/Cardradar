@@ -1,5 +1,8 @@
 """
-CARD RADAR – rozšírenia 6.12
+CARD RADAR – rozšírenia 6.13
+ - 6.13: stránka /pre-obchody, robot sa predstavuje ako CardRadarBot, web mimo Google
+         (kým ALLOW_INDEXING=1), robots.txt, odkazy na obchody s utm_source=cardradar,
+         presnejšia ochrana údajov
  - 6.12: filter merchu už nevyhadzuje skutočné karty a produkty (Rare Candy, Switch, Poster/Binder Collection...)
  - 6.11: pekné HTML e-maily strážcu ceny (obrázok produktu, tlačidlo, slovenský formát ceny)
  - 6.10: /health ukazuje, kde je databáza (db_path, db_persistent)
@@ -39,6 +42,8 @@ TEST:
 
 Premenné prostredia (nepovinné):
     CATALOG_REFRESH_MIN  – ako často obnoviť katalóg (predvolene 60 minút)
+    ALLOW_INDEXING       – 1 = web môže byť v Google (predvolene 0, kým nemáme súhlas obchodov)
+    CRAWLER_UA           – "browser" = sťahovať ako bežný prehliadač (ak by obchod blokoval robota)
     PUBLIC_URL           – hlavná adresa webu (napr. https://getcardradar.com);
                            ostatné adresy (onrender.com, www.) sa na ňu presmerujú
     DB_PATH              – kde je databáza (napr. /var/data/cardradar.db na disku Renderu).
@@ -730,16 +735,19 @@ PRIVACY_HTML = """
 o ktoré si požiadal (právny základ: tvoj súhlas potvrdený kliknutím v e-maile).</li>
 <li><b>Hľadané výrazy:</b> ukladáme len text hľadania a počet za deň, bez väzby na teba,
 aby sme ukázali obľúbené hľadania.</li>
-<li><b>IP adresa:</b> drží sa len v pamäti servera asi minútu, na ochranu pred zneužitím
-(obmedzenie počtu požiadaviek). Neukladá sa.</li>
+<li><b>IP adresa:</b> drží sa v pamäti servera asi minútu, na ochranu pred zneužitím
+(obmedzenie počtu požiadaviek). Do databázy sa neukladá, krátkodobo sa môže objaviť
+v technických záznamoch servera.</li>
 <li><b>Obľúbené produkty</b> sa ukladajú iba v tvojom prehliadači, nie na serveri.</li>
 </ul>
 <h2>Ako dlho</h2>
 <p>Nepotvrdený strážca sa zmaže po 7 dňoch, splnený 30 dní po odoslaní upozornenia.
 Aktívny strážca trvá, kým ho nezrušíš odkazom v e-maile.</p>
 <h2>Kto k údajom má prístup</h2>
-<p>Web beží na serveroch spoločnosti Render (USA). E-maily sa odosielajú cez poskytovateľa
-e-mailovej služby. Údaje nepredávame ani nezdieľame na reklamné účely.</p>
+<p>Web beží na serveroch spoločnosti Render Services, Inc. v dátovom centre vo Frankfurte (EÚ).
+E-maily strážcu ceny odosiela služba Resend zo serverov v Írsku (EÚ). Doménu a DNS spravuje
+Cloudflare. Písma stránky sa načítavajú zo služby Google Fonts, ktorá pri tom vidí IP adresu
+tvojho zariadenia. Údaje nepredávame ani nezdieľame na reklamné účely.</p>
 <h2>Cookies</h2>
 <p>CardRadar nepoužíva reklamné ani sledovacie cookies. Prehliadač si ukladá len súbory
 potrebné na rýchlejšie načítanie a obľúbené produkty.</p>
@@ -749,7 +757,8 @@ kontakt vyššie. Sťažnosť môžeš podať na Úrad na ochranu osobných úda
 """
 
 FOOTER_HTML = ('<footer style="text-align:center;padding:24px 12px 40px;font-size:13px;'
-               'opacity:.7"><a href="/podmienky" style="color:inherit">Podmienky</a> · '
+               'opacity:.7"><a href="/pre-obchody" style="color:inherit">Pre obchody</a> · '
+               '<a href="/podmienky" style="color:inherit">Podmienky</a> · '
                '<a href="/ochrana-udajov" style="color:inherit">Ochrana údajov</a></footer>')
 
 
@@ -819,7 +828,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.12"
+        data["extensions"] = "6.13"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -828,6 +837,71 @@ def _wrap_health(app):
 
     app.view_functions["health"] = health
 
+
+
+
+# =========================================================
+# PRE OBCHODY, ROBOT, INDEXOVANIE (6.13)
+# =========================================================
+
+BOT_UA = "Mozilla/5.0 (compatible; CardRadarBot/1.0; +https://getcardradar.com/pre-obchody)"
+
+SHOPS_HTML = """
+<p>CardRadar je bezplatný porovnávač cien Pokémon TCG kariet, ETB a booster boxov zo slovenských
+obchodov. Zberateľ zadá kartu alebo set a na jednom mieste vidí, kde je produkt skladom
+a za koľko. Kliknutím ide <b>priamo na stránku produktu vo vašom e-shope</b>. CardRadar nič nepredáva.</p>
+
+<h2>Čo o vašich produktoch zobrazujeme</h2>
+<ul>
+<li>názov produktu, aktuálnu cenu a dostupnosť (skladom, predobjednávka, vypredané),</li>
+<li>obrázok produktu, vždy načítaný z vášho webu,</li>
+<li>názov vášho obchodu a odkaz na konkrétny produkt.</li>
+</ul>
+
+<h2>Návštevnosť, ktorú uvidíte</h2>
+<p>Všetky odkazy na váš e-shop majú parameter <code>utm_source=cardradar</code>, takže
+návštevy aj objednávky z CardRadaru uvidíte v Google Analytics alebo v štatistikách vášho
+e-shopu ako samostatný zdroj.</p>
+
+<h2>Ako údaje získavame</h2>
+<p>Ideálne z vášho XML feedu produktov (formát Heureka alebo Google Merchant). Je to najpresnejšie
+a váš web to nijako nezaťaží. Bez feedu čítame verejne dostupné stránky vyhľadávania alebo
+kategórií, šetrne: výsledky si pamätáme a kategórie prechádzame najviac raz za hodinu s pauzou
+medzi stránkami. Náš robot sa predstavuje ako <code>CardRadarBot</code>.</p>
+
+<h2>Opravy a odstránenie</h2>
+<p>Ak je niektorý údaj nesprávny, opravíme ho. Ak si neželáte, aby bol váš obchod na CardRadare,
+stačí napísať a odstránime ho, zvyčajne do 24 hodín.</p>
+
+<h2>Spolupráca</h2>
+<p>Radi sa dohodneme na XML feede, partnerskom programe alebo zvýraznení nových produktov
+a predobjednávok. Napíšte nám: {KONTAKT}</p>
+"""
+
+
+def _robots():
+    from flask import Response
+    if os.environ.get("ALLOW_INDEXING", "0") == "1":
+        body = "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin/\nDisallow: /alerts/\n"
+    else:
+        body = "User-agent: *\nDisallow: /\n"
+    return Response(body, mimetype="text/plain")
+
+
+def _noindex(resp):
+    if os.environ.get("ALLOW_INDEXING", "0") != "1":
+        resp.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+    return resp
+
+
+def _install_shop_friendly(g):
+    app = g["app"]
+    if os.environ.get("CRAWLER_UA", "").strip().lower() != "browser":
+        g["HEADERS"]["User-Agent"] = os.environ.get("CRAWLER_UA", "").strip() or BOT_UA
+    app.add_url_rule("/pre-obchody", "shops_page",
+                     lambda: _legal_page("Pre obchody", SHOPS_HTML))
+    app.add_url_rule("/robots.txt", "robots_txt", _robots)
+    app.after_request(_noindex)
 
 
 # =========================================================
@@ -875,6 +949,15 @@ def _eur(v):
         return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + " €"
     except (TypeError, ValueError):
         return "–"
+
+
+def _utm(url):
+    try:
+        p = urllib.parse.urlsplit(url)
+        q = urllib.parse.parse_qsl(p.query) + [("utm_source", "cardradar"), ("utm_medium", "email")]
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), ""))
+    except Exception:
+        return url
 
 
 def _site():
@@ -1026,7 +1109,7 @@ def _drop_mail(email, title, shop, link, target, price, token, site):
         title=title, shop=shop, image=image,
         price_html=(f'<span style="font-size:22px;font-weight:800;color:#16a34a">{e(_eur(price))}</span>'
                     f'<br><span style="font-size:13px;color:#6b7aa0">tvoj cieľ bol {e(_eur(target))}</span>'),
-        button_text=f"Otvoriť v obchode {shop}", button_url=link, site=site,
+        button_text=f"Otvoriť v obchode {shop}", button_url=_utm(link), site=site,
         extra_html=(f'<tr><td align="center" style="padding:4px 24px 6px">'
                     f'<a href="{e(compare)}" style="font-size:14px;color:#2f6bff;font-weight:700;'
                     f'text-decoration:none">Porovnať ceny vo všetkých obchodoch →</a></td></tr>'),
@@ -1779,6 +1862,7 @@ def install(g):
     # 7) databáza, stránky, obnova na pozadí
     _init_db()
     app = g["app"]
+    _install_shop_friendly(g)   # 6.13
     app.before_request(_redirect_main_domain)   # 6.8: presmerovanie na hlavnú doménu
     app.add_url_rule("/api/debug/catalog", "api_debug_catalog", api_debug_catalog)
     app.add_url_rule("/podmienky", "terms_page",
