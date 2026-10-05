@@ -770,28 +770,34 @@ def _inject_footer(resp):
 # =========================================================
 
 def _use_persistent_db(g):
+    """Ak sa disk nedá použiť (napr. nie je pripojený), web beží ďalej
+    so starou databázou a do logu sa zapíše varovanie – deploy nespadne."""
     import sqlite3 as _sq
     new = os.environ.get("DB_PATH", "").strip()
     old = g["DB_PATH"]
     if not new or os.path.abspath(new) == os.path.abspath(old):
         return
-    folder = os.path.dirname(new)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    if not os.path.exists(new) and os.path.exists(old):
-        # prvý štart s diskom: preniesť doterajšie dáta (bezpečne, cez zálohu SQLite)
-        try:
+    try:
+        folder = os.path.dirname(new)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        if not os.path.exists(new) and os.path.exists(old):
+            # prvý štart s diskom: preniesť doterajšie dáta (bezpečne, cez zálohu SQLite)
             src, dst = _sq.connect(old), _sq.connect(new)
             try:
                 src.backup(dst)
             finally:
                 src.close()
                 dst.close()
-        except Exception:
-            pass
-    g["DB_PATH"] = new
-    G["DB_PATH"] = new
-    g["init_db"]()   # vytvorí chýbajúce tabuľky v novej databáze
+        g["DB_PATH"] = new
+        G["DB_PATH"] = new
+        g["init_db"]()   # vytvorí chýbajúce tabuľky v novej databáze
+        print(f"[CardRadar] Databáza na disku: {new}", flush=True)
+    except Exception as e:
+        g["DB_PATH"] = old
+        G["DB_PATH"] = old
+        print(f"[CardRadar] VAROVANIE: DB_PATH={new} sa nedá použiť ({e}). "
+              f"Skontroluj disk na Renderi (Mount Path /var/data). Používam {old}.", flush=True)
 
 
 # =========================================================
