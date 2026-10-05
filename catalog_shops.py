@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.7
+CARD RADAR – rozšírenia 6.8
+ - 6.8: presmerovanie na hlavnú doménu (PUBLIC_URL), napr. z onrender.com a www.
  - 6.7: kontrola beží na pozadí s ukazovateľom priebehu, oprava offline režimu
  - 6.6: CardyX – sklad a obrázky priamo z obchodu
  - 6.5: kontrola pred spustením na /admin/test?key=ADMIN_KEY
@@ -34,6 +35,8 @@ TEST:
 
 Premenné prostredia (nepovinné):
     CATALOG_REFRESH_MIN  – ako často obnoviť katalóg (predvolene 60 minút)
+    PUBLIC_URL           – hlavná adresa webu (napr. https://getcardradar.com);
+                           ostatné adresy (onrender.com, www.) sa na ňu presmerujú
 """
 
 import copy
@@ -758,6 +761,26 @@ def _inject_footer(resp):
 
 
 # =========================================================
+# PRESMEROVANIE NA HLAVNÚ DOMÉNU (6.8)
+# Ak je nastavené PUBLIC_URL (napr. https://getcardradar.com), všetky ostatné
+# adresy (cardradar-xxxx.onrender.com, www.getcardradar.com) sa presmerujú na ňu.
+# Cesta aj parametre ostanú, takže fungujú aj staré zdieľané odkazy.
+# =========================================================
+
+def _redirect_main_domain():
+    from flask import request, redirect
+    public = (G["_g"].get("PUBLIC_URL") or os.environ.get("PUBLIC_URL", "")).strip().rstrip("/")
+    if not public or request.path == "/health":   # /health nechávame pre kontroly Renderu
+        return None
+    main = urllib.parse.urlparse(public).netloc.lower()
+    host = request.host.split(":")[0].lower()
+    if main and host != main and (host.endswith(".onrender.com") or host == "www." + main):
+        # 308 = trvalé presmerovanie, zachová aj POST (napr. strážca ceny)
+        return redirect(public + request.full_path.rstrip("?"), code=308)
+    return None
+
+
+# =========================================================
 # OPRAVY A ZRÝCHLENIE 6.3 (opravy pre app.py, bez úpravy app.py)
 # =========================================================
 from concurrent.futures import ThreadPoolExecutor as _TPE
@@ -1368,6 +1391,7 @@ def install(g):
     # 7) databáza, stránky, obnova na pozadí
     _init_db()
     app = g["app"]
+    app.before_request(_redirect_main_domain)   # 6.8: presmerovanie na hlavnú doménu
     app.add_url_rule("/api/debug/catalog", "api_debug_catalog", api_debug_catalog)
     app.add_url_rule("/podmienky", "terms_page",
                      lambda: _legal_page("Podmienky používania", TERMS_HTML))
