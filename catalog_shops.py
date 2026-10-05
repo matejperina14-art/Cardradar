@@ -1,5 +1,7 @@
 """
-CARD RADAR – rozšírenia 6.16
+CARD RADAR – rozšírenia 6.17
+ - 6.17: úvodná stránka – sety s obrázkom a cenou, riadky booster boxov, bundlov a top kariet,
+         merch/príslušenstvo sa filtruje aj pri hľadaní v katalógoch a na úvode
  - 6.16: čas overenia ceny pri každom obchode (fetched_at), písma bez Google Fonts,
          nový dizajn webu (index.html 8.0)
  - 6.15: hľadanie bez Pokémona/setu (napr. „rare candy“) vyžaduje hľadané slová v názve,
@@ -500,6 +502,9 @@ def catalog_scrape(shop, query):
 
     for it in items:
         title = it["title"]
+        if g["merch_reason"](title) or not g["looks_like_tcg"](title):
+            debug["merch_filtered"] += 1
+            continue
         if kind == "card":
             ok, reason = g["card_matches_query"](title, "", parsed, loose_set=shop.get("loose_set", False))
         else:
@@ -864,7 +869,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.16"
+        data["extensions"] = "6.17"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -1067,9 +1072,106 @@ def shops_status(debug):
     } for d in debug.get("shops", [])]
 
 
+
+# =========================================================
+# ÚVODNÁ STRÁNKA 6.17: sety s obrázkom, riadky podľa typu produktu
+# =========================================================
+
+_HOME_BOX_RE = re.compile(r"booster\s*(?:box|display)", re.I)
+_HOME_BUNDLE_RE = re.compile(r"\bbundle\b", re.I)
+_HOME_ETB_RE = re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)
+_HOME_SEALED_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|blister|"
+                             r"display|deck|premium|build\s*(?:&|and)?\s*battle", re.I)
+
+
+def _latest_offers(days=3):
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    conn = _db()
+    try:
+        return conn.execute("""
+            SELECT p.link, p.title, p.shop, p.price_eur, p.stock, p.image,
+                   (SELECT MAX(q.image) FROM price_daily q WHERE q.link = p.link)
+            FROM price_daily p
+            JOIN (SELECT link, MAX(day) AS d FROM price_daily WHERE day >= ? GROUP BY link) r
+              ON p.link = r.link AND p.day = r.d
+            WHERE p.price_eur > 0 AND (p.stock IS NULL OR p.stock != 'out')
+        """, (since,)).fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def _make_home_fix(original):
+    def build_home():
+        g = G["_g"]
+        d = original()
+        ok = lambda t: not g["merch_reason"](t) and g["looks_like_tcg"](t)
+        d["deals"] = [x for x in d.get("deals", []) if ok(x.get("title", ""))]
+        d["cheap_etb"] = [x for x in d.get("cheap_etb", []) if ok(x.get("title", ""))]
+
+        boxes, bundles, cards, items = [], [], [], []
+        for link, title, shop, price, stock, image, any_image in _latest_offers():
+            if not ok(title) or g["is_combo"](title) or _BULK_RE.search(title):
+                continue
+            lang = g["detect_language"](title)
+            if lang in g["ASIAN_LANGS"]:
+                continue
+            it = {"link": link, "title": title, "shop": shop, "price_eur": round(price, 2),
+                  "stock": stock or "", "image": image or any_image or "", "language": lang,
+                  "group": g["group_key"](title, lang),
+                  "query": (g["make_suggestion_from_title"](title) or {}).get("query") or title}
+            items.append(it)
+            if _HOME_ETB_RE.search(title):
+                continue
+            if _HOME_BOX_RE.search(title):
+                boxes.append(it)
+            elif _HOME_BUNDLE_RE.search(title) and not re.search(r"display", title, re.I):
+                bundles.append(it)
+            elif not _HOME_SEALED_RE.search(title) and price >= 10:
+                cards.append(it)
+
+        def uniq(lst, limit, key=lambda x: x["price_eur"], reverse=False):
+            out, seen = [], set()
+            for it in sorted(lst, key=key, reverse=reverse):
+                k = it["group"] or it["link"]
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(it)
+                if len(out) >= limit:
+                    break
+            return out
+
+        d["cheap_box"] = uniq(boxes, 12)
+        d["cheap_bundle"] = uniq(bundles, 12)
+        d["top_cards"] = uniq(cards, 12, reverse=True)
+
+        # sety: obrázok (najradšej ETB), ETB od, box od
+        sets = []
+        for s in d.get("new_sets") or g["NEW_SETS"]:
+            s = dict(s)
+            mine = [i for i in items if set_matches_text(i["title"], s["query"])]
+            etb = [i for i in mine if _HOME_ETB_RE.search(i["title"])]
+            box = [i for i in mine if _HOME_BOX_RE.search(i["title"])]
+            pic = next((i["image"] for i in etb + box + mine if i["image"].startswith("https://")), "")
+            if pic:
+                s["image"] = pic
+            if etb:
+                s["etb_from"] = min(i["price_eur"] for i in etb)
+            if box:
+                s["box_from"] = min(i["price_eur"] for i in box)
+            s["offers"] = len(mine)
+            sets.append(s)
+        d["new_sets"] = sets
+        return d
+    return build_home
+
+
 def _install_quality(g):
     g["_scrape"] = _make_fresh_scrape(g["_scrape"])
     g["shops_status"] = shops_status
+    g["build_home"] = _make_home_fix(g["build_home"])
     norm = _make_normalize_fix(g["normalize_query"])
     g["normalize_query"] = G["normalize_query"] = norm
     g["set_matches_text"] = G["set_matches_text"] = set_matches_text
