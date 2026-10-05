@@ -516,7 +516,7 @@ footer a{color:var(--sub)}
   <div class="search-wrap">
     <div class="search" role="search">
       <input id="q" class="input" type="search" enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-             aria-label="Hľadaná karta alebo produkt" aria-controls="suggestions" placeholder="Pikachu, Charizard, Surging Sparks ETB...">
+             aria-label="Hľadaná karta alebo produkt" aria-controls="suggestions" placeholder="Pikachu ex, 30th Celebration ETB, Delta Reign box…">
       <button id="searchButton" class="primary">Hľadať</button>
     </div>
     <div id="suggestions" class="suggestions" role="listbox"></div>
@@ -546,7 +546,7 @@ footer a{color:var(--sub)}
 <div class="tm">Pokémon je ochranná známka spoločností Nintendo, Creatures a GAME FREAK. CardRadar je nezávislý porovnávač cien a nie je s nimi nijako spojený. Maskot Scanix je vlastná postava CardRadaru.</div>
 
 <script>
-/* CARD RADAR FRONTEND 7.4 */
+/* CARD RADAR FRONTEND 7.5 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -555,6 +555,8 @@ const imageOf = i => String(i?.image || i?.image_url || '').trim();
 const plural = (n, one, few, many) => n === 1 ? one : (n >= 2 && n <= 4 ? few : many);
 const radik = (cls = '') => `<svg class="radik ${cls}" viewBox="0 0 120 120" aria-hidden="true"><use href="#radik"/></svg>`;
 const BASE_TITLE = 'CardRadar – porovnávač cien Pokémon kariet';
+// odkazy do obchodov: obchod uvidí návštevy z CardRadaru vo svojej analytike
+const outLink = u => { try { const x = new URL(u); x.searchParams.set('utm_source', 'cardradar'); x.searchParams.set('utm_medium', 'referral'); return x.toString(); } catch (e) { return u; } };
 
 let CZK_RATE = 24.4618;
 let SHOPS = [], ALERTS = false;
@@ -1019,7 +1021,7 @@ function groupHtml(v, best){
 
   return `<article class="pcard${best ? ' best' : ''}${b.stock === 'out' ? ' sold' : ''}" data-id="${g.id}">
     <div class="p-top">
-      <a class="p-img${!g.image && g._imgPending ? ' wait' : ''}" href="${esc(b.link)}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true">
+      <a class="p-img${!g.image && g._imgPending ? ' wait' : ''}" href="${esc(outLink(b.link))}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true">
         ${imgInner(g)}${langTag(b)}
       </a>
       <div class="p-info">
@@ -1044,7 +1046,7 @@ function groupHtml(v, best){
         const st = STOCK[o.stock] || ['Sklad neuvedený', 's-unk'];
         const cheap = multi && o.stock !== 'out' && priceOf(o) === minP;
         return `<li class="offer${cheap ? ' cheap' : ''}${o.stock === 'out' ? ' sold' : ''}">
-          <a href="${esc(o.link)}" target="_blank" rel="noopener noreferrer">
+          <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener">
             <span class="o-shop"><span class="sd ${st[1]}" title="${st[0]}"></span>${esc(o.shop)}<span class="o-st">${st[0]}</span></span>
             <span class="o-price">${eur(priceOf(o))}</span>
             <span class="o-go" aria-hidden="true">↗</span>
@@ -1372,7 +1374,7 @@ function miniHtml(it, kind){
       <div class="mini-price">${kind === 'deal' ? `<s>${eur(it.old_price_eur)}</s>` : ''}<b>${eur(it.price_eur)}</b></div>
       <div class="mini-acts">
         <button data-q="${esc(it.query || it.title)}">Porovnať</button>
-        <a href="${esc(it.link)}" target="_blank" rel="noopener noreferrer">Otvoriť ↗</a>
+        <a href="${esc(outLink(it.link))}" target="_blank" rel="noopener">Otvoriť ↗</a>
       </div>
     </div>
   </div>`;
