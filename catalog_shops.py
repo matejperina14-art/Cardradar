@@ -1,5 +1,7 @@
 """
-CARD RADAR – rozšírenia 6.14
+CARD RADAR – rozšírenia 6.15
+ - 6.15: hľadanie bez Pokémona/setu (napr. „rare candy“) vyžaduje hľadané slová v názve,
+         akrylové a ochranné boxy sú príslušenstvo, rôzne blistre a tiny sa nespájajú
  - 6.14: presnejšie výsledky (meno Pokémona a set musia byť v názve, skratky setov len ako
          celé slová, case/6x boxy osobitne, „Mega Evolution – Pitch Black“ = set Pitch Black),
          rýchlejšie hľadanie (pomalé obchody sa doplnia o chvíľu)
@@ -831,7 +833,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.14"
+        data["extensions"] = "6.15"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -905,6 +907,13 @@ def _make_title_checks(card_orig, sealed_orig):
             return False, "pokemon_not_in_title"
         if parsed.get("suffix") and not tcw(title, parsed["suffix"]):
             return False, "suffix_not_in_title"
+        # „rare candy“, „trick or trade“...: bez Pokémona, setu a čísla musia byť
+        # hľadané slová v názve (inak by katalógové obchody vrátili všetko)
+        if not (parsed.get("pokemon") or parsed.get("set_name") or parsed.get("card_number")):
+            want = {w for w in _fold_words(parsed.get("original", "")) - _GENERIC_WORDS
+                    if len(w) >= 3 or w.isdigit()}
+            if want and want - _fold_words(title):
+                return False, "words_not_in_title"
         return ok, why
 
     def sealed_matches_query(title, extra_text, parsed):
@@ -982,6 +991,29 @@ def fast_search_all(query, return_debug=False):
     return results
 
 
+_DETAIL_TYPES = {"3-pack blister", "checklane blister", "blister", "mini tin", "tin", "build battle"}
+_DETAIL_SKIP = _GENERIC_WORDS | {
+    "checklane", "premium", "pack", "blister", "mini", "tin", "tins", "scarlet", "violet", "sword",
+    "shield", "mega", "evolution", "series", "edition", "with", "build", "battle", "kit", "stadium",
+    "japonsky", "japanese", "kórejsky", "korean", "cinsky", "chinese", "nemecky", "german"}
+
+
+def _make_group_fix(original):
+    def group_key(title, lang=""):
+        key = original(title, lang)
+        if not key or not key.startswith("s|"):
+            return key
+        parts = key.split("|")
+        if len(parts) < 3 or parts[2] not in _DETAIL_TYPES:
+            return key
+        drop = _DETAIL_SKIP | _fold_words(parts[1])
+        detail = sorted(w for w in _fold_words(title)
+                        if w not in drop and len(w) >= 3 and not w.isdigit()
+                        and not re.fullmatch(r"(?:sv|me|swsh|sm|xy)\d+\w*", w))
+        return key + "|" + "-".join(detail)
+    return group_key
+
+
 def _install_quality(g):
     norm = _make_normalize_fix(g["normalize_query"])
     g["normalize_query"] = G["normalize_query"] = norm
@@ -989,6 +1021,8 @@ def _install_quality(g):
     card, sealed = _make_title_checks(g["card_matches_query"], g["sealed_matches_query"])
     g["card_matches_query"] = G["card_matches_query"] = card
     g["sealed_matches_query"] = G["sealed_matches_query"] = sealed
+    grp = _make_group_fix(g["group_key"])
+    g["group_key"] = G["group_key"] = grp
     tcg = _make_tcg_fix(g["looks_like_tcg"])
     g["looks_like_tcg"] = G["looks_like_tcg"] = tcg
     # rýchle hľadanie len pre web; /admin/test (G) čaká na všetky obchody
@@ -1073,6 +1107,8 @@ _TCG_SAFE_RE = re.compile(
     r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?"
     r"|trick\s+or\s+trade|grey\s+felt\s+hat",
     re.I)
+_ACCESSORY_EXTRA_RE = re.compile(
+    r"akryl\w*|acrylic|ochrann\w*\s+box\w*|protector\w*|magnetick\w*\s+box\w*|box\s+na\s+ulo[žz]\w*", re.I)
 _SWITCH_RE = re.compile(r"(?<!\w)(?:energy\s+)?switch(?:\s+cart)?(?!\w)", re.I)
 _CONSOLE_RE = re.compile(r"nintendo\s+switch|konzol\w*|console|oled|joy-?con|videohr\w*|video\s*game", re.I)
 
@@ -1090,6 +1126,9 @@ def _make_merch_fix(original):
         return text
 
     def merch_reason(title, extra_text=""):
+        m = _ACCESSORY_EXTRA_RE.search(title or "")
+        if m:
+            return "accessory:" + m.group(0).lower()
         return original(clean(title), clean(extra_text))
     return merch_reason
 
@@ -1722,10 +1761,12 @@ def _check_query(q):
             why.append("sklad neuvedený")
         if why:
             issues.append({"shop": r.get("shop"), "title": t, "price": p, "why": why})
-        if c != "card":
+        if c != "card" and not g["is_combo"](t):
             pp = g["normalize_query"](t)
-            k = (pp.get("set_name") or "", c, (pp.get("pokemon") or "").lower(), r.get("language") or "EN")
-            merge.setdefault(k, []).append(r)
+            gt = next((name for name, rx in g["GROUP_TYPES"] if rx.search(t)), "")
+            if gt and gt not in _DETAIL_TYPES and gt != "collection":
+                k = (pp.get("set_name") or "", gt, (pp.get("pokemon") or "").lower(), r.get("language") or "EN")
+                merge.setdefault(k, []).append(r)
     missed = []
     for k, rs in merge.items():
         if k[0] and len({r.get("shop") for r in rs}) > 1 and len({r.get("group") for r in rs}) > 1:
