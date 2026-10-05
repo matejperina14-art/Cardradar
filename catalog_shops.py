@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.17
+CARD RADAR – rozšírenia 6.18
+ - 6.18: úvodná stránka sa pripravuje vopred na pozadí (okamžité načítanie)
  - 6.17: úvodná stránka – sety s obrázkom a cenou, riadky booster boxov, bundlov a top kariet,
          merch/príslušenstvo sa filtruje aj pri hľadaní v katalógoch a na úvode
  - 6.16: čas overenia ceny pri každom obchode (fetched_at), písma bez Google Fonts,
@@ -869,7 +870,7 @@ def _wrap_health(app):
             return resp
         path = G["_g"]["DB_PATH"]
         want = os.environ.get("DB_PATH", "").strip()
-        data["extensions"] = "6.17"
+        data["extensions"] = "6.18"
         data["db_path"] = path
         data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
         if G.get("_db_warning"):
@@ -1168,10 +1169,24 @@ def _make_home_fix(original):
     return build_home
 
 
+def _home_warmer():
+    """Úvodnú stránku pripraví vopred každých 8 minút (cache v app.py drží 10 minút),
+    takže ju nikto nemusí čakať."""
+    time.sleep(20)
+    while True:
+        try:
+            g = G["_g"]
+            g["home_cache"].set("home", g["build_home"]())
+        except Exception:
+            pass
+        time.sleep(480)
+
+
 def _install_quality(g):
     g["_scrape"] = _make_fresh_scrape(g["_scrape"])
     g["shops_status"] = shops_status
     g["build_home"] = _make_home_fix(g["build_home"])
+    threading.Thread(target=_home_warmer, daemon=True, name="home-warmer").start()
     norm = _make_normalize_fix(g["normalize_query"])
     g["normalize_query"] = G["normalize_query"] = norm
     g["set_matches_text"] = G["set_matches_text"] = set_matches_text
