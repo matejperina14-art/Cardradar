@@ -973,7 +973,7 @@ function renderStatus(list){
   let h = '';
   if (loadingShops.length) {
     const many = loadingShops.length > 1;
-    h += `<div class="notice info"><span class="spin"></span><span>${esc(loadingShops.join(' a '))} si ${many ? 'práve načítavajú' : 'práve načítava'} ponuky. Ich ceny sem doplníme automaticky o chvíľu.</span></div>`;
+    h += `<div class="notice info"><span class="spin"></span><span>${esc(loadingShops.join(', '))} ešte ${many ? 'odpovedajú' : 'odpovedá'}. ${many ? 'Ich ponuky' : 'Jeho ponuky'} sem doplníme automaticky o chvíľu.</span></div>`;
   }
   if (failedShops.length) {
     const many = failedShops.length > 1;
@@ -1470,9 +1470,11 @@ function showData(q, data, push, opts = {}){
   ITEMS.clear(); openGroups.clear();
   groups = buildGroups(allResults, 'g');
   const sh = data.shops || [];
-  loadingShops = sh.filter(s => s.status === 'catalog_loading').map(s => s.name);
-  failedShops = sh.filter(s => s.ok === false && s.status !== 'catalog_loading').map(s => s.name);
-  shopState = {}; sh.forEach(s => shopState[s.name] = s.status === 'catalog_loading' ? '' : s.ok === false ? 'bad' : 'ok');
+  const waiting = s => s.status === 'catalog_loading' || s.status === 'pending';
+  loadingShops = sh.filter(waiting).map(s => s.name);
+  const pendingNow = sh.some(s => s.status === 'pending');
+  failedShops = sh.filter(s => s.ok === false && !waiting(s)).map(s => s.name);
+  shopState = {}; sh.forEach(s => shopState[s.name] = waiting(s) ? '' : s.ok === false ? 'bad' : 'ok');
   showOut = false;  // kategória, obchody a jazyky ostávajú aj pre ďalšie hľadanie
   if (data.query_lang) langOff.delete(data.query_lang);
 
@@ -1485,12 +1487,13 @@ function showData(q, data, push, opts = {}){
   // obchody, ktoré sa ešte načítavajú: o chvíľu sa potichu opýtať znova
   clearTimeout(retryTimer);
   const tries = opts.retry || 0;
-  if (loadingShops.length && tries < 4) {
+  // pomalý obchod (pending) sa doplní o 2 s, katalóg, ktorý sa načítava, o 20 s
+  if (loadingShops.length && tries < 5) {
     retryTimer = setTimeout(() => {
       if (mode !== 'search' || currentQuery !== norm) return;
       resCache.delete(norm.toLowerCase()); resCache.delete(q.toLowerCase());
       search(norm, {push: false, quiet: true, retry: tries + 1});
-    }, 25000);
+    }, pendingNow ? 2000 : 20000);
   }
 }
 
