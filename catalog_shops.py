@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.8
+CARD RADAR – rozšírenia 6.9
+ - 6.9: databáza na trvalom disku (premenná DB_PATH, napr. /var/data/cardradar.db)
  - 6.8: presmerovanie na hlavnú doménu (PUBLIC_URL), napr. z onrender.com a www.
  - 6.7: kontrola beží na pozadí s ukazovateľom priebehu, oprava offline režimu
  - 6.6: CardyX – sklad a obrázky priamo z obchodu
@@ -37,6 +38,8 @@ Premenné prostredia (nepovinné):
     CATALOG_REFRESH_MIN  – ako často obnoviť katalóg (predvolene 60 minút)
     PUBLIC_URL           – hlavná adresa webu (napr. https://getcardradar.com);
                            ostatné adresy (onrender.com, www.) sa na ňu presmerujú
+    DB_PATH              – kde je databáza (napr. /var/data/cardradar.db na disku Renderu).
+                           Pri prvom štarte sa do nej prenesú doterajšie dáta.
 """
 
 import copy
@@ -761,6 +764,37 @@ def _inject_footer(resp):
 
 
 # =========================================================
+# DATABÁZA NA TRVALOM DISKU (6.9)
+# app.py ukladá databázu vedľa kódu, kde sa pri každom deployi zmaže.
+# S DB_PATH (napr. /var/data/cardradar.db) sa použije disk Renderu.
+# =========================================================
+
+def _use_persistent_db(g):
+    import sqlite3 as _sq
+    new = os.environ.get("DB_PATH", "").strip()
+    old = g["DB_PATH"]
+    if not new or os.path.abspath(new) == os.path.abspath(old):
+        return
+    folder = os.path.dirname(new)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    if not os.path.exists(new) and os.path.exists(old):
+        # prvý štart s diskom: preniesť doterajšie dáta (bezpečne, cez zálohu SQLite)
+        try:
+            src, dst = _sq.connect(old), _sq.connect(new)
+            try:
+                src.backup(dst)
+            finally:
+                src.close()
+                dst.close()
+        except Exception:
+            pass
+    g["DB_PATH"] = new
+    G["DB_PATH"] = new
+    g["init_db"]()   # vytvorí chýbajúce tabuľky v novej databáze
+
+
+# =========================================================
 # PRESMEROVANIE NA HLAVNÚ DOMÉNU (6.8)
 # Ak je nastavené PUBLIC_URL (napr. https://getcardradar.com), všetky ostatné
 # adresy (cardradar-xxxx.onrender.com, www.getcardradar.com) sa presmerujú na ňu.
@@ -1337,6 +1371,7 @@ def api_debug_catalog():
 def install(g):
     G.update(g)
     G["_g"] = g
+    _use_persistent_db(g)   # 6.9: databáza na disku, ak je nastavené DB_PATH
 
     # 1) nové sety + skratky ME01–ME05
     g["SET_ALIASES"].update(EXTRA_ALIASES)
