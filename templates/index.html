@@ -76,20 +76,21 @@ button{cursor:pointer}
 .s-msg{padding:14px;text-align:center;color:var(--sub);font-size:14px}
 
 /* ---------- úvod (hero) ---------- */
-.hero{background:var(--navy);color:#fff;padding:34px 0 30px;position:relative;overflow:hidden}
+.hero{background:var(--navy);color:#fff;padding:26px 0 24px;position:relative;overflow:hidden}
 .hero::after{content:"";position:absolute;right:-120px;top:-160px;width:520px;height:520px;border-radius:50%;
   background:repeating-radial-gradient(circle,transparent 0 46px,rgba(255,255,255,.05) 46px 47px);pointer-events:none}
 .hero .container{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:30px;align-items:center}
-.hero h1{margin:0 0 10px;font-size:clamp(26px,3.4vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;max-width:24ch}
-.hero p{margin:0 0 18px;color:#c3cbe4;font-size:16px;max-width:52ch}
-.hero .radik{width:150px;height:150px}
+.hero h1{margin:0 0 4px;font-size:clamp(24px,3vw,34px);line-height:1.15;font-weight:800;letter-spacing:-.02em}
+.hero .lead{margin:0 0 16px;color:#b9c3e0;font-size:15.5px}
+.hero .radik{width:96px;height:96px}
 .facts{display:flex;flex-wrap:wrap;gap:8px 18px;margin:0 0 18px;padding:0;list-style:none;color:#c3cbe4;font-size:14px}
 .facts li{display:flex;align-items:center;gap:7px}
 .facts li::before{content:"";width:7px;height:7px;border-radius:50%;background:#3ddc84}
 .chips{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.chips .label{color:#9aa6c8;font-size:13px;margin-right:2px}
-.chip{display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:99px;padding:6px 12px 6px 6px;font-size:13.5px;font-weight:600}
-.chip:hover{background:rgba(255,255,255,.14)}
+.chips .label{color:#9aa6c8;font-size:13px;margin-right:4px;white-space:nowrap}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#fff;border-radius:99px;padding:6px 13px;font-size:13.5px;font-weight:600;white-space:nowrap}
+.chip:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.3)}
+.chip .rank{color:var(--accent);font-weight:800;font-size:12px}
 .chip .ti{width:22px;height:22px;border-radius:50%;background:var(--t);display:flex;align-items:center;justify-content:center}
 .chip .ti svg{width:13px;height:13px;fill:#fff}
 .chip.plain{padding:6px 12px}
@@ -222,6 +223,39 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .hint .radik{width:68px;height:68px;flex:none}
 .hint p{margin:0;color:var(--sub)}
 .hint b{color:var(--ink)}
+/* riadky s posúvaním */
+.hsec-head{display:flex;align-items:center;gap:12px;margin:0 0 14px}
+.hsec-head h2{margin:0}
+.arrows{margin-left:auto;display:flex;gap:6px}
+.arrows button{width:36px;height:36px;border-radius:50%;border:1px solid var(--line2);background:#fff;font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;color:var(--ink)}
+.arrows button:hover{border-color:var(--ink)}
+.arrows.hide{visibility:hidden}
+.rail{display:grid;grid-auto-flow:column;grid-auto-columns:200px;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;scroll-behavior:smooth;padding:2px 2px 10px;scrollbar-width:thin}
+.rail>*{scroll-snap-align:start}
+.tile{display:flex;flex-direction:column;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:box-shadow .15s}
+.tile:hover{box-shadow:0 8px 22px rgba(16,27,68,.09)}
+.tile-img{position:relative;display:flex;align-items:center;justify-content:center;height:150px;background:#f6f7fb;border:0;padding:0;border-bottom:1px solid var(--line);width:100%}
+.tile-img img{width:100%;height:100%;object-fit:contain;padding:10px;mix-blend-mode:multiply}
+.tile-body{display:flex;flex-direction:column;gap:3px;padding:10px 12px 12px;flex:1}
+.tile-title{font-size:13.5px;font-weight:650;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em}
+.tile-shop{font-size:12px;color:var(--mute)}
+.tile-price{display:flex;align-items:baseline;gap:6px;margin-top:4px}
+.tile-price b{font-size:17px;font-weight:800}
+.tile-price s{font-size:12px;color:var(--mute)}
+.tile-acts{display:flex;gap:6px;margin-top:8px}
+.tile-acts button,.tile-acts a{flex:1;text-align:center;font-size:12px;font-weight:650;padding:6px 4px;border-radius:8px;border:1px solid var(--line2);background:#fff;text-decoration:none;white-space:nowrap}
+.tile-acts a{background:var(--navy);border-color:var(--navy);color:#fff}
+.setcard{display:flex;flex-direction:column;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;text-align:left;padding:0;cursor:pointer;transition:box-shadow .15s}
+.setcard:hover{box-shadow:0 8px 22px rgba(16,27,68,.09)}
+.setcard .tile-img{height:130px;background:linear-gradient(160deg,color-mix(in srgb,var(--c) 22%,#fff),#f6f7fb)}
+.setcard .tile-img .ph{width:30%}
+.set-n{font-size:15px;font-weight:750}
+.set-p{font-size:12.5px;color:var(--sub)}
+.set-p b{color:var(--ink)}
+.set-new{position:absolute;top:8px;left:8px;font-size:11px;font-weight:700;color:var(--green);background:#fff;border:1px solid #bfe6cf;border-radius:6px;padding:1px 6px}
+.set-links{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.set-links span{font-size:12px;font-weight:650;color:var(--blue);border:1px solid #d6e0fb;background:#f4f7ff;border-radius:7px;padding:3px 8px}
+.set-links span:hover{border-color:var(--blue)}
 .sets{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
 .set{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;position:relative;overflow:hidden}
 .set::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
@@ -259,7 +293,6 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .pop button:hover{border-color:var(--blue);color:var(--blue)}
 
 /* ---------- modal ---------- */
-@media(min-width:961px){.hrow{grid-auto-flow:row;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));overflow:visible}}
 .modal{position:fixed;inset:0;z-index:2000;background:rgba(13,22,51,.5);display:none;align-items:center;justify-content:center;padding:16px}
 .modal.show{display:flex}
 .m-box{width:100%;max-width:640px;max-height:calc(100vh - 32px);overflow-y:auto;background:#fff;border-radius:16px;padding:20px;box-shadow:0 30px 70px rgba(13,22,51,.3);animation:pop .16s ease}
@@ -360,10 +393,14 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
   .offers{margin:0 12px}
   .p-acts{padding:10px 12px 12px}
   .steps{grid-template-columns:minmax(0,1fr)}
-  .sets{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .set{padding:12px}
-  .set-links button{padding:4px 8px;font-size:12px}
-  .facts{gap:4px 14px;font-size:13px}
+  .arrows{display:none}
+  .rail{grid-auto-columns:168px;gap:10px;margin:0 -14px;padding:2px 14px 10px;scroll-padding-inline:14px}
+  .set-links{gap:4px}
+  .set-links span{font-size:11.5px;padding:2px 7px}
+  .tile-img{height:126px}
+  .setcard .tile-img{height:104px}
+  .hero h1{font-size:24px}
+  .hero .lead{font-size:14.5px;margin-bottom:14px}
   .modal{align-items:flex-end;padding:0}
   .m-box{max-width:none;border-radius:16px 16px 0 0;max-height:90vh;padding-bottom:calc(20px + env(safe-area-inset-bottom,0px))}
   footer.site .container{grid-template-columns:1fr}
@@ -438,13 +475,8 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 <section class="hero" aria-label="Úvod">
   <div class="container">
     <div>
-      <h1>Porovnaj ceny Pokémon kariet v slovenských obchodoch</h1>
-      <p>Všetky obchody na jednom radare. Karty, ETB aj booster boxy s aktuálnou cenou, dostupnosťou a odkazom priamo do obchodu.</p>
-      <ul class="facts">
-        <li id="factShops">Slovenské obchody na jednom mieste</li>
-        <li>Ceny overované priebežne</li>
-        <li>Zadarmo a bez registrácie</li>
-      </ul>
+      <h1>Porovnaj ceny Pokémon kariet</h1>
+      <p class="lead" id="factShops">Karty, ETB a booster boxy zo slovenských obchodov na jednom mieste.</p>
       <div class="chips" id="tags"></div>
       <div class="chips" id="recent"></div>
     </div>
@@ -492,7 +524,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.0 */
+/* CARD RADAR FRONTEND 8.1 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -526,7 +558,7 @@ function ago(ts){
 // kým ich nie je dosť, doplnia sa aktuálne sety
 const FALLBACK_QUICK = ['30th Celebration ETB', 'Delta Reign booster box', 'Ascended Heroes ETB',
   'Prismatic Evolutions ETB', 'Pikachu ex', 'Charizard ex', 'Umbreon ex'];
-const QUICK_MAX = 7;
+const QUICK_MAX = 6;
 const TYPE_BY_NAME = [
   [/charizard|ho-?oh|flareon|flame|blaze|heat/i, 'fire'],
   [/pikachu|zekrom|jolteon|raichu|spark|bolt/i, 'bolt'],
@@ -557,10 +589,8 @@ function renderTags(popular){
     seen.add(k); list.push(q);
     if (list.length >= QUICK_MAX) break;
   }
-  $('tags').innerHTML = '<span class="label">Populárne:</span>' + list.map(q => {
-    const type = quickType(q);
-    return `<button class="chip t-${type}" data-q="${esc(q)}"><span class="ti"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#t-${type}"/></svg></span>${esc(prettyQ(q))}</button>`;
-  }).join('');
+  $('tags').innerHTML = '<span class="label">Najhľadanejšie</span>' +
+    list.map(q => `<button class="chip" data-q="${esc(q)}">${esc(prettyQ(q))}</button>`).join('');
 }
 
 /* ---------- config (obchody, kurz) ---------- */
@@ -571,7 +601,7 @@ fetch('/api/config').then(r => r.ok ? r.json() : null).then(c => {
   SHOPS = Array.isArray(c.shops) ? c.shops : [];
   if (!SHOPS.length) return;
   const n = SHOPS.length;
-  $('factShops').textContent = `${n} ${plural(n, 'slovenský obchod', 'slovenské obchody', 'slovenských obchodov')} na jednom mieste`;
+  $('factShops').textContent = `Karty, ETB a booster boxy z ${n} ${plural(n, 'slovenského obchodu', 'slovenských obchodov', 'slovenských obchodov')} na jednom mieste. Zadarmo.`;
   $('footShops').innerHTML = 'Prehľadávame: ' + SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener">${esc(s.name)}</a>`).join(', ') +
     `. Ceny sú orientačné, pred nákupom ich over u predajcu. Prepočet: 1 € = ${String(CZK_RATE).replace('.', ',')} Kč.`;
   renderSide();
@@ -600,10 +630,13 @@ document.addEventListener('click', e => {
   if (e.target.closest('#favBtn')) { mode === 'fav' ? leaveFavorites() : showFavorites(); }
   if (e.target.closest('#backBtn')) leaveFavorites();
   if (e.target.closest('#hint')) focusSearch();
+  const ar = e.target.closest('[data-scroll]');
+  if (ar) { const rail = ar.closest('.hsec').querySelector('.rail'); if (rail) rail.scrollBy({left: +ar.dataset.scroll * rail.clientWidth * 0.85, behavior: 'smooth'}); }
   if (!e.target.closest('.search-wrap')) hideSug();
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.id === 'hint') { e.preventDefault(); focusSearch(); }
+  if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('setcard')) search(e.target.dataset.q);
 });
 function focusSearch(){ window.scrollTo({top: 0, behavior: 'smooth'}); $('q').focus(); }
 renderRecent();
@@ -1280,36 +1313,53 @@ async function loadMissingImages(myGen){
 }
 
 /* ---------- úvodná stránka ---------- */
-function miniHtml(it, kind){
+function tileHtml(it, kind){
   const img = imageOf(it);
-  return `<div class="mini" role="listitem">
-    <button class="mini-img" data-q="${esc(it.query || it.title)}" aria-label="Porovnať ceny: ${esc(it.title)}">
+  return `<div class="tile" role="listitem">
+    <button class="tile-img" data-q="${esc(it.query || it.title)}" aria-label="Porovnať ceny: ${esc(it.title)}">
       ${img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : placeholder(categoryOf(it.title))}
       ${kind === 'deal' ? `<span class="drop">−${it.drop_pct} %</span>` : ''}
     </button>
-    <div class="mini-body">
-      <div class="mini-title">${esc(it.title)}</div>
-      <div class="mini-shop">${esc(it.shop)}</div>
-      <div class="mini-price num">${kind === 'deal' ? `<s>${eur(it.old_price_eur)}</s>` : ''}<b>${eur(it.price_eur)}</b></div>
-      <div class="mini-acts"><button data-q="${esc(it.query || it.title)}">Porovnať</button><a href="${esc(outLink(it.link))}" target="_blank" rel="noopener">Do obchodu</a></div>
+    <div class="tile-body">
+      <div class="tile-title" title="${esc(it.title)}">${esc(it.title)}</div>
+      <div class="tile-shop">${esc(it.shop)}</div>
+      <div class="tile-price num">${kind === 'deal' ? `<s>${eur(it.old_price_eur)}</s>` : ''}<b>${eur(it.price_eur)}</b></div>
+      <div class="tile-acts"><button data-q="${esc(it.query || it.title)}">Porovnať</button><a href="${esc(outLink(it.link))}" target="_blank" rel="noopener">Do obchodu</a></div>
     </div>
   </div>`;
 }
+function railSec(title, items, kind, note){
+  if (!items || !items.length) return '';
+  return `<section class="hsec"><div class="hsec-head"><h2>${title}${note ? ` <small>${note}</small>` : ''}</h2>
+    <div class="arrows"><button data-scroll="-1" aria-label="Posunúť doľava">‹</button><button data-scroll="1" aria-label="Posunúť doprava">›</button></div></div>
+    <div class="rail" role="list">${items.map(x => tileHtml(x, kind)).join('')}</div></section>`;
+}
 const SET_COLORS = ['#e8a900','#2453d6','#6b45d8','#0a8a4a','#d4334b','#0d8a7c','#d6407f','#d9561c'];
+function setHtml(s, i){
+  const prices = [num(s.etb_from) !== null ? `<div>ETB od <b>${eur(s.etb_from)}</b></div>` : '', num(s.box_from) !== null ? `<div>Box od <b>${eur(s.box_from)}</b></div>` : ''].filter(Boolean);
+  return `<div class="setcard" style="--c:${SET_COLORS[i % SET_COLORS.length]}" role="listitem" data-q="${esc(s.query)}" tabindex="0">
+    <div class="tile-img">${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : placeholder('box')}${i < 2 ? '<span class="set-new">Nové</span>' : ''}</div>
+    <div class="tile-body">
+      <div class="set-n">${esc(s.name)}</div>
+      <div class="set-p num">${prices.length ? prices.join('') : (s.offers ? `${s.offers} ${plural(s.offers, 'ponuka', 'ponuky', 'ponúk')}` : 'Pozrieť ponuky')}</div>
+      <div class="set-links"><span data-q="${esc(s.query)} etb">ETB</span><span data-q="${esc(s.query)} booster box">Box</span><span data-q="${esc(s.query)} booster bundle">Bundle</span></div>
+    </div></div>`;
+}
 function renderHome(){
   if (mode !== 'home') return;
   const d = homeData || {};
-  const deals = d.deals || [], etb = d.cheap_etb || [], sets = d.new_sets || [], pop = d.popular || [];
+  const deals = d.deals || [], etb = d.cheap_etb || [], sets = d.new_sets || [];
+  const any = deals.length || etb.length || (d.cheap_box || []).length;
   let h = '';
-  if (!deals.length && !etb.length) h += `<section class="hint" id="hint" role="button" tabindex="0" aria-label="Začať hľadať">${radik()}<p><b>Ahoj, som Scanix.</b> Napíš kartu alebo produkt do vyhľadávania hore a ja prejdem všetky obchody naraz. Zľavy dňa sem doplním, keď nazbieram históriu cien.</p></section>`;
-  if (sets.length) h += `<section class="hsec"><h2>Nové sety</h2>
-    <div class="sets">${sets.map((s, i) => `<div class="set" style="--c:${SET_COLORS[i % SET_COLORS.length]}">
-      <button class="set-name" data-q="${esc(s.query)}">${esc(s.name)}${i < 2 ? '<span class="set-new">Nové</span>' : ''}</button>
-      <div class="set-links"><button data-q="${esc(s.query)} etb">ETB</button><button data-q="${esc(s.query)} booster box">Box</button><button data-q="${esc(s.query)} booster bundle">Bundle</button></div>
-    </div>`).join('')}</div></section>`;
-  if (deals.length) h += `<section class="hsec"><h2>Zľavy dňa <small>pokles ceny za posledných 30 dní</small></h2><div class="hrow" role="list">${deals.map(x => miniHtml(x, 'deal')).join('')}</div></section>`;
-  if (etb.length) h += `<section class="hsec"><h2>Najlacnejšie ETB</h2><div class="hrow" role="list">${etb.map(x => miniHtml(x, 'etb')).join('')}</div></section>`;
-  if (pop.length) h += `<section class="hsec"><h2>Ľudia hľadajú</h2><div class="pop">${pop.map(q => `<button data-q="${esc(q)}">${esc(prettyQ(q))}</button>`).join('')}</div></section>`;
+  if (!any) h += `<section class="hint" id="hint" role="button" tabindex="0" aria-label="Začať hľadať">${radik()}<p><b>Ahoj, som Scanix.</b> Napíš kartu alebo produkt do vyhľadávania hore a ja prejdem všetky obchody naraz.</p></section>`;
+  if (sets.length) h += `<section class="hsec"><div class="hsec-head"><h2>Nové sety</h2>
+    <div class="arrows"><button data-scroll="-1" aria-label="Posunúť doľava">‹</button><button data-scroll="1" aria-label="Posunúť doprava">›</button></div></div>
+    <div class="rail" role="list">${sets.map(setHtml).join('')}</div></section>`;
+  h += railSec('Zľavy dňa', deals, 'deal', 'pokles ceny za 30 dní');
+  h += railSec('Najlacnejšie ETB', etb, 'etb');
+  h += railSec('Najlacnejšie booster boxy', d.cheap_box, 'box');
+  h += railSec('Najlacnejšie bundle', d.cheap_bundle, 'bundle');
+  h += railSec('Top karty', d.top_cards, 'card', 'najcennejšie karty skladom');
   h += `<section class="hsec"><h2>Ako CardRadar funguje</h2><ol class="steps">
     <li><b>Vyhľadaj</b><span>Kartu, set alebo produkt. Prejdeme všetky obchody naraz.</span></li>
     <li><b>Porovnaj</b><span>Rovnaký produkt z rôznych obchodov vidíš spolu, od najlacnejšieho.</span></li>
@@ -1317,7 +1367,13 @@ function renderHome(){
   if (SHOPS.length) h += `<section class="hsec"><h2>Obchody na CardRadare</h2><div class="shoplist">${SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener">${esc(s.name)} <small>${esc(s.country)}</small></a>`).join('')}</div></section>`;
   $('status').innerHTML = '';
   $('results').innerHTML = `<div class="home">${h}</div>`;
-  const miss = [...deals, ...etb].filter(x => !imageOf(x) && x.link).slice(0, 24);
+  // šípky len pri riadkoch, ktoré sa naozaj dajú posúvať
+  document.querySelectorAll('.hsec .rail').forEach(r => {
+    const ar = r.closest('.hsec').querySelector('.arrows');
+    if (ar) ar.classList.toggle('hide', r.scrollWidth <= r.clientWidth + 4);
+  });
+  const all = [...deals, ...etb, ...(d.cheap_box || []), ...(d.cheap_bundle || []), ...(d.top_cards || [])];
+  const miss = all.filter(x => !imageOf(x) && x.link).slice(0, 36);
   if (miss.length && !d._imgTried) {
     d._imgTried = true;
     fetchImages(miss.map(x => x.link)).then(m => {
