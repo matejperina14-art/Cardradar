@@ -1,5 +1,6 @@
 """
-CARD RADAR – rozšírenia 6.9
+CARD RADAR – rozšírenia 6.10
+ - 6.10: /health ukazuje, kde je databáza (db_path, db_persistent)
  - 6.9: databáza na trvalom disku (premenná DB_PATH, napr. /var/data/cardradar.db)
  - 6.8: presmerovanie na hlavnú doménu (PUBLIC_URL), napr. z onrender.com a www.
  - 6.7: kontrola beží na pozadí s ukazovateľom priebehu, oprava offline režimu
@@ -796,8 +797,34 @@ def _use_persistent_db(g):
     except Exception as e:
         g["DB_PATH"] = old
         G["DB_PATH"] = old
+        G["_db_warning"] = f"DB_PATH={new} sa nedá použiť: {e}"
         print(f"[CardRadar] VAROVANIE: DB_PATH={new} sa nedá použiť ({e}). "
               f"Skontroluj disk na Renderi (Mount Path /var/data). Používam {old}.", flush=True)
+
+
+def _wrap_health(app):
+    """/health doplní o informáciu, či databáza beží na trvalom disku."""
+    orig = app.view_functions.get("health")
+    if not orig:
+        return
+
+    def health():
+        from flask import jsonify
+        resp = orig()
+        try:
+            data = resp.get_json() or {}
+        except Exception:
+            return resp
+        path = G["_g"]["DB_PATH"]
+        want = os.environ.get("DB_PATH", "").strip()
+        data["extensions"] = "6.10"
+        data["db_path"] = path
+        data["db_persistent"] = bool(want) and os.path.abspath(want) == os.path.abspath(path)
+        if G.get("_db_warning"):
+            data["db_warning"] = G["_db_warning"]
+        return jsonify(data)
+
+    app.view_functions["health"] = health
 
 
 # =========================================================
@@ -1444,3 +1471,4 @@ def install(g):
 
     # 8) opravy a zrýchlenie app.py (6.3)
     _install_fixes(g)
+    _wrap_health(app)   # 6.10
