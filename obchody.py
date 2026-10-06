@@ -1,5 +1,5 @@
 """
-CARD RADAR – obchody 6.22 (nad vylepsenia 6.21)
+CARD RADAR – obchody 6.23 (nad vylepsenia 6.21)
 
  - /admin/obchody?key=ADMIN_KEY : otestuješ ľubovoľný e-shop (aj z mobilu),
    CardRadar rozpozná platformu (Shoptet, Shopify, Upgates, WooCommerce),
@@ -269,6 +269,17 @@ def strip_png(data):
 def install(g):
     G.update(g)
     G["_g"] = g
+    # české texty skladu (Vyprodáno, Na skladě, U dodavatele...)
+    import re
+    g["STOCK_OUT_RE"] = re.compile(
+        r"vypredan\w*|vyprod[aá]n\w*|nie\s+je\s+skladom|nie\s+je\s+na\s+sklade"
+        r"|nedostupn\w*|nen[íi]\s+skladem|nen[íi]\s+dostupn\w*|sold\s*out"
+        r"|out\s+of\s+stock|ausverkauft", re.I)
+    g["STOCK_IN_RE"] = re.compile(
+        r"skladom|skladem|na\s+sklad[eě]|in\s+stock|dostupn[ée]|k\s+odberu"
+        r"|k\s+dispozici|ihne[dď]|expedujeme|odes[ií]l[aá]me", re.I)
+    g["STOCK_ORDER_RE"] = re.compile(
+        r"na\s+objedn[áa]vku|do\s+\d+\s+dn[íi]|na\s+dotaz|u\s+dodavatele", re.I)
     for name, (data, mime) in list(g["EMBEDDED_STATIC"].items()):
         if mime == "image/png":
             g["EMBEDDED_STATIC"][name] = (strip_png(data), mime)
