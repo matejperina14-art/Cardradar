@@ -3102,6 +3102,9 @@ import catalog_shops
 catalog_shops.install(globals())
 import vylepsenia
 vylepsenia.install(globals())
+import obchody
+obchody.install(globals())
+
 
 
 if __name__ == "__main__":
