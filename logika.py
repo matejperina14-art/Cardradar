@@ -1,0 +1,737 @@
+"""
+CARD RADAR – logika.py
+Čistá logika bez internetu a databázy:
+  - rozpoznanie hľadania (Pokémon, set, číslo karty, typ produktu)
+  - či názov produktu sedí na hľadanie
+  - filter merchu a príslušenstva
+  - jazyk, sklad, cena, počet boosterov, spájanie rovnakých produktov
+
+KEĎ VYJDE NOVÝ SET:
+  1. pridaj ho navrch do NOVE_SETY
+  2. ak má skratku (napr. me06), pridaj ju do SET_ALIASES
+"""
+
+import re
+import unicodedata
+from functools import lru_cache
+
+# 1 € = x Kč. Denne sa aktualizuje z Európskej centrálnej banky (obchody.py).
+KURZ = {"CZK": 24.4618}
+
+
+# =========================================================
+# TEXT
+# =========================================================
+
+def clean_text(value):
+    return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+
+
+def fold(text):
+    """Malé písmená bez diakritiky (Pokémon -> pokemon)."""
+    t = unicodedata.normalize("NFKD", str(text or "").lower())
+    return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def fold_words(text):
+    return set(re.findall(r"[a-z0-9]+", fold(text)))
+
+
+def has_word(text, word):
+    if not text or not word:
+        return False
+    return re.search(r"\b" + re.escape(word) + r"\b", text, re.I) is not None
+
+
+def _stem(w):
+    """celebrations -> celebration (množné číslo v názvoch setov)"""
+    return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+
+# Slová, ktoré nič nehovoria o konkrétnom produkte
+GENERIC_WORDS = {
+    "pokemon", "tcg", "booster", "boosters", "box", "boxy", "display", "elite", "trainer",
+    "etb", "bundle", "pack", "packs", "blister", "tin", "tins", "mini", "collection",
+    "premium", "kolekcia", "kolekce", "set", "edicia", "edice", "the", "and", "of",
+    "en", "eng", "english", "anglicky", "anglicka", "anglicke", "card", "cards", "karty",
+    "game", "hra", "balicek", "balicky", "sealed",
+}
+
+
+# =========================================================
+# SETY A POKÉMONI
+# =========================================================
+
+# Úvodná stránka – NAJNOVŠÍ HORE
+NOVE_SETY = [
+    {"name": "Delta Reign", "query": "delta reign"},
+    {"name": "30th Celebration", "query": "30th celebration"},
+    {"name": "Pitch Black", "query": "pitch black"},
+    {"name": "Chaos Rising", "query": "chaos rising"},
+    {"name": "Perfect Order", "query": "perfect order"},
+    {"name": "Ascended Heroes", "query": "ascended heroes"},
+    {"name": "Phantasmal Flames", "query": "phantasmal flames"},
+    {"name": "Mega Evolution", "query": "mega evolution"},
+    {"name": "Black Bolt", "query": "black bolt"},
+    {"name": "White Flare", "query": "white flare"},
+    {"name": "Destined Rivals", "query": "destined rivals"},
+    {"name": "Journey Together", "query": "journey together"},
+    {"name": "Prismatic Evolutions", "query": "prismatic evolutions"},
+]
+
+# skratka / iný názov -> oficiálny názov setu
+SET_ALIASES = {
+    "sv1": "scarlet violet base", "sv2": "paldea evolved", "sv3": "obsidian flames",
+    "sv4": "paradox rift", "sv5": "temporal forces", "sv6": "twilight masquerade",
+    "sv7": "stellar crown", "sv8": "surging sparks", "sv8a": "terastal festival",
+    "sv9": "journey together", "sv9a": "destined rivals", "sv10": "destined rivals",
+    "sv10.5": "destined rivals", "sv11": "black bolt white flare",
+    "me01": "mega evolution", "me1": "mega evolution",
+    "me02": "phantasmal flames", "me2": "phantasmal flames",
+    "me2.5": "ascended heroes", "me 2.5": "ascended heroes",
+    "me03": "perfect order", "me3": "perfect order",
+    "me04": "chaos rising", "me4": "chaos rising",
+    "me05": "pitch black", "me5": "pitch black",
+    "151": "pokemon 151", "pokemon151": "pokemon 151", "pokemon 151": "pokemon 151",
+    "prismatic": "prismatic evolutions", "prismatic evo": "prismatic evolutions",
+    "surging": "surging sparks", "sparks": "surging sparks",
+    "destined": "destined rivals", "journey": "journey together",
+    "terastal": "terastal festival", "phantasmal": "phantasmal flames",
+    "pitch": "pitch black", "chaos": "chaos rising",
+    "mega brave": "mega evolution mega brave", "mega evolution": "mega evolution",
+    "30th celebrations": "30th celebration",
+    "30th anniversary celebration": "30th celebration",
+    "30th anniversary celebrations": "30th celebration",
+}
+
+KNOWN_SETS = sorted(
+    set(SET_ALIASES.values()) | {
+        "surging sparks", "pokemon 151", "prismatic evolutions", "terastal festival",
+        "destined rivals", "journey together", "twilight masquerade", "stellar crown",
+        "temporal forces", "obsidian flames", "mega evolution", "phantasmal flames",
+        "ascended heroes", "perfect order", "black bolt", "white flare", "delta reign",
+        "30th celebration", "paldean fates", "shrouded fable", "paldea evolved",
+        "pitch black", "chaos rising",
+    },
+    key=len, reverse=True,
+)
+
+# Séria (nie set): „Mega Evolution – Pitch Black“ = set Pitch Black
+SERIE = {"mega evolution"}
+
+POKEMON_ALIASES = {
+    "pikachu": "Pikachu", "pika": "Pikachu", "charizard": "Charizard", "char": "Charizard",
+    "umbreon": "Umbreon", "eevee": "Eevee", "mew": "Mew", "mewtwo": "Mewtwo",
+    "gengar": "Gengar", "lucario": "Lucario", "greninja": "Greninja", "rayquaza": "Rayquaza",
+    "gardevoir": "Gardevoir", "dragonite": "Dragonite", "gyarados": "Gyarados",
+    "blastoise": "Blastoise", "venusaur": "Venusaur", "lugia": "Lugia", "ho-oh": "Ho-Oh",
+    "hooh": "Ho-Oh", "arceus": "Arceus", "dialga": "Dialga", "palkia": "Palkia",
+    "zekrom": "Zekrom", "reshiram": "Reshiram", "celebi": "Celebi", "jolteon": "Jolteon",
+    "vaporeon": "Vaporeon", "flareon": "Flareon", "espeon": "Espeon", "sylveon": "Sylveon",
+    "leafeon": "Leafeon", "glaceon": "Glaceon",
+}
+
+PRODUCT_PATTERNS = [
+    ("elite trainer box", r"\belite\s+trainer\s+box\b"),
+    ("elite trainer box", r"\betb\b"),
+    ("booster box", r"\bbooster\s*box\b"),
+    ("booster bundle", r"\bbooster\s*bundle\b"),
+    ("collection box", r"\bcollection\s+box\b"),
+    ("premium collection", r"\bpremium\s+collection\b"),
+    ("blister", r"\bblister(?:\s+pack)?\b"),
+    ("tin", r"\btins?\b"),
+]
+
+
+def _compile(pairs):
+    return [(re.compile(r"\b" + re.escape(a.lower()) + r"\b"), c)
+            for a, c in sorted(pairs, key=lambda x: len(x[0]), reverse=True)]
+
+
+_SETS_RE = _compile(SET_ALIASES.items())
+_KNOWN_SETS_RE = _compile((s, s) for s in KNOWN_SETS)
+_POKEMON_RE = _compile(POKEMON_ALIASES.items())
+_PRODUCT_RE = [(c, re.compile(p)) for c, p in PRODUCT_PATTERNS]
+_SUFFIX_RE = re.compile(r"\b(vmax|vstar|ex|gx|v)\b", re.I)
+_CARDNUM_RE = re.compile(r"\b(\d{1,4})\s*/\s*(\d{1,4})\b")
+
+
+def _extract(q, candidates):
+    for pattern, canonical in candidates:
+        if pattern.search(q):
+            return canonical, pattern.sub(" ", q)
+    return "", q
+
+
+# =========================================================
+# ROZPOZNANIE HĽADANIA
+# =========================================================
+
+def _normalize(query):
+    original = clean_text(query)
+    out = {"original": original, "normalized": "", "pokemon": "", "set_name": "",
+           "product_name": "", "product_type": "", "card_number": "", "suffix": ""}
+    if not original:
+        return out
+    q = original.lower()
+
+    m = _CARDNUM_RE.search(q)
+    if m:
+        out["card_number"] = f"{m.group(1)}/{m.group(2)}"
+        q = _CARDNUM_RE.sub(" ", q, count=1)
+
+    for canonical, pattern in _PRODUCT_RE:
+        if pattern.search(q):
+            out["product_type"] = out["product_name"] = canonical
+            q = pattern.sub(" ", q)
+            break
+
+    # najprv celé názvy setov („surging sparks“), až potom skratky („sv8“)
+    set_name, q = _extract(q, _KNOWN_SETS_RE)
+    if not set_name:
+        set_name, q = _extract(q, _SETS_RE)
+    for w in set_name.split():
+        q = re.sub(r"\b" + re.escape(w) + r"\b", " ", q)
+    out["set_name"] = set_name
+
+    out["pokemon"], q = _extract(q, _POKEMON_RE)
+
+    m = _SUFFIX_RE.search(q)
+    if m:
+        out["suffix"] = m.group(1).lower()
+        q = _SUFFIX_RE.sub(" ", q)
+
+    q = clean_text(re.sub(r"\bpok[eé]mon\b", " ", q, flags=re.I))
+
+    if out["product_type"] == "elite trainer box":
+        parts = [set_name, out["pokemon"], out["suffix"], out["card_number"], "elite trainer box"]
+    else:
+        parts = [out["pokemon"], out["suffix"], q, out["card_number"], set_name, out["product_type"]]
+    out["normalized"] = clean_text(" ".join(p for p in parts if p)) or original
+    return out
+
+
+@lru_cache(maxsize=5000)
+def _normalize_cached(query):
+    p = _normalize(query)
+    if p["set_name"] in SERIE:
+        rest = re.sub(r"\bmega\s+evolution\b", " ", query, flags=re.I)
+        q = _normalize(rest)
+        if q["set_name"] and q["set_name"] not in SERIE:
+            q["original"] = p["original"]
+            p = q
+    return tuple(p.items())
+
+
+def normalize_query(query):
+    """Rozloží hľadanie na časti. Vracia nový dict (môžeš ho upravovať)."""
+    return dict(_normalize_cached(clean_text(query)))
+
+
+def classify_query(parsed):
+    """'sealed' (ETB, boxy...) alebo 'card' (jednotlivé karty)"""
+    if parsed.get("product_type"):
+        return "sealed"
+    if parsed.get("set_name") and not parsed.get("pokemon") and not parsed.get("card_number"):
+        return "sealed"
+    return "card"
+
+
+# =========================================================
+# ZHODA NÁZVU S HĽADANÍM
+# =========================================================
+
+_ALIAS_RX = {}
+
+
+def _alias_re(alias):
+    rx = _ALIAS_RX.get(alias)
+    if rx is None:
+        rx = _ALIAS_RX[alias] = re.compile(r"(?<![a-z0-9/])" + re.escape(fold(alias)) + r"(?![a-z0-9/])")
+    return rx
+
+
+def set_matches_text(text, set_name):
+    """Je v texte daný set? Bez diakritiky, skratky len ako celé slová, aj množné číslo."""
+    s, n = fold(clean_text(text)), fold(clean_text(set_name))
+    if not s or not n:
+        return False
+    nw, sw = fold_words(n), fold_words(s)
+    if nw and nw <= sw:
+        return True
+    for alias, canonical in SET_ALIASES.items():
+        if fold(canonical) == n and _alias_re(alias).search(s):
+            return True
+    stem_n = {_stem(w) for w in nw}
+    return bool(stem_n) and stem_n <= {_stem(w) for w in sw}
+
+
+def _wanted_words(parsed):
+    return {w for w in fold_words(parsed.get("original", "")) - GENERIC_WORDS
+            if len(w) >= 3 or w.isdigit()}
+
+
+_BULK_RE = re.compile(r"\bcase\b|(?<![\w/.,])\d{1,2}\s*x(?![a-z0-9])(?!\s*\d)|\bx\s*\d{1,2}\b", re.I)
+_WANT_BULK_RE = re.compile(r"\bcase\b|display|\b\d{1,2}\s*x\b", re.I)
+
+
+def card_matches_query(title, extra_text, parsed, loose_set=False):
+    """Hľadanie karty. loose_set = obchod nepíše set do názvu, stačí číslo karty."""
+    title = clean_text(title)
+    searchable = clean_text(title + " " + (extra_text or ""))
+    pokemon, set_name = parsed.get("pokemon"), parsed.get("set_name")
+    number, suffix = parsed.get("card_number"), parsed.get("suffix")
+
+    if pokemon and not has_word(title, pokemon):
+        return False, "pokemon_not_in_title"
+    if number and number.replace(" ", "").lower() not in re.sub(r"\s+", "", searchable.lower()):
+        return False, "card_number_not_found"
+    if set_name and not (loose_set and number) and not set_matches_text(searchable, set_name):
+        return False, "set_not_found"
+    if suffix and not has_word(title, suffix):
+        return False, "suffix_not_in_title"
+    # „rare candy“: bez Pokémona, setu a čísla musia byť hľadané slová v názve
+    if not (pokemon or set_name or number):
+        want = _wanted_words(parsed)
+        if want and want - fold_words(title):
+            return False, "words_not_in_title"
+    return True, "matched"
+
+
+def sealed_matches_query(title, extra_text, parsed):
+    """Hľadanie ETB, boxov, bundlov..."""
+    title = clean_text(title)
+    extra_text = extra_text or ""
+    set_name, ptype = parsed.get("set_name"), parsed.get("product_type")
+    original = parsed.get("original", "") or ""
+    searchable = clean_text(title + " " + extra_text).lower()
+
+    # niektoré obchody píšu len „Bundle“ namiesto „Booster Bundle“
+    if (ptype == "booster bundle" and re.search(r"\bbundle\b", title, re.I)
+            and not re.search(r"booster\s*bundle", title, re.I)):
+        searchable += " booster bundle"
+
+    if set_name and not set_matches_text(title, set_name):
+        return False, "set_not_in_title"
+    if ptype == "elite trainer box":
+        if not ("elite trainer box" in searchable or re.search(r"\betb\b", searchable)):
+            return False, "etb_not_found"
+        if re.search(r"\b(case|10x|12x|6x)\b", searchable):
+            return False, "bulk_product"
+    elif ptype and ptype not in searchable:
+        return False, "product_type_not_found"
+    # set, ktorý nepoznáme: ostatné hľadané slová musia byť v názve
+    if not set_name and _wanted_words(parsed) - fold_words(title + " " + extra_text):
+        return False, "words_not_found"
+    if parsed.get("pokemon") and not has_word(title, parsed["pokemon"]):
+        return False, "pokemon_not_in_title"
+    if not _WANT_BULK_RE.search(original):
+        if _BULK_RE.search(title):
+            return False, "bulk_product"
+        if ptype == "booster bundle" and re.search(r"\bdisplay\b", title, re.I):
+            return False, "bulk_product"
+    return True, "matched"
+
+
+# =========================================================
+# CENA
+# =========================================================
+
+_NUM = (r"(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?(?!\d)"   # 1.099,00
+        r"|\d{1,3}(?:,\d{3})+\.\d{1,2}(?!\d)"            # 1,099.00
+        r"|\d{1,3}(?:[ ]\d{3})+(?:[.,]\d{1,2})?"         # 1 099,00
+        r"|\d{1,8}(?:[.,]\d{1,2})?)")
+_EX_VAT = re.compile(r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|Kč|CZK))\s*(?:bez\s+DPH|excl\.?\s*VAT)", re.I)
+_EUR_RES = [re.compile(r"€\s*" + _NUM), re.compile(_NUM + r"\s*€")]
+_CZK_RES = [re.compile(_NUM + r"\s*(?:Kč|CZK)", re.I), re.compile(r"(?:Kč|CZK)\s*" + _NUM, re.I)]
+
+
+def to_float(value):
+    value = str(value).replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):   # 1.099 = tisíc
+        value = value.replace(".", "")
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    else:
+        value = value.replace(",", ".")
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def parse_price(text):
+    """Cena v EUR (Kč sa prepočíta). Ceny 'bez DPH' sa ignorujú."""
+    text = _EX_VAT.sub(" ", clean_text(text))
+    if not text:
+        return None
+    for rx in _EUR_RES:
+        m = rx.search(text)
+        if m and to_float(m.group(1)) is not None:
+            return to_float(m.group(1))
+    for rx in _CZK_RES:
+        m = rx.search(text)
+        if m and to_float(m.group(1)) is not None:
+            return to_float(m.group(1)) / KURZ["CZK"]
+    return None
+
+
+# =========================================================
+# JAZYK PRODUKTU
+# =========================================================
+
+# celé slová (bez ohľadu na veľkosť) a skratky (len VEĽKÝMI, aby „de“ nebola nemčina)
+_LANG_DEFS = [
+    ("JP", r"japon\w*|japan\w*|japonsk\w*", r"JP|JPN|JAP"),
+    ("KR", r"k[óo]rej\w*|korean\w*", r"KR|KOR"),
+    ("TW", r"traditional\s+chinese|t-?chinese|tradičn\w*\s+[čc][íi]n\w*|taiwan\w*", r"TW|T-?CN"),
+    ("CN", r"[čc][ií]nsk\w*|[čc][ií]n[šs]t\w*|chinese|simplified\s+chinese|s-?chinese", r"CN|CHN|S-?CN"),
+    ("ID", r"indon[ée]z\w*|indonesian\w*", r"IDN|INDO"),
+    ("TH", r"thajsk\w*|thai", r"TH|THA"),
+    ("DE", r"nem[ec]ck\w*|n[ěe]meck\w*|german\w*|deutsch\w*", r"DE|GER|DEU"),
+    ("FR", r"franc[úu]zsk\w*|francouzsk\w*|french|fran[çc]ais\w*", r"FR|FRA"),
+    ("IT", r"talian\w*|italsk\w*|italian\w*|italiano", r"IT|ITA"),
+    ("ES", r"[šs]paniel\w*|[šs]pan[ěe]l\w*|spanish|espa[ñn]ol\w*", r"ES|ESP|SPA"),
+    ("PT", r"portugal\w*|portugues\w*", r"PT|POR"),
+    ("NL", r"holandsk\w*|nizozemsk\w*|dutch|nederlands\w*", r"NL|NLD"),
+    ("PL", r"po[ľl]sk\w*|polish|polski", r"PL|POL"),
+    ("EN", r"anglick\w*|english|angli[čc]tin\w*", r"EN|ENG|UK"),
+]
+_LANG_PATTERNS = [
+    (code, re.compile(r"(?<!\w)(?:" + w + r")(?!\w)", re.I),
+     re.compile(r"(?<![A-Za-z0-9])(?:" + c + r")(?![A-Za-z0-9])"))
+    for code, w, c in _LANG_DEFS
+]
+ASIAN_LANGS = {"JP", "KR", "CN", "TW", "ID", "TH"}
+FOREIGN_QUERY_RE = re.compile(r"japon|japan|jpn|k[óo]rej|korean|[čc][ií]nsk|chinese|indon|thai|thajsk", re.I)
+
+
+@lru_cache(maxsize=20000)
+def detect_language(title):
+    """'JP', 'EN', 'DE'... alebo '' ak nie je uvedený."""
+    title = title or ""
+    for code, words_re, codes_re in _LANG_PATTERNS:
+        if words_re.search(title) or codes_re.search(title):
+            return code
+    return ""
+
+
+def query_language(q):
+    lang = detect_language(q)
+    return lang if lang and lang != "EN" else ""
+
+
+# =========================================================
+# FILTER MERCHU
+# Slová sa hľadajú ako začiatok slova („plyš“ chytí plyšák, plyšová...).
+#  1. príslušenstvo        – vždy preč
+#  2. MERCH_HARD (oblečenie, hrnčeky, plyšáky...) – vždy preč
+#  3. MERCH_SOFT (figúrky, odznaky...) – preč, iba ak to nie je TCG kolekcia
+# =========================================================
+
+ACCESSORY_PATTERNS = [
+    r"sleeves?", r"obal\w*", r"album\w*", r"binder\w*", r"toploader\w*",
+    r"playmat\w*", r"podlo[žz]k\w*", r"deck\s*box\w*", r"deckbox\w*",
+    r"puzdr\w*", r"pouzdr\w*", r"stojan\w*", r"portfoli\w*", r"one\s*touch",
+    r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?", r"r[áa]m[čc]ek\w*",
+    r"akryl\w*", r"acrylic", r"ochrann\w*\s+box\w*", r"protector\w*",
+    r"magnetick\w*\s+box\w*", r"box\s+na\s+ulo[žz]\w*",
+]
+
+MERCH_HARD_PATTERNS = [
+    # oblečenie
+    r"tri[čc]k\w*", r"trik[oa]", r"trik[aů]", r"t-?shirt\w*", r"\w*shirt\w*", r"tee",
+    r"mikin\w*", r"hoodie\w*", r"hoody", r"sweat\w*", r"pono[žz]k\w*", r"socks?",
+    r"[čc]iap\w*", r"[čc]epi[cč]\w*", r"k?[šs]iltovk\w*", r"caps?", r"beanie\w*", r"hats?",
+    r"py[žz]am\w*", r"pyjam\w*", r"pajam\w*", r"kost[ýy]m\w*", r"costume\w*",
+    r"rukavic\w*", r"[šs]atk\w*", r"[šs][áa]l", r"[šs][áa]ly", r"scarf\w*",
+    r"tepl[áa]k\w*", r"leg[íi]n\w*", r"[šs]ortk\w*", r"bund[ay]", r"jacket\w*",
+    r"papu[čc]\w*", r"slippers?", r"oble[čc]en\w*", r"textil\w*", r"bunda",
+    # plyšáky, hračky
+    r"ply[šs]\w*", r"plush\w*", r"peluche\w*", r"hra[čc]k\w*", r"toys?", r"lego",
+    r"mega\s+construx", r"stavebnic\w*", r"puzzle\w*", r"pokladni[čc]k\w*",
+    r"gashapon\w*", r"tamagotchi", r"funko\w*", r"pop!", r"vinyl\w*",
+    # kuchyňa, domácnosť
+    r"hrn[čc]\w*", r"hrn[íi][čc]\w*", r"hrnk\w*", r"hrnek", r"termo\w*", r"mugs?",
+    r"[šs][áa]lk\w*", r"[šs][áa]lek", r"poh[áa]r\w*", r"cups?", r"tumbler\w*",
+    r"f[ľl]a[šs]\w*", r"lahv\w*", r"lahev", r"bottle\w*", r"lamp", r"lamp[ayu]", r"lampi[čc]k\w*",
+    r"svietidl\w*", r"sv[ií]tidl\w*", r"deka", r"deky", r"blanket\w*", r"vank[úu][šs]\w*",
+    r"pol[šs]t[áa][řr]\w*", r"uter[áa]k\w*", r"ru[čc]n[íi]k\w*", r"osu[šs]k\w*", r"towel\w*",
+    r"oblie[čc]k\w*", r"povle[čc]\w*", r"tanier\w*", r"tal[íi][řr]\w*", r"misk[ayu]",
+    r"lunch\s*box\w*", r"desiatov\w*", r"svačin\w*", r"box\s+na\s+jedlo",
+    # škola, doplnky, elektronika
+    r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?", r"kabelk\w*",
+    r"pera[čc]n[íi]k\w*", r"penál\w*", r"z[áa]pisn[íi]k\w*", r"zo[šs]it\w*", r"se[šs]it\w*",
+    r"fixk\w*", r"pastel\w*", r"pero", r"pera",
+    r"k[ľl][úu][čc]enk\w*", r"kl[íi][čc]enk\w*", r"keychain\w*", r"keyring\w*",
+    r"pr[íi]ves\w*", r"n[áa]ram\w*", r"n[áa]hrdeln[íi]k\w*", r"[šs]perk\w*",
+    r"pe[ňn]a[žz]enk\w*", r"wallet\w*", r"phone\s+case", r"mobile\s+case", r"kryt\s+na",
+    r"hodink\w*", r"hodiny", r"watch", r"sl[úu]chadl\w*", r"sluch[áa]tk\w*",
+    r"headphones?", r"earphones?", r"reproduktor\w*", r"powerbank\w*",
+    r"plag[áa]t\w*", r"poster\w*", r"sticker\w*", r"n[áa]lepk\w*", r"samolep\w*", r"tetov\w*",
+    r"knih\w*", r"kniha", r"books?", r"komiks\w*", r"manga", r"omal\w*", r"encyklop\w*",
+    r"nintendo", r"videohr\w*", r"switch",
+    # jedlo
+    r"[čc]okol[áa]d\w*", r"cukrovink\w*", r"bonbon\w*", r"candy", r"l[íi]zank\w*",
+    r"[žz]uva[čc]k\w*", r"ramune", r"limon[áa]d\w*",
+]
+
+MERCH_SOFT_PATTERNS = [
+    r"fig[úu]r\w*", r"figur\w*", r"figure\w*", r"statue\w*", r"so[šs]k\w*",
+    r"odznak\w*", r"badge\w*", r"pins?", r"bro[žz]\w*", r"mystery", r"blind\s*box\w*",
+]
+
+
+def _words_re(patterns):
+    return re.compile(r"(?<!\w)(?:" + "|".join(patterns) + r")(?!\w)", re.I)
+
+
+ACCESSORY_RE = _words_re(ACCESSORY_PATTERNS)
+MERCH_HARD_RE = _words_re(MERCH_HARD_PATTERNS)
+MERCH_SOFT_RE = _words_re(MERCH_SOFT_PATTERNS)
+
+# Znaky TCG produktu (karta / sealed)
+TCG_MARKER_RE = re.compile(
+    r"booster|elite\s+trainer|\betb\b|collection|kolekci|blister|\btins?\b|\btcg\b"
+    r"|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|display"
+    r"|\b\d{1,3}\s*/\s*\d{1,3}\b|\bcards\b|miscellaneous", re.I)
+
+# Znaky jednotlivej karty
+CARD_MARKER_RE = re.compile(
+    r"\b\d{1,3}\s*/\s*\d{1,3}\b|#\s?\d{1,3}\b|\b(?:sv|swsh|sm|xy|me|bw|svp|sve)\s?-?\d"
+    r"|\b(?:ex|gx|v|vmax|vstar|lv\.?\s?x|break|prime|legend|tag\s+team)\b"
+    r"|holo|reverse|full\s*art|rare|promo|illustration|secret|trainer\s+gallery|alt\w*\s+art"
+    r"|\bsir\b|\bir\b|\bsr\b|\bur\b|\bar\b|\bchr\b|\bshiny\b|\bkart[ay]\b|\bcard\b"
+    r"|\bpsa\b|\bcgc\b|\bbgs\b|graded|\bnm\b|near\s+mint|mint", re.I)
+
+# Skutočné TCG produkty, ktoré obsahujú „merch“ slovo (Rare Candy, Poster Collection...)
+_TCG_SAFE_RE = re.compile(
+    r"rare\s+candy|puzzle\s+of\s+time|poster\s+collection|binder\s+collection"
+    r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?"
+    r"|trick\s+or\s+trade|grey\s+felt\s+hat", re.I)
+_SWITCH_RE = re.compile(r"(?<!\w)(?:energy\s+)?switch(?:\s+cart)?(?!\w)", re.I)
+_CONSOLE_RE = re.compile(r"nintendo\s+switch|konzol\w*|console|oled|joy-?con|videohr\w*|video\s*game", re.I)
+
+TCG_SET_NAMES = set(KNOWN_SETS) | {
+    "scarlet violet", "scarlet & violet", "crown zenith", "silver tempest", "lost origin",
+    "pokemon go", "pokémon go", "astral radiance", "brilliant stars", "fusion strike",
+    "celebrations", "evolving skies", "chilling reign", "battle styles", "shining fates",
+    "vivid voltage", "champion's path", "champions path", "darkness ablaze", "rebel clash",
+    "sword shield", "sword & shield", "cosmic eclipse", "hidden fates", "unified minds",
+    "unbroken bonds", "team up", "lost thunder", "dragon majesty", "celestial storm",
+    "forbidden light", "ultra prism", "crimson invasion", "shining legends", "burning shadows",
+    "guardians rising", "sun moon", "sun & moon", "evolutions", "steam siege", "fates collide",
+    "generations", "breakpoint", "breakthrough", "ancient origins", "roaring skies",
+    "primal clash", "phantom forces", "furious fists", "flashfire", "base set", "jungle",
+    "fossil", "team rocket", "neo genesis", "gym heroes", "151", "shiny treasure",
+    "vstar universe", "terastal", "night wanderer", "stellar miracle", "battle partners",
+    "heat wave arena", "glory of team rocket",
+}
+_TCG_SET_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in sorted(TCG_SET_NAMES, key=len, reverse=True)) + r")\b", re.I)
+
+
+def _merch_clean(text):
+    if not text:
+        return ""
+    console = _CONSOLE_RE.search(text)
+    text = _TCG_SAFE_RE.sub(" ", text)
+    # karta Switch / Energy Switch (nie herná konzola)
+    if not console and _SWITCH_RE.search(text) and CARD_MARKER_RE.search(text):
+        text = _SWITCH_RE.sub(" ", text)
+    return text
+
+
+@lru_cache(maxsize=20000)
+def merch_reason(title, extra_text=""):
+    """'' = karta / TCG produkt; inak dôvod vyradenia."""
+    text = clean_text(_merch_clean(title) + " " + _merch_clean(extra_text))
+    m = ACCESSORY_RE.search(text)
+    if m:
+        return "accessory:" + m.group(0).lower()
+    m = MERCH_HARD_RE.search(text)
+    if m:
+        return "merch:" + m.group(0).lower()
+    m = MERCH_SOFT_RE.search(text)
+    if m and not TCG_MARKER_RE.search(text):
+        return "merch:" + m.group(0).lower()
+    return ""
+
+
+def is_merch(title, extra_text=""):
+    return bool(merch_reason(title, extra_text))
+
+
+@lru_cache(maxsize=20000)
+def looks_like_tcg(title):
+    """Názov vyzerá ako karta alebo TCG produkt."""
+    text = clean_text(title)
+    return bool(TCG_MARKER_RE.search(text) or CARD_MARKER_RE.search(text) or _TCG_SET_RE.search(text))
+
+
+def is_tcg_product(title):
+    return looks_like_tcg(title) and not is_merch(title)
+
+
+# =========================================================
+# SKLAD
+# =========================================================
+
+STOCK_OUT_RE = re.compile(
+    r"vypredan\w*|vyprod[aá]n\w*|nie\s+je\s+skladom|nie\s+je\s+na\s+sklade"
+    r"|nedostupn\w*|nen[íi]\s+skladem|nen[íi]\s+dostupn\w*|sold\s*out"
+    r"|out\s+of\s+stock|ausverkauft", re.I)
+STOCK_PRE_RE = re.compile(r"predobjedn\w*|p[řr]edobjedn\w*|pre-?order\w*|vorbestell\w*", re.I)
+STOCK_ORDER_RE = re.compile(r"na\s+objedn[áa]vku|do\s+\d+\s+dn[íi]|na\s+dotaz|u\s+dodavatele", re.I)
+STOCK_IN_RE = re.compile(
+    r"skladom|skladem|na\s+sklad[eě]|in\s+stock|dostupn[ée]|k\s+odberu"
+    r"|k\s+dispozici|ihne[dď]|expedujeme|odes[ií]l[aá]me", re.I)
+COMING_RE = re.compile(r"o[čc]ak[áa]vame|o[čc]ek[áa]v[áa]me|pripravujeme|coming\s+soon", re.I)
+
+
+def detect_stock(text):
+    """'in' | 'out' | 'preorder' | 'order' | '' (nevieme)"""
+    text = clean_text(text)
+    if not text:
+        return ""
+    if STOCK_OUT_RE.search(text):
+        return "out"
+    if STOCK_PRE_RE.search(text):
+        return "preorder"
+    if STOCK_ORDER_RE.search(text):
+        return "order"
+    if STOCK_IN_RE.search(text):
+        return "in"
+    return ""
+
+
+# =========================================================
+# SPÁJANIE ROVNAKÝCH PRODUKTOV Z RÔZNYCH OBCHODOV
+# =========================================================
+
+GROUP_TYPES = [
+    ("etb", re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)),
+    ("booster box", re.compile(r"booster\s*(?:box|display)", re.I)),
+    ("booster bundle", re.compile(r"booster\s*bundle", re.I)),
+    ("sleeved booster", re.compile(r"sleeved\s+booster", re.I)),
+    ("3-pack blister", re.compile(r"3\s*-?\s*pack|three\s+pack|3\s*booster\s+blister", re.I)),
+    ("checklane blister", re.compile(r"checklane|1\s*-?\s*pack\s+blister|single\s+blister", re.I)),
+    ("blister", re.compile(r"blister", re.I)),
+    ("mini tin", re.compile(r"mini\s+tin", re.I)),
+    ("tin", re.compile(r"\btins?\b", re.I)),
+    ("build battle", re.compile(r"build\s*(?:&|and)?\s*battle", re.I)),
+    ("booster pack", re.compile(r"booster\s+pack|\bbooster\b", re.I)),
+    ("collection", re.compile(r"collection|kolekci", re.I)),
+]
+_VARIANT_RES = [
+    ("pc", re.compile(r"pok[eé]mon\s+center", re.I)),
+    ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
+    ("rev", re.compile(r"reverse", re.I)),
+    ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
+]
+_COMBO_TYPES = [
+    re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    re.compile(r"booster\s*(?:box|display)", re.I),
+    re.compile(r"booster\s*bundle", re.I),
+    re.compile(r"blister", re.I),
+    re.compile(r"\btins?\b", re.I),
+    re.compile(r"collection|kolekci", re.I),
+]
+# Pri blistroch a tinoch rozhoduje aj Pokémon/motív – rôzne motívy sa nespájajú
+_DETAIL_TYPES = {"3-pack blister", "checklane blister", "blister", "mini tin", "tin", "build battle"}
+_DETAIL_SKIP = GENERIC_WORDS | {
+    "checklane", "premium", "pack", "blister", "mini", "tin", "tins", "scarlet", "violet", "sword",
+    "shield", "mega", "evolution", "series", "edition", "with", "build", "battle", "kit", "stadium",
+    "japonsky", "japanese", "korejsky", "korean", "cinsky", "chinese", "nemecky", "german"}
+
+
+@lru_cache(maxsize=20000)
+def is_combo(title):
+    """Viac produktov v jednom balení („Bundle + ETB“, „2x ETB“, „sada“...)."""
+    t = clean_text(title)
+    if sum(1 for rx in _COMBO_TYPES if rx.search(t)) >= 2:
+        return True
+    return bool(re.search(
+        r"(?<![\w/.,])(?:[2-9]|1[0-9])\s*(?:x|ks|kusy|pcs)(?![a-z])"
+        r"|\bx\s*(?:[2-9]|1[0-9])\b"
+        r"|\b(?:bundle\s+deal|komplet\w*|set\s+of|sada)\b", t, re.I))
+
+
+@lru_cache(maxsize=20000)
+def group_key(title, lang=""):
+    """Kľúč na spojenie rovnakého produktu z rôznych obchodov.
+    None = nevieme s istotou, zobrazí sa samostatne."""
+    t = clean_text(title)
+    if not t or is_combo(t):
+        return None
+    p = normalize_query(t)
+    lang = lang or "EN"
+    variants = ",".join(v for v, rx in _VARIANT_RES if rx.search(t))
+    ptype = next((name for name, rx in GROUP_TYPES if rx.search(t)), "")
+    pokemon = (p.get("pokemon") or "").lower()
+    set_name = p.get("set_name") or ""
+    number = p.get("card_number") or ""
+
+    if ptype and set_name and ptype != "collection":
+        key = f"s|{set_name}|{ptype}|{pokemon}|{variants}|{lang}"
+        if ptype in _DETAIL_TYPES:
+            drop = _DETAIL_SKIP | fold_words(set_name)
+            detail = sorted(w for w in fold_words(t)
+                            if w not in drop and len(w) >= 3 and not w.isdigit()
+                            and not re.fullmatch(r"(?:sv|me|swsh|sm|xy)\d+\w*", w))
+            key += "|" + "-".join(detail)
+        return key
+    if number and pokemon:
+        return f"c|{pokemon}|{number}|{variants}|{lang}"
+    if pokemon and set_name and p.get("suffix") and not ptype:
+        return f"c|{pokemon}|{p['suffix']}|{set_name}|{variants}|{lang}"
+    return None
+
+
+# =========================================================
+# POČET BOOSTEROV (cena za booster)
+# =========================================================
+
+_PACKS_EXPLICIT_RE = re.compile(
+    r"(?<![\d/.,])(\d{1,2})\s*(?:-|x)?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|packungen|boost\w*)", re.I)
+_PACKS_PAREN_RE = re.compile(r"booster\s*(?:box|display)\D{0,10}\((\d{1,2})\)", re.I)
+
+
+@lru_cache(maxsize=20000)
+def estimate_packs(title, lang=""):
+    """Odhad počtu boosterov v produkte; None = nevieme."""
+    t = clean_text(title).lower()
+    if not t or is_combo(t):
+        return None
+    m = _PACKS_EXPLICIT_RE.search(t) or _PACKS_PAREN_RE.search(t)
+    if m and 1 <= int(m.group(1)) <= 36:
+        return int(m.group(1))
+    if lang in ASIAN_LANGS:
+        return None   # ázijské boxy majú rôzny počet (10, 20, 30...)
+    if re.search(r"booster\s*(?:box|display)", t):
+        return 18 if re.search(r"\bhalf\b|polovičn", t) else 36
+    if re.search(r"elite\s+trainer\s+box|\betb\b", t):
+        return 11 if re.search(r"pok[eé]mon center", t) else 9
+    if re.search(r"booster\s*bundle", t):
+        return 6
+    if (re.search(r"sleeved\s+booster|booster\s+pack|\bbooster\b$", t)
+            and not re.search(r"collection|box|tin|blister|bundle|display", t)):
+        return 1
+    return None
+
+
+def make_result(shop, title, price, link, image="", stock=""):
+    """Jedna ponuka vo výsledkoch hľadania (rovnaký tvar pre všetky typy obchodov)."""
+    lang = detect_language(title)
+    packs = estimate_packs(title, lang)
+    return {
+        "title": title, "shop": shop["name"], "country": shop["country"],
+        "condition": "Nové", "language": lang, "price_eur": round(price, 2),
+        "link": link, "image": image or "", "stock": stock or "",
+        "packs": packs,
+        "price_per_pack": round(price / packs, 2) if packs and packs > 1 else None,
+        "group": group_key(title, lang),
+    }
