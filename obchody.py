@@ -1,5 +1,5 @@
 """
-CARD RADAR – obchody 6.23 (nad vylepsenia 6.21)
+CARD RADAR – obchody 6.24 (nad vylepsenia 6.21)
 
  - /admin/obchody?key=ADMIN_KEY : otestuješ ľubovoľný e-shop (aj z mobilu),
    CardRadar rozpozná platformu (Shoptet, Shopify, Upgates, WooCommerce),
@@ -38,6 +38,26 @@ KANDIDATI = [
     ("Xzone CZ", "https://www.xzone.cz/"),
     ("Xzone SK", "https://www.xzone.sk/"),
     ("Gengar.cz", "https://www.gengar.cz/"),
+]
+
+# Obchody, ktoré CardRadar prechádza celé (kategórie), nie cez ich vyhľadávanie.
+# Nájde tak aj produkty, ktoré vyhľadávanie obchodu nevráti (napr. japonské boxy).
+KATALOGY = [
+    {
+        "name": "Posbírej to", "country": "CZ", "enabled": True,
+        "base_url": "https://www.posbirejto.cz/",
+        "catalog": [
+            "https://www.posbirejto.cz/boosterboxy/",
+            "https://www.posbirejto.cz/balicky/",
+            "https://www.posbirejto.cz/specialniboxy/",
+            "https://www.posbirejto.cz/cinske-produkty/",
+            "https://www.posbirejto.cz/ohodnocenekarty-2/",
+            "https://www.posbirejto.cz/anglickekarty/",
+            "https://www.posbirejto.cz/japonskekarty/",
+            "https://www.posbirejto.cz/cinske-karty/",
+        ],
+        "max_pages": 25,
+    },
 ]
 
 META_KEY = "extra_shops"
@@ -79,8 +99,15 @@ def _save(shops):
 
 # ---------- zapnutie obchodov v bežiacom serveri ----------
 
+def _host(url):
+    return urllib.parse.urlparse(url or "").netloc.lower().replace("www.", "")
+
+
 def _apply(configs):
     g = G["_g"]
+    # obchod, ktorý už beží ako katalóg, sa druhýkrát nepridá
+    builtin = {_host(k["base_url"]) for k in KATALOGY}
+    configs = [c for c in configs if _host(c.get("base_url")) not in builtin]
     want = {c["name"] for c in configs}
     for lst in (g["SHOPS"], g["ACTIVE_SHOPS"]):
         lst[:] = [s for s in lst if not s.get("_extra") or s["name"] in want]
@@ -283,6 +310,16 @@ def install(g):
     for name, (data, mime) in list(g["EMBEDDED_STATIC"].items()):
         if mime == "image/png":
             g["EMBEDDED_STATIC"][name] = (strip_png(data), mime)
+    # prečiarknutá cena v Shoptete (price-standard) sa nesmie brať ako cena
+    cs._STRIKE_SELECTOR = cs._STRIKE_APP
+    for k in KATALOGY:
+        if any(s["name"] == k["name"] for s in g["SHOPS"]):
+            continue
+        cs.CATALOG_SHOPS.append(k)
+        g["SHOPS"].append(k)
+        g["ACTIVE_SHOPS"].append(k)
+        g["ALLOWED_HOSTS"].add(urllib.parse.urlparse(k["base_url"]).netloc.lower())
+
     app = g["app"]
     app.add_url_rule("/admin/obchody", "admin_obchody", admin_obchody, methods=["GET", "POST"])
     app.before_request(lambda: _sync() and None)
