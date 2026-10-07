@@ -1408,7 +1408,9 @@ def make_suggestion(title):
     if not title or not L.is_tcg_product(title):
         return None
     p = L.normalize_query(title)
-    query = L.clean_text(" ".join(x for x in (p["pokemon"], p["suffix"], p["card_number"], p["set_name"]) if x))
+    # aj typ produktu („pitch black elite trainer box“), inak by ťuknutie na ETB hľadalo celý set
+    query = L.clean_text(" ".join(x for x in (p["pokemon"], p["suffix"], p["card_number"], p["set_name"],
+                                              p["product_type"]) if x))
     query = (query or title)[:120]
     is_card = not p["product_type"]
     return {"title": title, "query": query, "type": "card" if is_card else "product",
