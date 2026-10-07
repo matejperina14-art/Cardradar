@@ -58,8 +58,9 @@ def eur(v):
 # VYTVORENIE, POTVRDENIE, ZRUŠENIE
 # =========================================================
 
-def create_alert(email, link, title, shop, target, site):
-    """Vráti (http_kód, {"status"/"error", "message"})."""
+def create_alert(email, link, title, shop, target, site, kind="price"):
+    """Vráti (http_kód, {"status"/"error", "message"}).
+    kind="price" = e-mail pri cene <= target; kind="stock" = e-mail, keď bude skladom (target sa uloží ako 0)."""
     if not ALERTS_ENABLED:
         return 503, {"error": "Strážca ceny zatiaľ nie je na serveri zapnutý."}
     email = L.clean_text(email).lower()
@@ -72,7 +73,10 @@ def create_alert(email, link, title, shop, target, site):
         return 400, {"error": "Zadaj platný e-mail."}
     if not O.is_allowed_link(link):
         return 400, {"error": "Neplatný produkt."}
-    if not 0 < target < 100000:
+    is_stock = kind == "stock"
+    if is_stock:
+        target = 0
+    elif not 0 < target < 100000:
         return 400, {"error": "Zadaj cieľovú cenu."}
 
     site = _site(PUBLIC_URL or site)
@@ -98,7 +102,8 @@ def create_alert(email, link, title, shop, target, site):
         conn.close()
 
     if confirmed:
-        return 200, {"status": "ok", "message": f"Strážca upravený na {eur(target)}."}
+        msg = "Strážca zmenený: napíšeme, keď bude skladom." if is_stock else f"Strážca upravený na {eur(target)}."
+        return 200, {"status": "ok", "message": msg}
     try:
         _confirm_mail(email, title, shop, link, target, token, site)
     except Exception as e:
@@ -148,9 +153,9 @@ def product_offer(link):
     """Aktuálna (cena, sklad) z produktovej stránky – JSON-LD, inak meta značky."""
     resp, _ = O.fetch(link, timeout=10)
     if not resp:
-        return None, ""
+        return None, "", False
     soup = BeautifulSoup(resp.text, O.HTML_PARSER)
-    price, currency, stock = None, "EUR", ""
+    price, currency, stock, sure = None, "EUR", "", False
 
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -165,6 +170,7 @@ def product_offer(link):
                 avail = str(node.get("availability", "")).lower()
                 stock = ("out" if "outofstock" in avail or "soldout" in avail else
                          "preorder" if "preorder" in avail else "in" if "instock" in avail else "")
+                sure = bool(stock)
                 break
         if price:
             break
@@ -184,11 +190,27 @@ def product_offer(link):
     if price and currency in ("CZK", "KČ", "KC"):
         price = L.czk_to_eur(price)
     if not stock:
+        el = soup.select_one('meta[property="product:availability"], meta[property="og:availability"], '
+                             '[itemprop="availability"]')
+        av = L.clean_text((el.get("content") or el.get("href") or el.get_text()) if el else "").lower()
+        if av:
+            stock = ("out" if re.search(r"out\s*of\s*stock|outofstock|sold\s*out|soldout", av) else
+                     "preorder" if "preorder" in av else
+                     "in" if re.search(r"in\s*stock|instock", av) else "")
+            sure = bool(stock)
+    if not stock:
         stock = L.detect_stock(soup.get_text(" ", strip=True)[:20000])
-    return (round(price, 2) if price else None), stock
+    return (round(price, 2) if price else None), stock, sure
 
 
-def _should_notify(price, stock, target):
+def is_stock_alert(target):
+    return not target   # target 0 = strážca naskladnenia
+
+
+def _should_notify(price, stock, target, stock_sure=True):
+    if is_stock_alert(target):
+        # naskladnenie: len ak sklad vieme naisto (JSON-LD / meta), nie z textu stránky
+        return stock in ("in", "preorder") and stock_sure
     if not price or price > target or stock == "out":
         return False
     if stock in ("in", "preorder", "order"):
@@ -211,14 +233,14 @@ def check_alerts_once():
         try:
             offers[link] = product_offer(link)
         except Exception:
-            offers[link] = (None, "")
+            offers[link] = (None, "", False)
         time.sleep(1)   # šetrne k obchodom
 
     now = datetime.now(timezone.utc).isoformat()
     conn = O.db()
     try:
         for aid, email, link, title, shop, target, token, site in alerts:
-            price, stock = offers.get(link, (None, ""))
+            price, stock, sure = offers.get(link, (None, "", False))
             conn.execute("UPDATE alerts SET last_price = ?, last_checked = ? WHERE id = ?", (price, now, aid))
             if price:
                 conn.execute("""INSERT INTO price_daily (link, day, shop, title, price_eur, stock)
@@ -226,7 +248,7 @@ def check_alerts_once():
                                 ON CONFLICT(link, day) DO UPDATE SET price_eur = excluded.price_eur,
                                     stock = excluded.stock""",
                              (link, O.today_str(), shop, title, price, stock))
-            if _should_notify(price, stock, target):
+            if _should_notify(price, stock, target, sure):
                 try:
                     _drop_mail(email, title, shop, link, target, price, token, _site(PUBLIC_URL or site))
                     conn.execute("UPDATE alerts SET notified = ? WHERE id = ?", (now, aid))
@@ -271,12 +293,7 @@ def start_background():
 # =========================================================
 
 def _utm(url):
-    try:
-        p = urllib.parse.urlsplit(url)
-        q = urllib.parse.parse_qsl(p.query) + [("utm_source", "cardradar"), ("utm_medium", "email")]
-        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), ""))
-    except Exception:
-        return url
+    return O.out_url(url, "email")
 
 
 def _product_image(link):
@@ -369,19 +386,27 @@ CardRadar je nezávislý porovnávač cien. Pokémon je ochranná známka svojic
 def _confirm_mail(email, title, shop, link, target, token, site):
     e = html.escape
     confirm = f"{site}/alerts/confirm?token={urllib.parse.quote(token)}"
-    text = (f"Ahoj,\n\nchceš dostať e-mail, keď cena klesne na {eur(target)} alebo menej?\n\n"
+    if is_stock_alert(target):
+        goal_text = "keď bude produkt znova skladom"
+        intro = "Napíšeme ti, <b>keď bude produkt znova skladom</b>. Stačí jedno kliknutie na potvrdenie."
+        price_html = '<b style="color:#0a8a4a">Strážim naskladnenie</b>'
+        heading, subject = "Potvrď strážcu naskladnenia 🔔", "Potvrď strážcu naskladnenia – CardRadar"
+    else:
+        goal_text = f"keď cena klesne na {eur(target)} alebo menej"
+        intro = (f"Napíšeme ti, keď cena klesne na <b>{e(eur(target))}</b> alebo menej. "
+                 f"Stačí jedno kliknutie na potvrdenie.")
+        price_html = f'Tvoj cieľ: <b style="color:#0a8a4a">{e(eur(target))}</b>'
+        heading, subject = "Potvrď strážcu ceny 🔔", "Potvrď strážcu ceny – CardRadar"
+    text = (f"Ahoj,\n\nchceš dostať e-mail, {goal_text}?\n\n"
             f"{title} ({shop})\n{link}\n\nPotvrď kliknutím: {confirm}\n\n"
             f"Ak si o to nežiadal, tento e-mail ignoruj.\n\nCardRadar")
     body = _email_html(
-        preheader=f"Potvrď strážcu ceny pre {title}", heading="Potvrď strážcu ceny 🔔",
-        intro=f"Napíšeme ti, keď cena klesne na <b>{e(eur(target))}</b> alebo menej. "
-              f"Stačí jedno kliknutie na potvrdenie.",
-        title=title, shop=shop, image=_product_image(link),
-        price_html=f'Tvoj cieľ: <b style="color:#0a8a4a">{e(eur(target))}</b>',
+        preheader=f"Potvrď strážcu pre {title}", heading=heading, intro=intro,
+        title=title, shop=shop, image=_product_image(link), price_html=price_html,
         button_text="Potvrdiť strážcu", button_url=confirm, site=site,
         footer_html=f'Ak si o strážcu nežiadal, tento e-mail pokojne ignoruj, nič sa nezapne.<br>'
                     f'<a href="{e(site)}" style="color:#6b7aa0">{e(site.replace("https://", ""))}</a>')
-    _send(email, "Potvrď strážcu ceny – CardRadar", text, body)
+    _send(email, subject, text, body)
 
 
 def _drop_mail(email, title, shop, link, target, price, token, site):
@@ -389,22 +414,39 @@ def _drop_mail(email, title, shop, link, target, price, token, site):
     stop = f"{site}/alerts/stop?token={urllib.parse.quote(token)}"
     query = (O.make_suggestion(title) or {}).get("query") or title
     compare = f"{site}/?q={urllib.parse.quote(query)}"
-    text = (f"Ahoj,\n\n{title} ({shop}) je teraz za {eur(price)} (tvoj cieľ bol {eur(target)}).\n\n"
-            f"{link}\n\nPorovnať ceny: {compare}\n\nStrážca sa tým vypína. Nový si nastavíš na {site}\n"
-            f"Zrušiť: {stop}\n\nCardRadar")
+    price_txt = eur(price) if price else "cenu nájdeš v obchode"
+    if is_stock_alert(target):
+        heading, subject = "Je skladom! 🎉", f"Skladom: {title}"
+        intro = (f"Produkt, ktorý strážiš, je znova skladom"
+                 f"{' za <b>' + e(eur(price)) + '</b>' if price else ''}. Zvyčajne sa rýchlo vypredá.")
+        line = f"{title} ({shop}) je znova skladom ({price_txt})."
+        price_html = (f'<span style="font-size:22px;font-weight:800;color:#0a8a4a">Skladom</span>'
+                      + (f'<br><span style="font-size:15px">{e(eur(price))}</span>' if price else ""))
+    else:
+        heading, subject = "Cena klesla! 🎉", f"Cena klesla: {title} za {eur(price)}"
+        intro = (f"Produkt, ktorý strážiš, je teraz za <b>{e(eur(price))}</b>. "
+                 f"Ceny sa menia rýchlo, tak neváhaj príliš dlho.")
+        line = f"{title} ({shop}) je teraz za {eur(price)} (tvoj cieľ bol {eur(target)})."
+        price_html = (f'<span style="font-size:22px;font-weight:800;color:#0a8a4a">{e(eur(price))}</span>'
+                      f'<br><span style="font-size:13px;color:#6b7aa0">tvoj cieľ bol {e(eur(target))}</span>')
+    text = (f"Ahoj,\n\n{line}\n\n{link}\n\nPorovnať ceny: {compare}\n\n"
+            f"Strážca sa tým vypína. Nový si nastavíš na {site}\nZrušiť: {stop}\n\nCardRadar")
     body = _email_html(
-        preheader=f"{title} je teraz za {eur(price)}", heading="Cena klesla! 🎉",
-        intro=f"Produkt, ktorý strážiš, je teraz za <b>{e(eur(price))}</b>. "
-              f"Ceny sa menia rýchlo, tak neváhaj príliš dlho.",
-        title=title, shop=shop, image=_product_image(link),
-        price_html=(f'<span style="font-size:22px;font-weight:800;color:#0a8a4a">{e(eur(price))}</span>'
-                    f'<br><span style="font-size:13px;color:#6b7aa0">tvoj cieľ bol {e(eur(target))}</span>'),
-        button_text=f"Otvoriť v obchode {shop}", button_url=_utm(link), site=site,
+        preheader=line, heading=heading, intro=intro,
+        title=title, shop=shop, image=_product_image(link), price_html=price_html,
+        button_text=f"Otvoriť v obchode {shop}", button_url=O.out_url(link, "email"), site=site,
         extra_html=(f'<tr><td align="center" style="padding:4px 24px 6px"><a href="{e(compare)}" '
                     f'style="font-size:14px;color:#2453d6;font-weight:700;text-decoration:none">'
                     f'Porovnať ceny vo všetkých obchodoch →</a></td></tr>'),
         footer_html=(f'Strážca sa po tomto upozornení vypína. Nový si nastavíš na '
                      f'<a href="{e(site)}" style="color:#6b7aa0">{e(site.replace("https://", ""))}</a>.<br>'
                      f'<a href="{e(stop)}" style="color:#6b7aa0">Zrušiť strážcu</a>'))
-    _send(email, f"Cena klesla: {title} za {eur(price)}", text, body,
-          headers={"List-Unsubscribe": f"<{stop}>"})
+    _send(email, subject, text, body, headers={"List-Unsubscribe": f"<{stop}>"})
+
+
+def send_admin_mail(to, subject, text, html_body):
+    """Interný e-mail pre prevádzkovateľa (denná kontrola)."""
+    if not (SMTP_HOST and SMTP_FROM and to):
+        return False
+    _send(to, subject, text, html_body)
+    return True
