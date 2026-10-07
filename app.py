@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.4 – app.py
+CARD RADAR 7.5 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -48,7 +48,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.4"
+VERSION = "7.5"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -80,6 +80,7 @@ class RateLimiter:
 
 
 LIMIT_SEARCH = RateLimiter(30)
+LIMIT_RETRY = RateLimiter(90)    # tiché dopĺňanie pomalých obchodov (r=1) sa nepočíta do LIMIT_SEARCH
 LIMIT_SUGGEST = RateLimiter(120)
 LIMIT_IMAGES = RateLimiter(60)
 LIMIT_HISTORY = RateLimiter(60)
@@ -171,7 +172,7 @@ def api_search():
     original = L.clean_text(request.args.get("q", ""))[:150]
     if not original:
         return jsonify({"error": "Zadaj, čo chceš hľadať."}), 400
-    if not LIMIT_SEARCH.allow():
+    if not (LIMIT_RETRY if request.args.get("r") else LIMIT_SEARCH).allow():
         return too_many()
     parsed = L.normalize_query(original)
     normalized = parsed["normalized"] or original
