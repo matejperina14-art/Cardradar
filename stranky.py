@@ -279,7 +279,7 @@ kontakt vyššie. Sťažnosť môžeš podať na Úrad na ochranu osobných úda
 
 SHOPS_HTML = """
 <p>CardRadar je bezplatný porovnávač cien Pokémon TCG kariet, ETB a booster boxov zo slovenských
-obchodov. Zberateľ zadá kartu alebo set a na jednom mieste vidí, kde je produkt skladom
+a českých obchodov. Zberateľ zadá kartu alebo set a na jednom mieste vidí, kde je produkt skladom
 a za koľko. Kliknutím ide <b>priamo na stránku produktu vo vašom e-shope</b>. CardRadar nič nepredáva.</p>
 <h2>Čo o vašich produktoch zobrazujeme</h2>
 <ul>
