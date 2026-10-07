@@ -1172,6 +1172,7 @@ def is_crawling(shop_name):
 
 
 _cat_query_cache = None   # vytvorí sa nižšie (TTLCache je definovaná vyššie)
+MAX_SHOP_RESULTS = 400    # najviac ponúk z jedného katalógového obchodu na jedno hľadanie
 
 
 def catalog_scrape(shop, query):
@@ -1197,6 +1198,7 @@ def catalog_scrape(shop, query):
     parsed = L.normalize_query(query)
     kind = L.classify_query(parsed)
     results = []
+    matched = []
     for it in items:
         if not L.is_tcg_product(it["title"]):
             debug["merch_filtered"] += 1
@@ -1206,6 +1208,11 @@ def catalog_scrape(shop, query):
             continue
         if not L.price_plausible(it["title"], it["price_eur"]):   # staršie zle prečítané položky
             continue
+        matched.append(it)
+    # pri veľmi všeobecnom hľadaní („scarlet violet“) sú to tisíce položiek – ďalej ide len MAX_SHOP_RESULTS
+    matched.sort(key=lambda it: it["price_eur"] or 0)
+    debug["total_matches"] = len(matched)
+    for it in matched[:MAX_SHOP_RESULTS]:
         results.append(L.make_result(shop, it["title"], it["price_eur"], it["link"], it["image"], it["stock"],
                                      price_czk=it.get("price_czk")))
     results.sort(key=lambda r: r["price_eur"])
@@ -1518,6 +1525,7 @@ def _sug_score(item, q):
     score += 40 if q in title else 0
     score += 15 if item.get("price_eur") is not None else 0
     score += 10 if item.get("image") else 0
+    score += 80 if item.get("_set") else 0   # celý set / séria má byť v návrhoch navrchu
     return score + max(0, 20 - len(title) // 10)
 
 
@@ -1525,9 +1533,9 @@ def _remote_suggestions(q):
     shop = next((s for s in active_shops() if s.get("shopify")), None)
     if not shop:
         return []
-    products = _shopify_suggest_raw(shop, q)
+    products = _shopify_suggest_raw(shop, q, timeout=2.5)
     if products is None:
-        return shop_search(shop, q, timeout=4)[0]
+        return []   # obchod neodpovedá – našepkávač nesmie čakať na celé hľadanie
     foreign_ok = L.FOREIGN_QUERY_RE.search(q) is not None
     out = []
     for p in products:
@@ -1546,6 +1554,43 @@ def _remote_suggestions(q):
     return out
 
 
+# názvy setov a sérií pre našepkávač („sca“ -> Scarlet & Violet, „sur“ -> Surging Sparks)
+_SET_TITLES = {L.fold(n): n for n in
+               [" ".join(w[:1].upper() + w[1:] for w in n.split()) for n in sorted(L.TCG_SET_NAMES) if not n.isdigit()] +
+               [s["name"] for s in L.NOVE_SETY]}   # NOVE_SETY posledné = ich presný zápis má prednosť
+_SET_TITLES["scarlet & violet"] = _SET_TITLES["scarlet violet"] = "Scarlet & Violet"
+_SET_TITLES["sword & shield"] = _SET_TITLES["sword shield"] = "Sword & Shield"
+
+
+def _set_suggestions(q):
+    fq = L.fold(q)
+    out, seen = [], set()
+    for folded, title in _SET_TITLES.items():
+        words = folded.replace("&", " ").split()
+        if folded.startswith(fq) or any(w.startswith(fq) for w in words) or (len(fq) >= 4 and fq in folded):
+            query = L.clean_text(folded.replace("&", " ").replace("pokemon ", ""))
+            if query not in seen:
+                seen.add(query)
+                out.append({"title": title, "query": query, "type": "product", "_set": True,
+                            "image": "", "price_eur": None, "link": ""})
+    return out[:4]
+
+
+def _catalog_suggestions(q, limit=30):
+    """Produkty z katalógov (naša databáza, okamžite) – obsahujú hľadaný text."""
+    fq, found = L.fold(q), []
+    for shop in active_shops():
+        if not is_catalog(shop):
+            continue
+        for it in load_catalog(shop["name"])[0]:
+            if fq in L.fold(it["title"]) and L.is_tcg_product(it["title"]):
+                found.append({"title": it["title"], "link": it["link"], "image": it["image"],
+                              "price_eur": it["price_eur"]})
+                if len(found) >= limit:
+                    return found
+    return found
+
+
 def suggestions(q):
     q = L.clean_text(q)
     key = q.lower()
@@ -1555,6 +1600,10 @@ def suggestions(q):
     with _sug_lock:
         cands = [dict(s) for s in SUGGESTIONS.values()
                  if key in s["title"].lower() or key in s["query"].lower()]
+    cands = _set_suggestions(q) + cands
+    if len(cands) < 6:
+        known = {c["query"].lower() for c in cands}
+        cands += [s for s in _suggestions_from(_catalog_suggestions(q)) if s["query"].lower() not in known]
     if len(cands) < 4:
         known = {c["query"].lower() for c in cands}
         cands += [s for s in _suggestions_from(_remote_suggestions(q)) if s["query"].lower() not in known]
