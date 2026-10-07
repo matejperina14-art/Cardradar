@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.7 – app.py
+CARD RADAR 7.8 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -48,7 +48,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.7"
+VERSION = "7.8"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -380,14 +380,22 @@ def admin_obchod():
 
     def one(shop):
         t0 = time.monotonic()
+        extra = {}
         try:
             if O.is_catalog(shop):
                 res, dbg = O.catalog_scrape(shop, norm)
+                items, updated = O.load_catalog(shop["name"])
+                extra = {"katalog_poloziek": len(items), "katalog_aktualizovany": updated}
+                if shop.get("search_url"):   # porovnanie: koľko by našlo vyhľadávanie obchodu
+                    sres, sdbg = O.scrape_search(shop, norm, 15, fetch_q=O.shop_query(norm))
+                    extra.update(vyhladavanie_vysledkov=len(sres), vyhladavanie_status=sdbg.get("status"),
+                                 vyhladavanie_stran=sdbg.get("pages"))
             else:
-                res, dbg = O.scrape_search(shop, norm, 15)
+                res, dbg = O.scrape_search(shop, norm, 15, fetch_q=O.shop_query(norm))
+                extra = {"poslane_do_obchodu": O.shop_query(norm), "stran": dbg.get("pages")}
         except Exception as e:
             res, dbg = [], {"status": "exception", "error": str(e)[:300]}
-        return {"shop": shop["name"], "typ": "katalóg" if O.is_catalog(shop) else "vyhľadávanie",
+        return {"shop": shop["name"], "typ": "katalóg" if O.is_catalog(shop) else "vyhľadávanie", **extra,
                 "status": dbg.get("status"), "http_status": dbg.get("http_status"), "error": dbg.get("error"),
                 "spolu_ms": round((time.monotonic() - t0) * 1000), "stiahnutie_ms": dbg.get("fetch_ms"),
                 "odkazov_na_stranke": dbg.get("links_scanned"), "vysledkov": len(res),
