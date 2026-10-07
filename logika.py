@@ -827,8 +827,28 @@ def make_result(shop, title, price, link, image="", stock="", price_czk=None):
         "link": link, "image": image or "", "stock": stock or "",
         "packs": packs, "price_per_pack": None,
         "group": group_key(title, lang),
+        "kind": product_kind(title),          # 'card' | 'sealed' (záložky Karty / Produkty)
+        "shipping_eur": None, "total_eur": None,   # doplní obchody.add_shipping, ak obchod má poštovné
     }
     return reprice(r)
+
+
+def product_kind(title):
+    """'sealed' = balík (ETB, box, bundle, blister, tin, kolekcia...), inak 'card'."""
+    return "sealed" if _SEALED_TYPE_RE.search(title or "") else "card"
+
+
+def shipping_eur(shop, price_eur):
+    """Poštovné v € podľa SHOPS[...]["shipping"]; None = nevieme.
+    Tvar: {"price": 3.9, "free_from": 60, "currency": "EUR"}  (currency "CZK" pre české obchody)"""
+    cfg = (shop or {}).get("shipping")
+    if not cfg or cfg.get("price") is None or not price_eur:
+        return None
+    rate = KURZ["CZK"] if str(cfg.get("currency", "EUR")).upper() == "CZK" else 1.0
+    free_from = cfg.get("free_from")
+    if free_from is not None and price_eur >= free_from / rate:
+        return 0.0
+    return round(cfg["price"] / rate, 2)
 
 
 def reprice(r):
