@@ -496,7 +496,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 9.2 */
+/* CARD RADAR FRONTEND 9.3 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -1553,6 +1553,19 @@ function showData(q, data, push, opts = {}){
     }, pendingNow ? RETRY_DELAYS[tries] : 20000);
   }
 }
+// tiché dopĺňanie zlyhalo (server preťažený, limit…): skúsi znova, po poslednom pokuse prestane čakať
+function quietFailed(q, opts){
+  const tries = opts.retry || 0;
+  if (mode !== 'search') return;
+  clearTimeout(retryTimer);
+  if (tries < RETRY_DELAYS.length) {
+    retryTimer = setTimeout(() => { if (mode === 'search') search(currentQuery, {push: false, quiet: true, retry: tries + 1}); }, RETRY_DELAYS[tries]);
+    return;
+  }
+  loadingShops.forEach(n => { shopState[n] = 'bad'; if (!failedShops.includes(n)) failedShops.push(n); });
+  loadingShops = [];
+  renderView();
+}
 // hľadanie karty („charizard ex“, „mew 151/165“) otvorí rovno záložku Karty, ak tam niečo je
 function defaultCat(data){
   const p = data.parsed || {};
@@ -1601,7 +1614,8 @@ async function search(qArg, opts = {}){
     if (quiet && (mode !== 'search' || currentQuery.toLowerCase() !== ((data.normalized_query || q).trim().toLowerCase()))) return;
     showData(q, data, push, opts);
   } catch (e) {
-    if (e.name === 'AbortError' || quiet) return;
+    if (e.name === 'AbortError') return;
+    if (quiet) { quietFailed(q, opts); return; }
     allResults = []; groups = [];
     $('results').innerHTML = '';
     $('status').innerHTML = `<div class="panel error"><b>Chyba:</b> ${esc(e.message || 'Neznáma chyba.')}</div>`;
