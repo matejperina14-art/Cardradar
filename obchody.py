@@ -325,14 +325,34 @@ def init_db():
                 PRIMARY KEY (shop, link));
             CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
         """)
-        # staršie databázy nemali stĺpec image
+        # staršie databázy nemali stĺpec image / price_czk
         cols = {r[1] for r in conn.execute("PRAGMA table_info(price_daily)")}
         if "image" not in cols:
             conn.execute("ALTER TABLE price_daily ADD COLUMN image TEXT")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(catalog_items)")}
+        if "price_czk" not in cols:
+            conn.execute("ALTER TABLE catalog_items ADD COLUMN price_czk REAL")
+        _fix_czk_once(conn)
         _prune(conn)
         conn.commit()
     finally:
         conn.close()
+    _load_czk()
+
+
+def _fix_czk_once(conn):
+    """Jednorazovo: ceny z CZ obchodov boli zle prečítané (napr. „1 299,- Kč“ -> 0,08 €).
+    Zmaže ich históriu a katalóg, aby sa načítali nanovo so správnym prepočtom."""
+    if conn.execute("SELECT v FROM meta WHERE k = 'fix_czk_v1'").fetchone():
+        return
+    cz = [s["name"] for s in SHOPS if s.get("country") == "CZ"]
+    if cz:
+        marks = ",".join("?" * len(cz))
+        conn.execute(f"DELETE FROM price_daily WHERE shop IN ({marks})", cz)
+        conn.execute(f"DELETE FROM catalog_items WHERE shop IN ({marks})", cz)
+        conn.execute(f"DELETE FROM meta WHERE k IN ({','.join('?' * len(cz))})", ["catalog:" + n for n in cz])
+    conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fix_czk_v1', ?)",
+                 (datetime.now(timezone.utc).isoformat(),))
 
 
 def _prune(conn):
@@ -637,14 +657,17 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT):
                 debug["match_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason=reason)
                 continue
-            price = L.parse_price(block_text)
-            if price is None and a.parent:
-                price = L.parse_price(a.parent.get_text(" ", strip=True))
-            if not price or price <= 0:
+            amount, cur = L.parse_price_raw(block_text)
+            if amount is None and a.parent:
+                amount, cur = L.parse_price_raw(a.parent.get_text(" ", strip=True))
+            if not amount or amount <= 0:
                 _log(debug, title=title, decision="filtered", reason="no_price")
                 continue
+            price_czk = amount if cur == "CZK" else None
+            price = L.czk_to_eur(amount) if price_czk else amount
             results.append(L.make_result(shop, title, price, href,
-                                         extract_image(a, shop["base_url"]), detect_stock_el(block)))
+                                         extract_image(a, shop["base_url"]), detect_stock_el(block),
+                                         price_czk=price_czk))
             _log(debug, title=title, price_eur=round(price, 2), decision="accepted")
 
         if shopify_fut and results:
@@ -744,9 +767,10 @@ def _save_catalog(shop_name, items):
     try:
         conn.execute("DELETE FROM catalog_items WHERE shop = ?", (shop_name,))
         conn.executemany(
-            "INSERT OR REPLACE INTO catalog_items (shop, link, title, price_eur, image, stock) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [(shop_name, i["link"], i["title"], i["price_eur"], i["image"], i["stock"]) for i in items])
+            "INSERT OR REPLACE INTO catalog_items (shop, link, title, price_eur, image, stock, price_czk) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(shop_name, i["link"], i["title"], i["price_eur"], i["image"], i["stock"], i.get("price_czk"))
+             for i in items])
         conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", ("catalog:" + shop_name, now))
         conn.commit()
     finally:
@@ -763,15 +787,15 @@ def load_catalog(shop_name):
             return hit[1], hit[2]
     conn = db()
     try:
-        rows = conn.execute("SELECT link, title, price_eur, image, stock FROM catalog_items "
+        rows = conn.execute("SELECT link, title, price_eur, image, stock, price_czk FROM catalog_items "
                             "WHERE shop = ?", (shop_name,)).fetchall()
         meta = conn.execute("SELECT v FROM meta WHERE k = ?", ("catalog:" + shop_name,)).fetchone()
     except Exception:
         rows, meta = [], None
     finally:
         conn.close()
-    items = [{"link": r[0], "title": r[1], "price_eur": r[2], "image": r[3] or "", "stock": r[4] or ""}
-             for r in rows]
+    items = [{"link": r[0], "title": r[1], "price_eur": r[2], "image": r[3] or "", "stock": r[4] or "",
+              "price_czk": r[5]} for r in rows]
     updated = meta[0] if meta else ""
     with _cat_lock:
         _cat_mem[shop_name] = (time.monotonic(), items, updated)
@@ -815,13 +839,15 @@ def _parse_listing(shop, html, page_url):
         block = find_block(a)
         if block is None or _other_links(block, href, page_url) > 3:
             continue   # menu, päta, zoznam – nie dlaždica produktu
-        price = L.parse_price(block.get_text(" ", strip=True))
-        if not price or price <= 0:
+        amount, cur = L.parse_price_raw(block.get_text(" ", strip=True))
+        if not amount or amount <= 0:
             continue
+        price_czk = amount if cur == "CZK" else None
+        price = L.czk_to_eur(amount) if price_czk else amount
         image = extract_image(a, page_url)
         if image and shop.get("image_replace"):
             image = image.replace(*shop["image_replace"])
-        items.append({"link": href, "title": title, "price_eur": round(price, 2),
+        items.append({"link": href, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
                       "image": image, "stock": detect_stock_el(block)})
     return items, soup
 
@@ -931,9 +957,10 @@ def crawl_feed(shop):
             price = L.to_float(m.group(0).strip()) if m else None
             if not price or price <= 0:
                 continue
-            if "CZK" in raw.upper() or shop.get("currency") == "CZK":
-                price /= L.KURZ["CZK"]
-            items[link] = {"link": link, "title": title, "price_eur": round(price, 2),
+            price_czk = None
+            if "CZK" in raw.upper() or "KČ" in raw.upper() or shop.get("currency") == "CZK":
+                price_czk, price = price, L.czk_to_eur(price)
+            items[link] = {"link": link, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
                            "image": d.get("IMGURL") or d.get("IMAGE_LINK") or "",
                            "stock": _feed_stock(d)}
             if resp.raw.tell() > 150 * 1024 * 1024:
@@ -997,7 +1024,8 @@ def catalog_scrape(shop, query):
         if not _matches(shop, it["title"], "", parsed, kind)[0]:
             debug["match_filtered"] += 1
             continue
-        results.append(L.make_result(shop, it["title"], it["price_eur"], it["link"], it["image"], it["stock"]))
+        results.append(L.make_result(shop, it["title"], it["price_eur"], it["link"], it["image"], it["stock"],
+                                     price_czk=it.get("price_czk")))
     results.sort(key=lambda r: r["price_eur"])
     debug.update(links_scanned=len(items), accepted=len(results), results=len(results),
                  status="ok" if results else "no_results",
@@ -1090,6 +1118,8 @@ def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT):
                         with _cache_lock:
                             _inflight.pop(key, None)
                         event.set()
+    for r in res or []:
+        L.reprice(r)   # Kč -> € vždy aktuálnym kurzom, aj pri starších výsledkoch z cache
     fill_images_from_cache(res)
     add_suggestions(res)
     return res, dbg
@@ -1100,6 +1130,7 @@ def search_all(query, wait_all=False):
     wait_all=False (web): po SEARCH_BUDGET sekundách vráti, čo je hotové, pomalé obchody
     sú 'pending' a dobehnú do cache – stránka si ich o chvíľu potichu dotiahne.
     wait_all=True (admin test): čaká na všetky."""
+    ensure_czk()
     shops = active_shops()
 
     def run(shop):
@@ -1392,8 +1423,12 @@ def add_trends(results, days=30):
         conn.close()
     for r in results:
         old = oldest.get(r.get("link"))
-        if old and old[1]:
-            r["trend"] = {"since": old[0], "price_eur": round(old[1], 2)}
+        if not old or not old[1]:
+            continue
+        # CZ obchody: pohyb kurzu nie je zmena ceny (cena v Kč je rovnaká)
+        if r.get("price_czk") and abs(r["price_eur"] - old[1]) < max(0.5, old[1] * 0.02):
+            continue
+        r["trend"] = {"since": old[0], "price_eur": round(old[1], 2)}
 
 
 def price_history(link):
@@ -1477,12 +1512,63 @@ def detect_shop(url, q="pikachu"):
 # ÚLOHY NA POZADÍ (spúšťa app.py raz pri štarte)
 # =========================================================
 
+_czk_state = {"checked": 0.0, "running": False}
+_czk_lock = threading.Lock()
+CZK_MAX_AGE = 6 * 3600   # kurz sa skúša obnoviť najneskôr po 6 hodinách
+
+
+def _load_czk():
+    """Posledný známy kurz z databázy (zdieľaný všetkými procesmi, prežije reštart)."""
+    try:
+        data = json.loads(meta_get("czk_rate") or "null")
+    except Exception:
+        data = None
+    if data and 15 < float(data.get("rate", 0)) < 40:
+        L.KURZ["CZK"] = float(data["rate"])
+        L.KURZ_INFO.update(date=data.get("date", ""), source="ECB")
+
+
 def update_czk():
-    """Kurz CZK z Európskej centrálnej banky."""
-    resp, _ = fetch("https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml", timeout=10)
-    m = re.search(r"currency=['\"]CZK['\"]\s+rate=['\"]([\d.]+)", resp.text) if resp else None
-    if m and 15 < float(m.group(1)) < 40:
-        L.KURZ["CZK"] = float(m.group(1))
+    """Kurz CZK z Európskej centrálnej banky. Vráti True, ak sa podaril."""
+    resp, info = fetch("https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml", timeout=10)
+    text = resp.text if resp else ""
+    m = re.search(r"currency=['\"]CZK['\"]\s+rate=['\"]([\d.]+)", text)
+    day = re.search(r"time=['\"](\d{4}-\d{2}-\d{2})['\"]", text)
+    if not m or not 15 < float(m.group(1)) < 40:
+        print(f"[CardRadar] Kurz CZK sa nepodarilo načítať: {info.get('error') or 'neznámy formát'}", flush=True)
+        _load_czk()   # aspoň kurz, ktorý medzitým uložil iný proces
+        return False
+    rate = float(m.group(1))
+    L.KURZ["CZK"] = rate
+    L.KURZ_INFO.update(date=day.group(1) if day else today_str(), source="ECB")
+    try:
+        meta_set("czk_rate", json.dumps({"rate": rate, "date": L.KURZ_INFO["date"]}))
+    except Exception:
+        pass
+    return True
+
+
+def ensure_czk():
+    """Ak je kurz starší ako CZK_MAX_AGE, obnoví ho na pozadí (hľadanie nečaká)."""
+    if time.monotonic() - _czk_state["checked"] < CZK_MAX_AGE and _czk_state["checked"]:
+        return
+    with _czk_lock:
+        if _czk_state["running"]:
+            return
+        _czk_state["running"] = True
+
+    def run():
+        try:
+            if update_czk():
+                _czk_state["checked"] = time.monotonic()
+            else:   # pri chybe skús znova o 15 min
+                _czk_state["checked"] = time.monotonic() - CZK_MAX_AGE + 900
+        except Exception:
+            pass
+        finally:
+            _czk_state["running"] = False
+
+    threading.Thread(target=run, daemon=True, name="czk-refresh").start()
 
 
 def _catalog_loop():
@@ -1501,10 +1587,10 @@ def _catalog_loop():
 def _czk_loop():
     while True:
         try:
-            update_czk()
+            ensure_czk()
         except Exception:
             pass
-        time.sleep(12 * 3600)
+        time.sleep(1800)
 
 
 _lock_files = {}
