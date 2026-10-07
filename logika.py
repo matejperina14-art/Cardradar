@@ -92,7 +92,7 @@ SET_ALIASES = {
     "sv4": "paradox rift", "sv5": "temporal forces", "sv6": "twilight masquerade",
     "sv7": "stellar crown", "sv8": "surging sparks", "sv8a": "terastal festival",
     "sv9": "journey together", "sv9a": "destined rivals", "sv10": "destined rivals",
-    "sv10.5": "destined rivals", "sv11": "black bolt white flare",
+    "sv10.5": "black bolt white flare", "sv11": "black bolt white flare",
     "me01": "mega evolution", "me1": "mega evolution",
     "me02": "phantasmal flames", "me2": "phantasmal flames",
     "me2.5": "ascended heroes", "me 2.5": "ascended heroes",
@@ -109,6 +109,12 @@ SET_ALIASES = {
     "30th celebrations": "30th celebration",
     "30th anniversary celebration": "30th celebration",
     "30th anniversary celebrations": "30th celebration",
+}
+
+# Spoločné vydanie dvoch setov: stačí, ak názov produktu obsahuje jeden z nich
+# (napr. „Black Bolt ETB“ sedí na hľadanie „sv10.5“).
+SET_PARTS = {
+    "black bolt white flare": ("black bolt", "white flare"),
 }
 
 KNOWN_SETS = sorted(
@@ -268,6 +274,9 @@ def set_matches_text(text, set_name):
     s, n = fold(clean_text(text)), fold(clean_text(set_name))
     if not s or not n:
         return False
+    parts = SET_PARTS.get(n)
+    if parts and any(set_matches_text(text, p) for p in parts):
+        return True
     nw, sw = fold_words(n), fold_words(s)
     if nw and nw <= sw:
         return True
