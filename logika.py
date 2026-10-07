@@ -138,15 +138,20 @@ POKEMON_ALIASES = {
     "leafeon": "Leafeon", "glaceon": "Glaceon",
 }
 
+# Poradie je dôležité: najprv dlhšie / presnejšie názvy, jednoslovné až na konci
 PRODUCT_PATTERNS = [
     ("elite trainer box", r"\belite\s+trainer\s+box\b"),
     ("elite trainer box", r"\betb\b"),
     ("booster box", r"\bbooster\s*(?:box|display)\b"),
     ("booster bundle", r"\bbooster\s*bundle\b"),
+    ("booster bundle", r"\bbundle\b"),                     # „bundle“ = booster bundle
     ("collection box", r"\bcollection\s+box\b"),
     ("premium collection", r"\bpremium\s+collection\b"),
     ("blister", r"\bblister(?:\s+pack)?\b"),
     ("tin", r"\btins?\b"),
+    ("booster box", r"\bdisplay\b"),                        # „display“ = booster box
+    ("collection", r"\bcollection\b|\bkolekci\w*|\bkolekce\b"),
+    ("booster", r"\bboosters?\b"),
 ]
 
 
@@ -273,6 +278,12 @@ def set_matches_text(text, set_name):
     return bool(stem_n) and stem_n <= {_stem(w) for w in sw}
 
 
+def _all_words(parsed):
+    """Všetky slová hľadania (aj všeobecné), keď nič konkrétnejšie nie je."""
+    return {w for w in fold_words(parsed.get("original", "")) - {"pokemon", "tcg", "the", "and", "of", "en"}
+            if len(w) >= 3 or w.isdigit()}
+
+
 def _wanted_words(parsed):
     return {w for w in fold_words(parsed.get("original", "")) - GENERIC_WORDS
             if len(w) >= 3 or w.isdigit()}
@@ -308,8 +319,8 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
         return False, "suffix_not_in_title"
     # „rare candy“: bez Pokémona, setu a čísla musia byť hľadané slová v názve
     if not (pokemon or set_name or number):
-        want = _wanted_words(parsed)
-        if want and want - fold_words(title):
+        want = _wanted_words(parsed) or _all_words(parsed)
+        if not want or want - fold_words(title):
             return False, "words_not_in_title"
     return True, "matched"
 
@@ -323,6 +334,8 @@ _PTYPE_TITLE_RE = {
     "premium collection": re.compile(r"premium\s+collection|pr[ée]miov\w*\s+kolekci", re.I),
     "blister": re.compile(r"blister", re.I),
     "tin": re.compile(r"\btins?\b|plechovk\w*", re.I),
+    "collection": re.compile(r"collection|kolekci\w*|kolekce", re.I),
+    "booster": re.compile(r"booster", re.I),
 }
 # „Display“ booster bundlov / blistrov / ETB nie je booster box, a pod.
 _PTYPE_NOT_RE = {
@@ -526,6 +539,14 @@ ACCESSORY_PATTERNS = [
     r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?", r"r[áa]m[čc]ek\w*",
     r"akryl\w*", r"acrylic", r"ochrann\w*\s+box\w*", r"protector\w*",
     r"magnetick\w*\s+box\w*", r"box\s+na\s+ulo[žz]\w*",
+    # kocky, žetóny, držiaky, krabičky a všetko „na karty“
+    r"kock[ayu]\w*", r"kocky", r"kostk\w*", r"dice", r"d\d{1,2}",
+    r"dr[žz]i?[áa]k\w*", r"dr[žz]iak\w*", r"holder\w*", r"stands?",
+    r"token\w*", r"[žz]et[óo]n\w*", r"damage\s+counter\w*", r"counters", r"marker\w*", r"ukazovate[ľl]\w*",
+    r"krabi[čc]k\w*\s+na\s+\w+", r"(?:na|pro|for)\s+(?:karty|kartičky|kartičk\w*|cards?)",
+    r"storage\w*", r"organiz\w*", r"divider\w*", r"rozde[ľl]ova[čc]\w*", r"p[řr]ed[ěe]l\w*",
+    r"card\s*saver\w*", r"semi\s*rigid\w*", r"graded\s+(?:card\s+)?(?:case|slab)\s+(?:holder|protector)",
+    r"slab\s+(?:case|holder|stand)\w*", r"pr[áa]zdn\w*\s+slab\w*",
     # prázdne krabice, kódy, nepravé karty – nie sú to produkty s kartami
     r"pr[áa]zdn\w*", r"empty", r"bez\s+(?:booster\w*|bal[íi][čc]\w*|kar[ite]\w*|obsahu)",
     r"(?:only\s+)?box\s+only", r"len\s+(?:krabic\w*|box)", r"jen\s+(?:krabic\w*|box)",
@@ -572,6 +593,7 @@ MERCH_HARD_PATTERNS = [
 ]
 
 MERCH_SOFT_PATTERNS = [
+    r"krabi[čc]k\w*", r"coin\w*", r"minc\w*", r"card\s+box\w*",
     r"fig[úu]r\w*", r"figur\w*", r"figure\w*", r"statue\w*", r"so[šs]k\w*",
     r"odznak\w*", r"badge\w*", r"pins?", r"bro[žz]\w*", r"mystery", r"blind\s*box\w*",
 ]
