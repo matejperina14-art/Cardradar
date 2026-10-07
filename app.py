@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.3 – app.py
+CARD RADAR 7.4 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -48,7 +48,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.3"
+VERSION = "7.4"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -413,6 +413,7 @@ def health():
         "alerts_enabled": strazca.ALERTS_ENABLED, **kurz_info(),
         "db_path": O.DB_PATH, "db_persistent": O.db_persistent(),
         **({"db_warning": O.db_problem()} if O.db_problem() else {}),
+        "pools": O.pool_stats(),
         **_static_report(), "icons": icon_report(),
     })
 
