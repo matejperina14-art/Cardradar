@@ -496,7 +496,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.9 */
+/* CARD RADAR FRONTEND 9.0 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -603,7 +603,8 @@ function renderRecent(){
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-q]');
-  if (b) { search(b.dataset.q); return; }
+  if (b) { search(b.dataset.q, {focus: b.dataset.focus || ''}); return; }
+  if (e.target.closest('#showAllBtn')) { focusLink = ''; updateUrl(currentQuery, false); renderView(); window.scrollTo({top: 0}); return; }
   if (e.target.id === 'clearRecent') { setRecent([]); renderRecent(); }
   if (e.target.closest('#shareBtn')) share();
   if (e.target.closest('#resetFilters')) { cat = 'all'; shopOff.clear(); renderView(); }
@@ -800,6 +801,10 @@ function categoryOf(t){
 let allResults = [], groups = [], cat = 'all', shopOff = new Set(), shopState = {}, shopFresh = {}, sortMode = 'asc', showOut = false;
 let currentQuery = '', failedShops = [], loadingShops = [], retryTimer = null, resultsGen = 0, mode = 'home', revealNext = false;
 let searchCtrl = null, homeData = null;
+// ťuknutie na produkt na úvodnej stránke: ukáže len ten produkt (a ten istý v iných obchodoch)
+let focusLink = '';
+const sameLink = (a, b) => String(a || '').toLowerCase().replace(/\/+$/, '') === String(b || '').toLowerCase().replace(/\/+$/, '');
+const focusMatch = g => !!focusLink && g.offers.some(o => sameLink(o.link, focusLink));
 const resCache = new Map();
 const ITEMS = new Map();
 const openGroups = new Set();   // kľúče skupín (g.key), aby rozbalenie prežilo tiché dopytovanie
@@ -885,7 +890,13 @@ function sortSelect(id){
   return `<select id="${id}" class="sort-sel" aria-label="Zoradiť">${opts.map(k =>
     `<option value="${k}"${sortMode === k ? ' selected' : ''}>${SORTS[k]}</option>`).join('')}</select>`;
 }
+function focusedViews(){
+  if (!focusLink) return [];
+  return groups.filter(focusMatch).map(g => view(g, {shop: true, lang: true, out: true})).filter(Boolean);
+}
 function visibleViews(){
+  const f = focusedViews();
+  if (f.length) return f;
   const out = groups.filter(g => cat === 'all' || g._c === cat).map(g => view(g)).filter(Boolean);
   out.sort(compareViews);
   return out;
@@ -980,13 +991,20 @@ function renderStatus(list){
     const many = failedShops.length > 1;
     h += `<div class="notice">${esc(failedShops.join(', '))} teraz ${many ? 'neodpovedajú' : 'neodpovedá'}, ponuky z ${many ? 'nich' : 'neho'} môžu chýbať.</div>`;
   }
+  const focused = focusLink && focusedViews().length > 0;
+  if (focusLink && allResults.length) {
+    const n = groups.filter(g => cat === 'all' || g._c === cat).map(g => view(g)).filter(Boolean).length;
+    h += focused
+      ? `<div class="notice info"><span>Zobrazujem vybraný produkt.</span><button class="btn" id="showAllBtn" style="margin-left:auto;padding:6px 12px">Všetky výsledky (${n})</button></div>`
+      : (loadingShops.length ? '' : `<div class="notice">Vybraný produkt teraz v ponuke nevidíme (možno sa práve vypredal). Zobrazujem podobné ponuky.</div>`);
+  }
   if (allResults.length) {
     const offers = list.flatMap(v => v.vis);
     const prices = list.map(v => v.best).filter(o => o.stock !== 'out').map(priceOf).filter(p => p !== null);
     const low = prices.length ? Math.min(...prices) : null;
     const shopsN = new Set(offers.map(o => o.shop)).size;
     const fresh = freshText(list);
-    h += `<div class="summary"><h2>${esc(prettyQ(currentQuery))}</h2>
+    h += `<div class="summary"><h2>${esc(focused ? list[0].g.title : prettyQ(currentQuery))}</h2>
       <span class="meta">${list.length} ${plural(list.length,'produkt','produkty','produktov')} v ${shopsN} ${plural(shopsN,'obchode','obchodoch','obchodoch')}` +
       (low !== null ? ` · od <b class="num">${eur(low)}</b>` : '') + (fresh ? ` · ${fresh}` : '') + `</span>
       <button class="share" id="shareBtn">Zdieľať</button>
@@ -1148,7 +1166,7 @@ function openSide(){ $('side').classList.add('open'); $('sideBackdrop').classLis
 function closeSide(){ $('side').classList.remove('open'); $('sideBackdrop').classList.remove('show'); }
 $('sideBackdrop').addEventListener('click', closeSide);
 $('status').addEventListener('change', e => { if (e.target.id === 'sortTop') { sortMode = e.target.value; renderView(); } });
-function pickCat(k){ cat = k; renderView(); }
+function pickCat(k){ cat = k; if (focusLink) { focusLink = ''; updateUrl(currentQuery, false); } renderView(); }
 $('catBar').addEventListener('click', e => { if (e.target.closest('#filterPill')) { openSide(); return; } const c = e.target.closest('[data-cat]'); if (c) pickCat(c.dataset.cat); });
 $('side').addEventListener('click', e => {
   if (e.target.closest('#sideClose')) { closeSide(); return; }
@@ -1349,7 +1367,7 @@ async function loadMissingImages(myGen){
 function tileHtml(it, kind){
   const img = imageOf(it);
   return `<div class="tile" role="listitem">
-    <button class="tile-img" data-q="${esc(it.query || it.title)}" data-img="${esc(it.link || '')}" aria-label="Porovnať ceny: ${esc(it.title)}">
+    <button class="tile-img" data-q="${esc(it.query || it.title)}" data-focus="${esc(it.link || '')}" data-img="${esc(it.link || '')}" aria-label="Porovnať ceny: ${esc(it.title)}">
       ${img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : placeholder(categoryOf(it.title))}
       ${kind === 'deal' ? `<span class="drop">−${it.drop_pct} %</span>` : ''}
     </button>
@@ -1357,7 +1375,7 @@ function tileHtml(it, kind){
       <div class="tile-title" title="${esc(it.title)}">${esc(it.title)}</div>
       <div class="tile-shop">${esc(it.shop)}</div>
       <div class="tile-price num">${kind === 'deal' ? `<s>${eur(it.old_price_eur)}</s>` : ''}<b>${eur(it.price_eur)}</b></div>
-      <div class="tile-acts"><button data-q="${esc(it.query || it.title)}">Porovnať</button><a href="${esc(outLink(it.link))}" target="_blank" rel="noopener">Do obchodu</a></div>
+      <div class="tile-acts"><button data-q="${esc(it.query || it.title)}" data-focus="${esc(it.link || '')}">Porovnať</button><a href="${esc(outLink(it.link))}" target="_blank" rel="noopener">Do obchodu</a></div>
     </div>
   </div>`;
 }
@@ -1440,7 +1458,8 @@ async function showHome(){
 }
 
 /* ---------- zdieľanie + URL ---------- */
-function shareUrl(){ return location.origin + location.pathname + '?q=' + encodeURIComponent(currentQuery); }
+function urlFor(q){ return '?q=' + encodeURIComponent(q) + (focusLink ? '&p=' + encodeURIComponent(focusLink) : ''); }
+function shareUrl(){ return location.origin + location.pathname + urlFor(currentQuery); }
 async function share(){
   const url = shareUrl(), btn = $('shareBtn');
   try {
@@ -1451,19 +1470,20 @@ async function share(){
 }
 function updateUrl(q, push){
   document.title = prettyQ(q) + ' – ceny | CardRadar';
-  if (new URLSearchParams(location.search).get('q') === q) return;
-  const url = location.pathname + '?q=' + encodeURIComponent(q);
+  const sp = new URLSearchParams(location.search);
+  if (sp.get('q') === q && (sp.get('p') || '') === focusLink) return;
+  const url = location.pathname + urlFor(q);
   push ? history.pushState({q}, '', url) : history.replaceState({q}, '', url);
 }
 function resetView(){
   if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
   clearTimeout(retryTimer);
-  resultsGen++; allResults = []; groups = []; currentQuery = ''; failedShops = []; loadingShops = [];
+  resultsGen++; allResults = []; groups = []; currentQuery = ''; failedShops = []; loadingShops = []; focusLink = '';
   $('q').value = ''; $('searchButton').disabled = false;
   document.title = BASE_TITLE;
   showHome();
 }
-window.addEventListener('popstate', () => { closeModal(); const q = new URLSearchParams(location.search).get('q'); q ? search(q, {push: false}) : resetView(); });
+window.addEventListener('popstate', () => { closeModal(); const sp = new URLSearchParams(location.search); const q = sp.get('q'); q ? search(q, {push: false, focus: sp.get('p') || ''}) : resetView(); });
 $('home').addEventListener('click', e => {
   e.preventDefault();
   if (location.search) history.pushState({}, '', location.pathname);
@@ -1518,7 +1538,8 @@ async function search(qArg, opts = {}){
   if (!q) { $('q').focus(); return; }
   if (!quiet) $('q').value = q;
   const push = opts.push !== false;
-  if (quiet && searchCtrl) return;   // práve beží tvoje nové hľadanie, nerušíme ho
+  if (quiet && searchCtrl) return;
+  if (!quiet) focusLink = opts.focus || '';   // práve beží tvoje nové hľadanie, nerušíme ho
   if (searchCtrl) searchCtrl.abort();
   const key = q.toLowerCase();
   const c = !quiet && resCache.get(key);
@@ -1566,8 +1587,8 @@ renderFavBtn();
 renderSide();
 loadHome();
 try {
-  const iq = new URLSearchParams(location.search).get('q');
-  if (iq) search(iq, {push: false}); else showHome();
+  const sp0 = new URLSearchParams(location.search), iq = sp0.get('q');
+  if (iq) search(iq, {push: false, focus: sp0.get('p') || ''}); else showHome();
 } catch (e) { showHome(); }
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
