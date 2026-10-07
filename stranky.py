@@ -182,7 +182,9 @@ def _home_warmer():
 
 
 def start_background():
-    threading.Thread(target=_home_warmer, daemon=True, name="home").start()
+    # príprava úvodnej stránky je náročná – stačí v jednom procese, ostatné ju spravia až na požiadanie
+    if O.only_one_process("home"):
+        threading.Thread(target=_home_warmer, daemon=True, name="home").start()
     if O.only_one_process("report"):
         threading.Thread(target=_report_loop, daemon=True, name="report").start()
 
