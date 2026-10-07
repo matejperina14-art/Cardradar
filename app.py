@@ -323,7 +323,8 @@ def _static_report():
     if not os.path.isdir(STATIC_DIR):
         return {"static_exists": False, "static_files": []}
     files = sorted(os.listdir(STATIC_DIR))[:50]
-    needed = ["icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon-32.png"]
+    needed = ["cr-logo.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon-32.png",
+              "apple-touch-icon.png"]
     return {"static_exists": True, "static_files": files,
             "static_missing": [f for f in needed if f.lower() not in {x.lower() for x in files}],
             "static_wrong_case": [x for x in files if x.lower() in needed and x not in needed]}
