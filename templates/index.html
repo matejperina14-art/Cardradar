@@ -496,7 +496,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 9.1 */
+/* CARD RADAR FRONTEND 9.2 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -1086,6 +1086,12 @@ function renderGrid(list){
   const reveal = revealNext; revealNext = false;
   if (!allResults.length) {
     if (loadingShops.length) { skeleton(); return; }   // pomalé obchody ešte odpovedajú
+    if (failedShops.length && !Object.values(shopState).includes('ok')) {
+      $('results').innerHTML = `<div class="empty">${radik()}<h3>Obchody teraz neodpovedajú</h3>
+        <p>Nepodarilo sa načítať ponuky. Skús to o chvíľu znova.</p>
+        <button class="btn primary" data-q="${esc(currentQuery)}">Skúsiť znova</button></div>`;
+      return;
+    }
     const alt = broaderQueries(currentQuery);
     $('results').innerHTML = `<div class="empty">${radik()}<h3>„${esc(prettyQ(currentQuery))}“ teraz žiadny obchod neponúka</h3>
       <p>Skús kratší názov alebo len meno Pokémona. Ceny a sklad sa menia každý deň, tak to skús aj neskôr.</p>
@@ -1508,6 +1514,7 @@ $('home').addEventListener('click', e => {
 
 /* ---------- hľadanie ---------- */
 const isWaiting = s => s.status === 'catalog_loading' || s.status === 'pending';
+const RETRY_DELAYS = [2000, 3000, 5000, 8000, 12000];   // spolu asi 30 s, potom sa čakanie ukončí
 function showData(q, data, push, opts = {}){
   const norm = (data.normalized_query || '').trim() || q;
   if (!opts.quiet || document.activeElement !== $('q')) $('q').value = norm;   // nemeníme text, ktorý práve píšeš
@@ -1525,6 +1532,12 @@ function showData(q, data, push, opts = {}){
   const pendingNow = sh.some(s => s.status === 'pending');
   failedShops = sh.filter(s => s.ok === false && !isWaiting(s)).map(s => s.name);
   shopState = {}; sh.forEach(s => { shopState[s.name] = isWaiting(s) ? '' : s.ok === false ? 'bad' : 'ok'; if (num(s.fetched_at)) shopFresh[s.name] = s.fetched_at; });
+  const tries = opts.retry || 0;
+  // po poslednom pokuse prestaneme čakať: obchody, ktoré stále neodpovedali, berieme ako nedostupné
+  if (loadingShops.length && tries >= RETRY_DELAYS.length) {
+    loadingShops.forEach(n => { shopState[n] = 'bad'; if (!failedShops.includes(n)) failedShops.push(n); });
+    loadingShops = [];
+  }
   if (data.query_lang) langOff.delete(data.query_lang);
   rememberImages(allResults);
   updateUrl(norm, push);
@@ -1533,12 +1546,11 @@ function showData(q, data, push, opts = {}){
   if (allResults.length && !opts.quiet) addRecent(norm);
   loadMissingImages(resultsGen);
   clearTimeout(retryTimer);
-  const tries = opts.retry || 0;
-  if (loadingShops.length && tries < 5) {
+  if (loadingShops.length && tries < RETRY_DELAYS.length) {
     retryTimer = setTimeout(() => {
       if (mode !== 'search' || currentQuery !== norm) return;
       search(norm, {push: false, quiet: true, retry: tries + 1});
-    }, pendingNow ? 2000 : 20000);
+    }, pendingNow ? RETRY_DELAYS[tries] : 20000);
   }
 }
 // hľadanie karty („charizard ex“, „mew 151/165“) otvorí rovno záložku Karty, ak tam niečo je
