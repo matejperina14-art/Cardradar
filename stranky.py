@@ -205,8 +205,8 @@ def page(title, body, back=True, status=200, extra_head="", css=""):
     link = f'<a class="back" href="{home}">← Späť na CardRadar</a>' if back else ""
     doc = f"""<!doctype html><html lang="sk"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} – CardRadar</title>
-<link rel="icon" href="/static/icon-192.png">
-{extra_head}<style>{PAGE_CSS}{css}</style><header><a href="{home}"><img src="/static/icon-192.png" alt="" onerror="this.remove()">CardRadar</a></header>
+<link rel="icon" href="/static/cr-logo.png?v=3">
+{extra_head}<style>{PAGE_CSS}{css}</style><header><a href="{home}"><img src="/static/cr-logo.png" alt="" onerror="this.remove()">CardRadar</a></header>
 <main>{link}{body}</main>"""
     return Response(doc, status=status, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
@@ -336,6 +336,7 @@ SELFTEST_QUERIES = [
     "destined rivals etb", "destined rivals booster box", "prismatic evolutions etb",
     "surging sparks booster bundle", "151 etb", "ascended heroes etb",
     "charizard ex", "pikachu ex", "umbreon vmax", "rare candy", "trick or trade",
+    "bundle", "display",
 ]
 
 
@@ -376,6 +377,8 @@ def _check_query(q):
             why.append("bez obrázka")
         if not r["stock"]:
             why.append("sklad neuvedený")
+        if L.merch_reason(t):
+            why.append("príslušenstvo vo výsledkoch")
         if why:
             issues.append({"shop": r["shop"], "title": t, "price": p, "why": why})
         if c != "card" and not L.is_combo(t):
