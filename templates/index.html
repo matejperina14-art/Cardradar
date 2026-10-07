@@ -496,7 +496,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 9.3 */
+/* CARD RADAR FRONTEND 9.4 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -614,6 +614,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('#backBtn')) leaveFavorites();
   if (e.target.closest('#hint')) focusSearch();
   if (e.target.closest('#homeRetry')) retryHome();
+  if (e.target.closest('#moreRes')) { pageN += PAGE; renderView(); loadMissingImages(resultsGen); }
   const ar = e.target.closest('[data-scroll]');
   if (ar) { const rail = ar.closest('.hsec').querySelector('.rail'); if (rail) rail.scrollBy({left: +ar.dataset.scroll * rail.clientWidth * 0.85, behavior: 'smooth'}); }
   if (!e.target.closest('.search-wrap')) hideSug();
@@ -641,9 +642,18 @@ function rememberImages(items){
     for (const p of LOCAL) { const k = p.toLowerCase(); if (!imgByName.has(k) && new RegExp('\\b' + k + '\\b').test(t)) imgByName.set(k, img); }
   }
 }
+const LOCAL_SETS = ['Scarlet & Violet','Delta Reign','30th Celebration','Pitch Black','Chaos Rising','Perfect Order','Ascended Heroes',
+  'Phantasmal Flames','Mega Evolution','Black Bolt','White Flare','Destined Rivals','Journey Together','Prismatic Evolutions',
+  'Surging Sparks','Stellar Crown','Twilight Masquerade','Temporal Forces','Paradox Rift','Obsidian Flames','Paldea Evolved','Pokémon 151'];
 function localSuggestions(q){
   q = q.toLowerCase();
   const out = [];
+  const fq = q.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  for (const s of LOCAL_SETS) {
+    const f = s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (f.startsWith(fq) || f.split(/[\s&]+/).some(w => w && w.startsWith(fq))) out.push({title: s, query: f.replace(/&/g, ' ').replace(/\s+/g, ' '), type: 'product', image: ''});
+    if (out.length >= 3) break;
+  }
   for (const p of LOCAL) {
     const l = p.toLowerCase();
     if (l.startsWith(q) || q.startsWith(l)) {
@@ -804,6 +814,9 @@ let currentQuery = '', failedShops = [], loadingShops = [], retryTimer = null, r
 let searchCtrl = null, homeData = null;
 // ťuknutie na produkt na úvodnej stránke: ukáže len ten produkt (a ten istý v iných obchodoch)
 let focusLink = '';
+// zobrazujeme po častiach – tisíce kariet naraz by prehliadač zamrazili
+const PAGE = 48;
+let pageN = PAGE, totalFound = 0;
 const sameLink = (a, b) => String(a || '').toLowerCase().replace(/\/+$/, '') === String(b || '').toLowerCase().replace(/\/+$/, '');
 const focusMatch = g => !!focusLink && g.offers.some(o => sameLink(o.link, focusLink));
 const resCache = new Map();
@@ -1009,6 +1022,7 @@ function renderStatus(list){
       <span class="meta">${list.length} ${plural(list.length,'produkt','produkty','produktov')} v ${shopsN} ${plural(shopsN,'obchode','obchodoch','obchodoch')}` +
       (low !== null ? ` · od <b class="num">${eur(low)}</b>` : '') + (fresh ? ` · ${fresh}` : '') + `</span>
       <button class="share" id="shareBtn">Zdieľať</button>
+      ${totalFound > allResults.length ? `<span class="meta" style="grid-row:auto">Našli sme ${totalFound} ponúk, zobrazujeme ${allResults.length} najlacnejších. Pre presnejšie výsledky pridaj napr. ETB, booster box alebo názov setu.</span>` : ''}
       <div class="sortbar"><label for="sortTop">Zoradiť:</label>${sortSelect('sortTop')}</div></div>`;
   }
   $('status').innerHTML = h;
@@ -1115,7 +1129,9 @@ function renderGrid(list){
   const bestId = sortMode !== 'asc' && sortMode !== 'stock' ? null : list.filter(v => v.best.stock !== 'out')
     .reduce((a, v) => (a === null || (priceOf(v.best) ?? 1e9) < (priceOf(a.best) ?? 1e9)) ? v : a, null)?.g.id;
   const sameKind = new Set(list.map(v => v.g._c)).size === 1;
-  $('results').innerHTML = `<div class="pgrid${reveal ? ' reveal' : ''}">` + list.map(v => groupHtml(v, sameKind && v.g.id === bestId && list.length > 1)).join('') + '</div>';
+  const part = list.slice(0, pageN), rest = list.length - part.length;
+  $('results').innerHTML = `<div class="pgrid${reveal ? ' reveal' : ''}">` + part.map(v => groupHtml(v, sameKind && v.g.id === bestId && list.length > 1)).join('') + '</div>' +
+    (rest > 0 ? `<button class="btn" id="moreRes" style="display:block;margin:18px auto 0">Zobraziť ďalšie (${rest})</button>` : '');
 }
 function renderView(){
   renderSide();
@@ -1173,7 +1189,7 @@ function openSide(){ $('side').classList.add('open'); $('sideBackdrop').classLis
 function closeSide(){ $('side').classList.remove('open'); $('sideBackdrop').classList.remove('show'); }
 $('sideBackdrop').addEventListener('click', closeSide);
 $('status').addEventListener('change', e => { if (e.target.id === 'sortTop') { sortMode = e.target.value; renderView(); } });
-function pickCat(k){ cat = k; if (focusLink) { focusLink = ''; updateUrl(currentQuery, false); } renderView(); }
+function pickCat(k){ cat = k; pageN = PAGE; if (focusLink) { focusLink = ''; updateUrl(currentQuery, false); } renderView(); }
 $('catBar').addEventListener('click', e => { if (e.target.closest('#filterPill')) { openSide(); return; } const c = e.target.closest('[data-cat]'); if (c) pickCat(c.dataset.cat); });
 $('side').addEventListener('click', e => {
   if (e.target.closest('#sideClose')) { closeSide(); return; }
@@ -1523,6 +1539,8 @@ function showData(q, data, push, opts = {}){
   mode = 'search'; renderFavBtn(); setLayout();
   currentQuery = norm;
   allResults = Array.isArray(data.results) ? data.results : [];
+  totalFound = num(data.summary && data.summary.total) || allResults.length;
+  if (!opts.quiet) pageN = PAGE;
   ITEMS.clear();
   if (!opts.quiet) { openGroups.clear(); showOut = false; }   // pri tichom doplnení nechávame tvoje nastavenia
   groups = buildGroups(allResults, 'g');
