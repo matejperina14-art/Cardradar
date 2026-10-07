@@ -44,7 +44,8 @@ _ETB_RE = re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)
 _BOX_RE = re.compile(r"booster\s*(?:box|display)", re.I)
 _BUNDLE_RE = re.compile(r"\bbundle\b", re.I)
 _SEALED_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|blister|"
-                        r"display|deck|premium|build\s*(?:&|and)?\s*battle", re.I)
+                        r"display|deck|premium|build\s*(?:&|and)?\s*battle|\bbox\b|chest|bal[íi][čc]|"
+                        r"starter|academy|\bcase\b|mystery|plechovk|\bsada\b", re.I)
 
 _home = {"t": 0.0, "data": None}
 _home_lock = threading.Lock()
@@ -106,8 +107,8 @@ def build_home():
             boxes.append(it)
         elif _BUNDLE_RE.search(title) and not re.search(r"display", title, re.I):
             bundles.append(it)
-        elif not _SEALED_RE.search(title) and price >= 10:
-            cards.append(it)
+        elif not _SEALED_RE.search(title) and price >= 10 and L.CARD_MARKER_RE.search(title):
+            cards.append(it)   # len skutočné karty (číslo, rarita, PSA...), nie iné produkty
 
     sets = []
     for s in L.NOVE_SETY:
@@ -133,6 +134,7 @@ def build_home():
         "top_cards": _uniq(cards, 12, reverse=True),
         "popular": O.popular_queries(),
         "new_sets": sets,
+        "kurz_czk": {"rate": L.KURZ["CZK"], "date": L.KURZ_INFO.get("date", "")},
     }
 
 
@@ -173,11 +175,12 @@ def start_background():
 PAGE_CSS = """
 body{margin:0;background:#f3f5fa;color:#0d1633;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
 header{background:#101b44;padding:16px 20px}
-header a{font-weight:800;font-size:21px;text-decoration:none;color:#38d8ff;
+header a{display:inline-flex;align-items:center;gap:10px;font-weight:800;font-size:21px;text-decoration:none;color:#38d8ff;
   text-shadow:0 0 4px rgba(56,216,255,.55),0 0 14px rgba(56,216,255,.45)}
 main{max-width:760px;margin:24px auto 60px;padding:28px 24px;background:#fff;border:1px solid #e2e6ef;border-radius:14px}
 h1{font-size:28px;line-height:1.2;margin:6px 0 14px}h2{font-size:18px;margin:1.6em 0 .4em}
 p,li{color:#3c4766}a{color:#2453d6}.back{font-size:14px;text-decoration:none}
+header img{width:34px;height:34px;border-radius:9px;display:block}
 code{background:#f3f5fa;border-radius:5px;padding:1px 5px;font-size:.92em}
 .upd{margin-top:2em;font-size:13px;color:#8b94ad}
 .box{text-align:center}.btn{display:inline-block;margin-top:12px;background:#ffcf3a;color:#101b44;
@@ -198,7 +201,8 @@ def page(title, body, back=True, status=200):
     link = f'<a class="back" href="{home}">← Späť na CardRadar</a>' if back else ""
     doc = f"""<!doctype html><html lang="sk"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} – CardRadar</title>
-<style>{PAGE_CSS}</style><header><a href="{home}">CardRadar</a></header>
+<link rel="icon" href="/static/icon-192.png">
+<style>{PAGE_CSS}</style><header><a href="{home}"><img src="/static/icon-192.png" alt="" onerror="this.remove()">CardRadar</a></header>
 <main>{link}{body}</main>"""
     return Response(doc, status=status, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
@@ -228,7 +232,8 @@ TERMS_HTML = """
 CardRadar nič nepredáva. Nákup prebieha vždy priamo v obchode a riadi sa jeho obchodnými podmienkami.</p>
 <h2>Presnosť údajov</h2>
 <p>Ceny a sklad sa aktualizujú automaticky, no môžu byť oneskorené alebo nepresné. Pred nákupom
-si vždy over cenu a dostupnosť v obchode. Prepočet z CZK na EUR je orientačný (denný kurz ECB).</p>
+si vždy over cenu a dostupnosť v obchode. Ceny z českých obchodov prepočítavame z Kč na € podľa
+aktuálneho denného kurzu Európskej centrálnej banky, preto sú orientačné.</p>
 <h2>Odkazy na obchody</h2>
 <p>Niektoré odkazy môžu byť partnerské. Ak cez ne nakúpiš, CardRadar môže dostať províziu.
 Cenu pre teba to nemení.</p>
