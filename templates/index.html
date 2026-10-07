@@ -10,11 +10,11 @@
 <meta property="og:site_name" content="CardRadar">
 <meta property="og:title" content="CardRadar – porovnávač cien Pokémon kariet">
 <meta property="og:description" content="Karty, ETB a booster boxy zo slovenských obchodov na jednom mieste. Aktuálna cena, sklad a odkaz priamo do obchodu.">
-<meta property="og:image" content="https://getcardradar.com/static/icon-512.png?v=2">
+<meta property="og:image" content="https://getcardradar.com/static/icon-512.png?v=3">
 <meta name="twitter:card" content="summary">
-<link rel="icon" href="/static/favicon-32.png?v=2" sizes="32x32" type="image/png">
-<link rel="icon" href="/static/icon-192.png?v=2" sizes="192x192" type="image/png">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2">
+<link rel="icon" href="/static/cr-logo.png?v=3" type="image/png">
+<link rel="shortcut icon" href="/favicon.ico?v=3">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=3">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -129,6 +129,9 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .summary .meta{grid-column:1/-1;grid-row:2;color:var(--sub);font-size:14px}
 .summary .meta b{color:var(--green)}
 .summary .share{grid-column:2;grid-row:1;border:1px solid var(--line2);background:#fff;border-radius:9px;padding:7px 12px;font-size:13px;font-weight:600}
+.sortbar{grid-column:1/-1;grid-row:3;display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.sortbar label{font-size:13px;color:var(--sub);font-weight:600}
+.sortbar select{border:1px solid var(--line2);border-radius:9px;background:#fff;padding:7px 30px 7px 10px;font-size:14px;font-weight:600;color:var(--ink)}
 .notice{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border-radius:10px;font-size:14px;background:#fff7e0;color:#7a5600;border:1px solid #f4dc95}
 .notice.info{background:#eef3ff;color:#23408f;border-color:#cddafc}
 .spin{width:15px;height:15px;border:2px solid #cddafc;border-top-color:var(--blue);border-radius:50%;animation:rot .8s linear infinite;flex:none}
@@ -156,7 +159,7 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .p-body{padding:14px 16px 6px;display:flex;flex-direction:column;gap:8px;flex:1}
 .kinds{display:flex;gap:6px;flex-wrap:wrap}
 .k{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:#eef0f5;color:var(--sub)}
-.k-card{background:#eaf0ff;color:var(--blue)}.k-box{background:#fdeee6;color:var(--orange)}.k-etb{background:#f0ebff;color:var(--violet)}.k-other{background:#e3f6f3;color:var(--teal)}
+.k-card{background:#eaf0ff;color:var(--blue)}.k-bundle{background:#fff2d6;color:#9a6a00}.k-box{background:#fdeee6;color:var(--orange)}.k-etb{background:#f0ebff;color:var(--violet)}.k-other{background:#e3f6f3;color:var(--teal)}
 .k-best{background:var(--holo);color:var(--navy)}
 .p-title{margin:0;font-size:15px;line-height:1.35;font-weight:650;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.7em}
 .p-price{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -445,7 +448,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.5 */
+/* CARD RADAR FRONTEND 8.6 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -686,6 +689,7 @@ const CATS = {
   card:  ['Karty', '🃏', 'Karta'],
   box:   ['Booster boxy', '📦', 'Booster box'],
   etb:   ['ETB', '🎁', 'ETB'],
+  bundle:['Bundle', '🎀', 'Bundle'],
   other: ['Ostatné balenia', '🧺', 'Balenie']
 };
 const FLAG_SVG = {
@@ -722,7 +726,8 @@ function langTag(x){
 function categoryOf(t){
   t = String(t || '');
   if (/elite\s+trainer\s+box|\betb\b/i.test(t)) return 'etb';
-  if (/booster\s*(?:box|display)/i.test(t)) return 'box';
+  if (/booster\s*(?:box|display)/i.test(t) && !/bundle|blister/i.test(t)) return 'box';
+  if (/\bbundle\b/i.test(t) && !/display/i.test(t)) return 'bundle';
   if (/booster|bundle|collection|kolekci|\btins?\b|blister|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|premium|display/i.test(t)) return 'other';
   return 'card';
 }
@@ -782,14 +787,42 @@ function view(g, ignore = {}){
   const best = vis.find(o => o.stock !== 'out') || vis[0];
   return {g, vis, best};
 }
+// zoradenie: cena, názov, dostupnosť, cena za booster, cena s dopravou
+const SORTS = {
+  asc:   'Od najlacnejšieho',
+  desc:  'Od najdrahšieho',
+  name:  'Podľa názvu (A – Z)',
+  stock: 'Podľa dostupnosti',
+  pack:  'Najlacnejší booster',
+  total: 'Najlacnejšie s dopravou'
+};
+const STOCK_RANK = {in: 0, preorder: 1, order: 2, '': 3, out: 4};
+const nameCmp = new Intl.Collator('sk', {sensitivity: 'base', numeric: true});
 function sortKey(v){
   if (sortMode === 'pack') return num(v.best.price_per_pack) ?? (1e6 + (priceOf(v.best) ?? 0));
   if (sortMode === 'total') return num(v.best.total_eur) ?? (priceOf(v.best) ?? 1e9);
   return priceOf(v.best) ?? 1e9;
 }
+function compareViews(a, b){
+  if (sortMode === 'name') return nameCmp.compare(a.g.title, b.g.title) || sortKey(a) - sortKey(b);
+  if (sortMode === 'stock') return (STOCK_RANK[a.best.stock || ''] ?? 3) - (STOCK_RANK[b.best.stock || ''] ?? 3) || sortKey(a) - sortKey(b);
+  if (sortMode === 'desc') return sortKey(b) - sortKey(a);
+  return sortKey(a) - sortKey(b);
+}
+function availableSorts(){
+  return Object.keys(SORTS).filter(k =>
+    (k !== 'pack' || allResults.some(i => num(i.price_per_pack) !== null)) &&
+    (k !== 'total' || allResults.some(i => num(i.total_eur) !== null)));
+}
+function sortSelect(id){
+  const opts = availableSorts();
+  if (!opts.includes(sortMode)) sortMode = 'asc';
+  return `<select id="${id}" class="sort-sel" aria-label="Zoradiť">${opts.map(k =>
+    `<option value="${k}"${sortMode === k ? ' selected' : ''}>${SORTS[k]}</option>`).join('')}</select>`;
+}
 function visibleViews(){
   const out = groups.filter(g => cat === 'all' || g._c === cat).map(g => view(g)).filter(Boolean);
-  out.sort((a, b) => sortMode === 'desc' ? sortKey(b) - sortKey(a) : sortKey(a) - sortKey(b));
+  out.sort(compareViews);
   return out;
 }
 
@@ -891,7 +924,8 @@ function renderStatus(list){
     h += `<div class="summary"><h2>${esc(prettyQ(currentQuery))}</h2>
       <span class="meta">${list.length} ${plural(list.length,'produkt','produkty','produktov')} v ${shopsN} ${plural(shopsN,'obchode','obchodoch','obchodoch')}` +
       (low !== null ? ` · od <b class="num">${eur(low)}</b>` : '') + (fresh ? ` · ${fresh}` : '') + `</span>
-      <button class="share" id="shareBtn">Zdieľať</button></div>`;
+      <button class="share" id="shareBtn">Zdieľať</button>
+      <div class="sortbar"><label for="sortTop">Zoradiť:</label>${sortSelect('sortTop')}</div></div>`;
   }
   $('status').innerHTML = h;
 }
@@ -988,10 +1022,10 @@ function renderGrid(list){
       : `<div class="empty">${radik()}<h3>V kategórii „${CATS[cat][0]}“ nič nie je</h3><p>${shopOff.size ? 'Skús zapnúť všetky obchody.' : 'Skús inú kategóriu.'}</p><button class="btn" id="resetFilters">Zobraziť všetko</button></div>`;
     return;
   }
-  const bestId = sortMode === 'desc' ? null : list.filter(v => v.best.stock !== 'out')
+  const bestId = sortMode !== 'asc' && sortMode !== 'stock' ? null : list.filter(v => v.best.stock !== 'out')
     .reduce((a, v) => (a === null || (priceOf(v.best) ?? 1e9) < (priceOf(a.best) ?? 1e9)) ? v : a, null)?.g.id;
   const sameKind = new Set(list.map(v => v.g._c)).size === 1;
-  $('results').innerHTML = `<div class="pgrid${reveal ? ' reveal' : ''}">` + list.map(v => groupHtml(v, sameKind && v.g.id === bestId && sortMode !== 'pack' && list.length > 1)).join('') + '</div>';
+  $('results').innerHTML = `<div class="pgrid${reveal ? ' reveal' : ''}">` + list.map(v => groupHtml(v, sameKind && v.g.id === bestId && list.length > 1)).join('') + '</div>';
 }
 function renderView(){
   renderSide();
@@ -1011,20 +1045,11 @@ function renderSide(){
   const names = [...new Set([...SHOPS.map(s => s.name), ...allResults.map(i => i.shop)])];
   const country = Object.fromEntries(SHOPS.map(s => [s.name, s.country]));
   const langs = Object.keys(LANGS).filter(l => l === 'EN' || allResults.some(i => langKey(i) === l));
-  const hasPack = allResults.some(i => num(i.price_per_pack) !== null);
-  if (!hasPack && sortMode === 'pack') sortMode = 'asc';
-  const hasTotal = allResults.some(i => num(i.total_eur) !== null);
-  if (!hasTotal && sortMode === 'total') sortMode = 'asc';
   const nOut = allResults.filter(i => i.stock === 'out').length;
   $('side').innerHTML = `
     <div class="side-head"><b>Filtre</b><button class="m-x" id="sideClose" aria-label="Zavrieť">✕</button></div>
     ${has ? `<div class="side-sec"><h3>Zoradiť</h3>
-      <select id="sortSel" aria-label="Zoradenie">
-        <option value="asc"${sortMode==='asc'?' selected':''}>Od najlacnejšieho</option>
-        <option value="desc"${sortMode==='desc'?' selected':''}>Od najdrahšieho</option>
-        ${hasPack ? `<option value="pack"${sortMode==='pack'?' selected':''}>Najlacnejší booster</option>` : ''}
-        ${hasTotal ? `<option value="total"${sortMode==='total'?' selected':''}>Najlacnejšie s dopravou</option>` : ''}
-      </select>
+      ${sortSelect('sortSel')}
       ${nOut ? `<label class="opt" style="margin-top:6px"><input type="checkbox" id="outChk"${showOut ? ' checked' : ''}> Zobraziť aj vypredané (${nOut})</label>` : ''}
     </div>` : ''}
     <div class="side-sec"><h3>Kategória</h3>
@@ -1057,6 +1082,7 @@ function renderSide(){
 function openSide(){ $('side').classList.add('open'); $('sideBackdrop').classList.add('show'); }
 function closeSide(){ $('side').classList.remove('open'); $('sideBackdrop').classList.remove('show'); }
 $('sideBackdrop').addEventListener('click', closeSide);
+$('status').addEventListener('change', e => { if (e.target.id === 'sortTop') { sortMode = e.target.value; renderView(); } });
 function pickCat(k){ cat = k; renderView(); }
 $('catBar').addEventListener('click', e => { if (e.target.closest('#filterPill')) { openSide(); return; } const c = e.target.closest('[data-cat]'); if (c) pickCat(c.dataset.cat); });
 $('side').addEventListener('click', e => {
