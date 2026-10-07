@@ -186,60 +186,39 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
-# Každé vlákno má vlastné HTTP spojenie (requests.Session nie je bezpečná pre viac vlákien).
-# POZOR: názov _thread_local nepoužívaj nikde inde v tomto súbore.
-_thread_local = threading.local()
+# Jedno zdieľané HTTP spojenie pre všetky vlákna – tak to fungovalo od začiatku a obchody to
+# akceptujú (menej nových spojení ako pri samostatnom spojení pre každé vlákno).
+_session = None
+_session_lock = threading.Lock()
 
 
 def http():
-    s = getattr(_thread_local, "session", None)
-    if s is None:
-        s = _thread_local.session = requests.Session()
-        s.headers.update(HEADERS)
-        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
-        s.mount("https://", adapter)
-        s.mount("http://", adapter)
-    return s
-
-
-MAX_PAGE_BYTES = 8 * 1024 * 1024
+    global _session
+    if _session is None:
+        with _session_lock:
+            if _session is None:
+                s = requests.Session()
+                s.headers.update(HEADERS)
+                adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=50)
+                s.mount("https://", adapter)
+                s.mount("http://", adapter)
+                _session = s
+    return _session
 
 
 def fetch(url, timeout=SEARCH_TIMEOUT):
-    """(odpoveď alebo None, info). Pri chybe nikdy nevyhodí výnimku.
-    Celé stiahnutie má pevný limit (timeout + 3 s). Samotný timeout v requests platí len
-    na jednotlivé kúsky dát – obchod, ktorý posiela stránku po kvapkách, by inak vlákno
-    zablokoval na neurčito."""
+    """(odpoveď alebo None, info). Pri chybe nikdy nevyhodí výnimku."""
     start = time.monotonic()
-    deadline = start + timeout + 3
     info = {"url": url, "http_status": None, "status": "http_ok", "error": ""}
     resp = None
-    r = None
     try:
-        r = http().get(url, timeout=(3, timeout), allow_redirects=True, stream=True)
+        r = http().get(url, timeout=(4, timeout), allow_redirects=True)
         info["http_status"] = r.status_code
         if r.status_code == 200:
-            chunks, size = [], 0
-            read1 = getattr(r.raw, "read1", None)   # urllib3 2.x: vráti hneď to, čo už prišlo
-            parts = (iter(lambda: read1(65536, decode_content=True), b"") if read1
-                     else r.iter_content(65536))
-            for chunk in parts:
-                chunks.append(chunk)
-                size += len(chunk)
-                if time.monotonic() > deadline:
-                    raise requests.Timeout("celková doba sťahovania prekročená")
-                if size > MAX_PAGE_BYTES:
-                    r.close()
-                    break
-            r._content = b"".join(chunks)
-            r._content_consumed = True
             resp = r
         else:
             info.update(status="http_error", error=f"HTTP {r.status_code}")
-            r.close()
     except requests.Timeout:
-        if r is not None:
-            r.close()
         info.update(status="timeout", error="Obchod neodpovedal včas")
     except Exception as e:
         info.update(status="request_error", error=str(e)[:200])
@@ -771,6 +750,7 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT):
         debug["url"] = url
         resp, info = fetch(url, timeout)
         debug["http_status"] = info["http_status"]
+        debug["fetch_ms"] = info.get("elapsed_ms")
         if not resp:
             debug.update(status=info["status"], error=info["error"])
             return results, debug
