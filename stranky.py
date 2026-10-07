@@ -30,10 +30,25 @@ OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "prevádzkovateľ CardRadar")
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "") or os.environ.get("SMTP_FROM", "")
 ALLOW_INDEXING = os.environ.get("ALLOW_INDEXING", "0") == "1"
 
+# Admin prihlásenie: po prvom /admin/...?key=HESLO sa uloží cookie (app.py, admin_login).
+# V cookie nie je samotné heslo, len podpis odvodený z neho – zmenou ADMIN_KEY sa všetci odhlásia.
+ADMIN_COOKIE = "cr_admin"
+
+
+def admin_cookie_value():
+    if not ADMIN_KEY:
+        return ""
+    return hmac.new(ADMIN_KEY.encode(), b"cardradar-admin-v1", "sha256").hexdigest()
+
 
 def is_admin():
+    if not ADMIN_KEY:
+        return False
+    cookie = request.cookies.get(ADMIN_COOKIE, "")
+    if cookie and hmac.compare_digest(cookie.encode(), admin_cookie_value().encode()):
+        return True
     key = request.values.get("key", "")
-    return bool(ADMIN_KEY) and hmac.compare_digest(key.encode(), ADMIN_KEY.encode())
+    return bool(key) and hmac.compare_digest(key.encode(), ADMIN_KEY.encode())
 
 
 # =========================================================
@@ -327,7 +342,7 @@ def robots_txt():
 
 
 # =========================================================
-# ADMIN: KONTROLA HĽADANIA (/admin/test?key=...)
+# ADMIN: KONTROLA HĽADANIA (/admin/test)
 # Beží na pozadí, priebeh sa ukladá do databázy (vidia ho všetky procesy).
 # =========================================================
 
@@ -450,8 +465,9 @@ def _report_html(state):
                    + (f"<p>Rovnaký produkt v rôznych obchodoch, ale nespojený:</p><ul>{miss}</ul>" if miss else "")
                    + ("" if lines or miss else "<p class='ok'>Bez problémov.</p>") + "</details>")
     when = datetime.fromtimestamp(state.get("finished", time.time()), timezone.utc).strftime("%d.%m. %H:%M UTC")
-    again = "/admin/test?key=" + urllib.parse.quote(request.args.get("key", "")) + "&start=1"
-    return (f"<h1>Kontrola hľadania</h1><p>Dokončené {when}. <a href='{e(again)}'>Spustiť znova</a></p>"
+    again = "/admin/test?start=1"
+    return (f"<h1>Kontrola hľadania</h1><p>Dokončené {when}. <a href='{e(again)}'>Spustiť znova</a> · "
+            f"<a href='/admin/logout'>Odhlásiť admina</a></p>"
             f"<h2>Obchody</h2><div class='wrap'><table><tr><th>Obchod</th><th>Odpovedal</th><th>Ponúk</th>"
             f"<th>Čas</th><th>Chyby</th></tr>{rows}</table></div>"
             f"<h2>Typy problémov</h2><ul>{kinds_html}</ul><h2>Hľadania</h2>{blocks}")
@@ -476,7 +492,8 @@ def admin_test():
                                      f"<div class='bar'><i style='width:{pct}%'></i></div>"
                                      f"<p><small>Stránka sa obnovuje sama, trvá to 1 – 2 minúty.</small></p></div>",
                     back=False)
-        resp.headers["Refresh"] = "4"
+        # obnovuje sa na /admin/test (bez start=1), inak by sa kontrola spúšťala stále dookola
+        resp.headers["Refresh"] = "4; url=/admin/test"
         return resp
     if request.args.get("format") == "json":
         return jsonify(state)
@@ -484,7 +501,7 @@ def admin_test():
 
 
 # =========================================================
-# ADMIN: OBCHODY (/admin/obchody?key=...)
+# ADMIN: OBCHODY (/admin/obchody)
 # Otestuješ ľubovoľný e-shop a jedným ťuknutím ho zapneš / vypneš.
 # =========================================================
 
@@ -492,8 +509,7 @@ def admin_obchody():
     e = html.escape
     if not is_admin():
         return page("Nepovolené", "<h1>Nepovolené</h1><p>Pridaj ?key=ADMIN_KEY</p>", status=403)
-    key = request.values.get("key", "")
-    base = "/admin/obchody?key=" + urllib.parse.quote(key)
+    base = "/admin/obchody"
     saved = O.extra_shops()
 
     if request.method == "POST":
@@ -513,20 +529,19 @@ def admin_obchody():
             O.save_extra_shops([s for s in saved if s["name"] != request.form.get("name")])
         return redirect(base, code=303)
 
-    hidden = f"<input type=hidden name=key value='{e(key)}'>"
     h = "<h1>Obchody</h1><h2>Zapnuté obchody</h2><ul>"
     for s in O.active_shops():
         kind = "katalóg" if O.is_catalog(s) else "vyhľadávanie"
         h += f"<li><b>{e(s['name'])}</b> <small>{e(s['country'])} · {kind}</small>"
         if s.get("_extra"):
-            h += (f"<form method=post class=row>{hidden}<input type=hidden name=act value=remove>"
+            h += (f"<form method=post class=row><input type=hidden name=act value=remove>"
                   f"<input type=hidden name=name value='{e(s['name'])}'><button>Vypnúť</button></form>")
         h += "</li>"
     h += "</ul><p><small>Obchody bez tlačidla Vypnúť sú v súbore obchody.py (zoznam SHOPS).</small></p>"
 
     test = request.args.get("test", "").strip()
     q = request.args.get("q", "").strip() or "pikachu"
-    h += (f"<h2>Otestovať obchod</h2><form class=row>{hidden}"
+    h += (f"<h2>Otestovať obchod</h2><form class=row>"
           f"<input name=test placeholder='https://www.obchod.cz' value='{e(test)}' style='flex:1'>"
           f"<input name=q value='{e(q)}' style='width:130px'><button>Test</button></form>")
     if test:
@@ -542,19 +557,19 @@ def admin_obchody():
             h += "<p class=ok>Funguje. Ukážka:</p><ul>" + "".join(
                 f"<li>{e(x['title'])} – <b>{x['price_eur']:.2f} €</b> <small>{e(x['stock'] or '?')}</small></li>"
                 for x in r["sample"]) + "</ul>"
-            h += (f"<form method=post class=row>{hidden}<input type=hidden name=act value=add>"
+            h += (f"<form method=post class=row><input type=hidden name=act value=add>"
                   f"<input type=hidden name=config value='{e(json.dumps(r['config']))}'>"
                   f"<input name=name value='{e(r['config']['name'])}'><button>Zapnúť obchod</button></form>"
                   f"<p><small>Skontroluj ceny v ukážke. Ak sedia, zapni.</small></p>")
 
     h += "<h2>Návrhy na otestovanie</h2><ul>" + "".join(
-        f"<li><a href='{e(base)}&test={urllib.parse.quote(u)}'>{e(n)}</a> <small>{e(u)}</small></li>"
+        f"<li><a href='{e(base)}?test={urllib.parse.quote(u)}'>{e(n)}</a> <small>{e(u)}</small></li>"
         for n, u in O.KANDIDATI) + "</ul>"
     return page("Obchody", h, back=False)
 
 
 # =========================================================
-# ADMIN: KATALÓGY (/admin/katalog?key=...  a  &name=imago&refresh=1)
+# ADMIN: KATALÓGY (/admin/katalog  a  /admin/katalog?name=imago&refresh=1)
 # =========================================================
 
 def admin_katalog():
@@ -780,7 +795,7 @@ def send_report(state):
             + (f"<h3 style='color:#d4334b'>Problémy</h3><ul>{''.join(f'<li>{e(p)}</li>' for p in problems)}</ul>"
                if problems else "<p style='color:#0a8a4a'><b>Všetko funguje.</b></p>")
             + f"<h3>OK</h3><ul>{''.join(f'<li>{e(x)}</li>' for x in ok)}</ul>"
-            f"<p>Detail: /admin/test?key=…</p></div>")
+            f"<p>Detail: <a href='{e(PUBLIC_URL)}/admin/test'>{e(PUBLIC_URL)}/admin/test</a></p></div>")
     return strazca.send_admin_mail(ADMIN_EMAIL, subject, text, body)
 
 
@@ -803,7 +818,7 @@ def _report_loop():
 
 
 def admin_report():
-    """/admin/report?key=... – ukáže zhrnutie poslednej kontroly; &send=1 ho pošle e-mailom."""
+    """/admin/report – ukáže zhrnutie poslednej kontroly; ?send=1 ho pošle e-mailom."""
     if not is_admin():
         return jsonify({"error": "Nepovolené."}), 403
     state = json.loads(O.meta_get("selftest") or "{}")
