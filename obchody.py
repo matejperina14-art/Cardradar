@@ -202,19 +202,44 @@ def http():
     return s
 
 
+MAX_PAGE_BYTES = 8 * 1024 * 1024
+
+
 def fetch(url, timeout=SEARCH_TIMEOUT):
-    """(odpoveď alebo None, info). Pri chybe nikdy nevyhodí výnimku."""
+    """(odpoveď alebo None, info). Pri chybe nikdy nevyhodí výnimku.
+    Celé stiahnutie má pevný limit (timeout + 3 s). Samotný timeout v requests platí len
+    na jednotlivé kúsky dát – obchod, ktorý posiela stránku po kvapkách, by inak vlákno
+    zablokoval na neurčito."""
     start = time.monotonic()
+    deadline = start + timeout + 3
     info = {"url": url, "http_status": None, "status": "http_ok", "error": ""}
     resp = None
+    r = None
     try:
-        r = http().get(url, timeout=(3, timeout), allow_redirects=True)
+        r = http().get(url, timeout=(3, timeout), allow_redirects=True, stream=True)
         info["http_status"] = r.status_code
         if r.status_code == 200:
+            chunks, size = [], 0
+            read1 = getattr(r.raw, "read1", None)   # urllib3 2.x: vráti hneď to, čo už prišlo
+            parts = (iter(lambda: read1(65536, decode_content=True), b"") if read1
+                     else r.iter_content(65536))
+            for chunk in parts:
+                chunks.append(chunk)
+                size += len(chunk)
+                if time.monotonic() > deadline:
+                    raise requests.Timeout("celková doba sťahovania prekročená")
+                if size > MAX_PAGE_BYTES:
+                    r.close()
+                    break
+            r._content = b"".join(chunks)
+            r._content_consumed = True
             resp = r
         else:
             info.update(status="http_error", error=f"HTTP {r.status_code}")
+            r.close()
     except requests.Timeout:
+        if r is not None:
+            r.close()
         info.update(status="timeout", error="Obchod neodpovedal včas")
     except Exception as e:
         info.update(status="request_error", error=str(e)[:200])
@@ -225,7 +250,12 @@ def fetch(url, timeout=SEARCH_TIMEOUT):
 # Zdieľané vlákna
 SHOP_POOL = ThreadPoolExecutor(max_workers=40, thread_name_prefix="shop")
 IMAGE_POOL = ThreadPoolExecutor(max_workers=10, thread_name_prefix="img")
-SMALL_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="small")
+# REFRESH_POOL: obnova starších výsledkov na pozadí.
+# JSON_POOL: drobné požiadavky (Shopify sklad / obrázky). Úlohy v ňom už nič ďalšie
+# nespúšťajú – predtým jeden pool čakal sám na seba a zasekol celé hľadanie.
+REFRESH_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="refresh")
+JSON_POOL = ThreadPoolExecutor(max_workers=12, thread_name_prefix="json")
+SMALL_POOL = JSON_POOL   # starý názov (spätná kompatibilita)
 BG_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db")   # zápisy do DB po jednom
 
 
@@ -735,7 +765,7 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT):
     debug = _new_debug(shop, query)
     results = []
     # Shopify: JSON so skladom sa sťahuje súčasne s vyhľadávaním
-    shopify_fut = SMALL_POOL.submit(_shopify_suggest_raw, shop, query) if shop.get("shopify") else None
+    shopify_fut = JSON_POOL.submit(_shopify_suggest_raw, shop, query) if shop.get("shopify") else None
     try:
         url = shop["search_url"].format(q=urllib.parse.quote(query))
         debug["url"] = url
@@ -849,7 +879,8 @@ def _shopify_enrich(shop, results, products):
     # mimo prvých 10: /products/<handle>.js, najviac 8 naraz
     rest = [r for r in results if not r["stock"] and "/products/" in r["link"]][:8]
     if rest:
-        list(SMALL_POOL.map(_shopify_product_js, rest))
+        futs = [JSON_POOL.submit(_shopify_product_js, r) for r in rest]
+        wait(futs, timeout=5)   # nikdy nečaká donekonečna; čo nestihne, ostane bez skladu
 
 
 def _shopify_product_js(r):
@@ -1236,7 +1267,7 @@ def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT):
                     start = key not in _busy
                     _busy.add(key)
                 if start:
-                    SMALL_POOL.submit(_refresh, shop, query, key)
+                    REFRESH_POOL.submit(_refresh, shop, query, key)
             res, dbg = copy.deepcopy(ent[1]), copy.deepcopy(ent[2])
             dbg["cache"] = "stale" if age >= CACHE_FRESH else "hit"
         else:
@@ -1303,6 +1334,17 @@ def search_all(query, wait_all=False):
         unique[(r["shop"].lower(), r["link"].lower().rstrip("/"))] = r
     results = sorted(unique.values(), key=lambda r: r.get("price_eur") or 999999)
     return results, diagnostics
+
+
+def pool_stats():
+    """Pre /health: koľko úloh čaká vo vláknach (veľké číslo = niečo sa zasekáva)."""
+    def q(pool):
+        try:
+            return pool._work_queue.qsize()
+        except Exception:
+            return None
+    return {"shop_queue": q(SHOP_POOL), "refresh_queue": q(REFRESH_POOL), "json_queue": q(JSON_POOL),
+            "image_queue": q(IMAGE_POOL), "db_queue": q(BG_POOL)}
 
 
 def shops_status(diagnostics):
