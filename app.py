@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.0 – app.py
+CARD RADAR 7.2 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -9,7 +9,7 @@ Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroc
   static/     logo a ikony
 
 Premenné prostredia (Render → Environment):
-  ADMIN_KEY      heslo k /admin/... stránkam
+  ADMIN_KEY      heslo k /admin/... stránkam (a k detailu /health?key=...)
   PUBLIC_URL     hlavná adresa, napr. https://getcardradar.com
   DB_PATH        databáza na trvalom disku, napr. /var/data/cardradar.db
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM   e-maily strážcu
@@ -19,6 +19,7 @@ Premenné prostredia (Render → Environment):
 
 import gzip
 import hashlib
+import html
 import io
 import json
 import os
@@ -44,7 +45,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.1"
+VERSION = "7.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -80,6 +81,7 @@ LIMIT_SUGGEST = RateLimiter(120)
 LIMIT_IMAGES = RateLimiter(60)
 LIMIT_HISTORY = RateLimiter(60)
 LIMIT_ALERTS = RateLimiter(5, window=600)
+LIMIT_TOKEN = RateLimiter(20)   # potvrdenie / zrušenie strážcu (proti skúšaniu tokenov)
 LIMIT_GO = RateLimiter(60)   # počítanie klikov (presmerovanie funguje vždy, nad limit sa len nezapočíta)
 
 
@@ -120,19 +122,19 @@ def load_index():
             mtime = os.path.getmtime(path)
             if _index["path"] != path or _index["mtime"] != mtime:
                 with open(path, "r", encoding="utf-8") as f:
-                    html = f.read()
-                _index.update(path=path, mtime=mtime, html=html,
-                              etag=hashlib.md5(html.encode()).hexdigest()[:20])
+                    page_html = f.read()
+                _index.update(path=path, mtime=mtime, html=page_html,
+                              etag=hashlib.md5(page_html.encode()).hexdigest()[:20])
             return _index["html"]
     return None
 
 
 @app.get("/")
 def home():
-    html = load_index()
-    if html is None:
+    page_html = load_index()
+    if page_html is None:
         return Response("<h1>CardRadar</h1><p>index.html nebol nájdený.</p>", status=500, mimetype="text/html")
-    resp = Response(html, mimetype="text/html")
+    resp = Response(page_html, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-cache"
     resp.set_etag(_index["etag"])
     return resp.make_conditional(request)   # opakovaná návšteva = len „304 Not Modified“
@@ -236,11 +238,34 @@ def api_home():
 
 # =========================================================
 # STRÁŽCA CENY
+# Potvrdenie aj zrušenie: odkaz z e-mailu (GET) len ukáže stránku s tlačidlom,
+# zmena sa urobí až po kliknutí (POST). E-mailové služby a antivíry otvárajú
+# odkazy v e-mailoch automaticky – inak by strážcu zapli alebo zrušili samy.
 # =========================================================
 
 def site_url():
     """Adresa webu do e-mailov a odkazov (za Renderom príde požiadavka ako http, preto https)."""
     return strazca._site(strazca.PUBLIC_URL or request.url_root)
+
+
+def _token():
+    return L.clean_text(request.values.get("token", ""))[:100]
+
+
+def _token_page(title, text, action, token, button):
+    """Stránka s jedným tlačidlom, ktoré pošle token cez POST."""
+    body = (f"<div class='box'><h1>{html.escape(title)}</h1><p>{text}</p>"
+            f"<form method='post' action='{action}'>"
+            f"<input type='hidden' name='token' value='{html.escape(token)}'>"
+            f"<button type='submit' style='font-size:16px;padding:12px 22px'>{html.escape(button)}</button>"
+            f"</form></div>")
+    return S.page(title, body, back=False)
+
+
+def _alert_goal(target, title):
+    name = html.escape(title or "produkt")
+    return (f"bude <b>{name}</b> znova skladom" if strazca.is_stock_alert(target)
+            else f"<b>{name}</b> klesne na {html.escape(strazca.eur(target))} alebo menej")
 
 
 @app.post("/api/alerts")
@@ -254,27 +279,43 @@ def api_alerts():
     return jsonify(body), code
 
 
-@app.get("/alerts/confirm")
+@app.route("/alerts/confirm", methods=["GET", "POST"])
 def alerts_confirm():
-    token = L.clean_text(request.args.get("token", ""))
-    row = strazca.confirm_alert(token)
-    if not row:
+    if not LIMIT_TOKEN.allow():
+        return S.simple_page("Chvíľu počkaj", "Príliš veľa pokusov. Skús to o minútu.")
+    token = _token()
+    info = strazca.alert_by_token(token)
+    if not info:
         return S.simple_page("Odkaz neplatí", "Tento strážca už neexistuje alebo bol odkaz zmenený.")
-    target, title = row
-    import html
+    target, title, confirmed = info
     stop = html.escape(f"{site_url()}/alerts/stop?token={urllib.parse.quote(token)}")
-    name = html.escape(title or "produkt")
-    goal = (f"bude {name} znova skladom" if strazca.is_stock_alert(target)
-            else f"{name} klesne na {strazca.eur(target)} alebo menej")
-    return S.simple_page("Strážca je zapnutý 🔔",
-                         f"Napíšeme ti, keď {goal}.<br><br><a href='{stop}'>Zrušiť strážcu</a>")
+
+    if request.method == "POST" or confirmed:
+        if not confirmed:
+            strazca.confirm_alert(token)
+        return S.simple_page("Strážca je zapnutý 🔔",
+                             f"Napíšeme ti, keď {_alert_goal(target, title)}.<br><br>"
+                             f"<a href='{stop}'>Zrušiť strážcu</a>")
+    return _token_page("Potvrď strážcu", f"Napíšeme ti, keď {_alert_goal(target, title)}.",
+                       "/alerts/confirm", token, "Potvrdiť strážcu")
 
 
-@app.get("/alerts/stop")
+@app.route("/alerts/stop", methods=["GET", "POST"])
 def alerts_stop():
-    if strazca.stop_alert(L.clean_text(request.args.get("token", ""))):
-        return S.simple_page("Strážca zrušený", "Viac ti o tomto produkte písať nebudeme.")
-    return S.simple_page("Hotovo", "Tento strážca už bol zrušený.")
+    if not LIMIT_TOKEN.allow():
+        return S.simple_page("Chvíľu počkaj", "Príliš veľa pokusov. Skús to o minútu.")
+    token = _token()
+    # POST: tlačidlo na stránke alebo „Odhlásiť“ priamo v Gmaile / Apple Mail (List-Unsubscribe-Post)
+    if request.method == "POST":
+        if strazca.stop_alert(token):
+            return S.simple_page("Strážca zrušený", "Viac ti o tomto produkte písať nebudeme.")
+        return S.simple_page("Hotovo", "Tento strážca už bol zrušený.")
+    info = strazca.alert_by_token(token)
+    if not info:
+        return S.simple_page("Hotovo", "Tento strážca už bol zrušený.")
+    target, title, _ = info
+    return _token_page("Zrušiť strážcu?", f"Prestaneme ti písať, keď {_alert_goal(target, title)}.",
+                       "/alerts/stop", token, "Áno, zrušiť strážcu")
 
 
 # =========================================================
@@ -334,8 +375,6 @@ def _static_report():
     if not os.path.isdir(STATIC_DIR):
         return {"static_exists": False, "static_files": []}
     files = sorted(os.listdir(STATIC_DIR))[:50]
-    needed = ["cr-logo.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon-32.png",
-              "apple-touch-icon.png"]
     used = {}
     for role in ICON_ROLES:
         p = _auto_pick(role)
@@ -347,8 +386,17 @@ def _static_report():
 
 @app.get("/health")
 def health():
+    """Verejne len stav (pre Render). Detail: /health?key=ADMIN_KEY"""
+    problems = []
+    if load_index() is None:
+        problems.append("index.html chýba")
+    if O.db_problem():
+        problems.append("databáza")
+    basic = {"service": "CardRadar", "status": "ok" if not problems else "warning", "version": VERSION}
+    if not S.is_admin():
+        return jsonify(basic)
     return jsonify({
-        "service": "CardRadar", "status": "ok", "version": VERSION,
+        **basic, "problems": problems,
         "index_exists": load_index() is not None, "html_parser": O.HTML_PARSER,
         "active_shops": [f"{s['name']} ({s['country']})" for s in O.active_shops()],
         "alerts_enabled": strazca.ALERTS_ENABLED, **kurz_info(),
@@ -499,6 +547,8 @@ def _logo_source():
         if p:
             return p
     return None
+
+
 ICON_SIZES = {"favicon-16.png": 16, "favicon-32.png": 32, "favicon-48.png": 48,
               "apple-touch-icon.png": 180, "apple-touch-icon-precomposed.png": 180,
               "icon-192.png": 192, "icon-512.png": 512, "icon-maskable-512.png": 512}
