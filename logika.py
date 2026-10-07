@@ -403,11 +403,30 @@ def to_float(value):
         return None
 
 
-def parse_price_raw(text):
-    """(suma, 'EUR' | 'CZK') alebo (None, ''). Ceny 'bez DPH' a úspory sa ignorujú."""
-    text = clean_text(text)
+# Čísla, ktoré nie sú cena a mohli by sa „zlepiť“ s cenou vedľa nich:
+# „PSA 10 536 Kč“ -> 10 536 Kč, „Mew ex 88 530 Kč“ -> 88 530 Kč, „Kód: 12345“...
+_NOT_PRICE_RE = re.compile(
+    r"\b(?:psa|cgc|bgs|sgc|tag|ace|grade[d]?)\s*\d{1,2}(?:[.,]5)?\b"
+    r"|\b\d{1,4}\s*/\s*\d{1,4}\b|#\s?\d+"
+    r"|\b(?:k[óo]d|code|ean|sku|katalogov\w*\s+[čc][íi]slo|[čc]\.)\s*:?\s*[\w-]*\d[\w-]*"
+    r"|\b\d+\s*(?:ks|kus\w*|pcs|x)\b|\(\s*\d+\s*\)", re.I)
+
+
+def _strip_title(text, title):
+    """Z textu dlaždice odstráni názov produktu (čísla v názve nie sú cena)."""
+    title = clean_text(title)
+    if title and len(title) >= 4:
+        text = re.sub(re.escape(title), " ", text, flags=re.I)
+    return text
+
+
+def parse_price_raw(text, title=""):
+    """(suma, 'EUR' | 'CZK') alebo (None, ''). Ceny 'bez DPH' a úspory sa ignorujú.
+    title = názov produktu; odstráni sa z textu, aby sa číslo z názvu nezlepilo s cenou."""
+    text = _strip_title(clean_text(text), title)
     text = _NOISE_RE.sub(" ", _EX_VAT.sub(" ", text))
-    if not text:
+    text = _NOT_PRICE_RE.sub(" | ", text)   # oddeľovač, nie medzera – nič sa nespojí
+    if not text.strip(" |"):
         return None, ""
     for rx in _EUR_RES:
         m = rx.search(text)
@@ -420,9 +439,28 @@ def parse_price_raw(text):
     return None, ""
 
 
-def parse_price(text):
+# Rozumné hranice ceny v € – čo je mimo, je takmer isto zle prečítané
+_GRADED_RE = re.compile(r"\b(?:psa|cgc|bgs|sgc|graded|ohodnocen\w*|gradovan\w*)\b", re.I)
+_SEALED_TYPE_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|"
+                             r"blister|display|deck|\bbox\b|chest|bal[íi][čc]", re.I)
+
+
+def price_plausible(title, eur):
+    """False = cena je nezmyselná pre tento typ produktu (chyba čítania)."""
+    if not eur or eur < 0.1:
+        return False
+    if is_combo(title) or _BULK_RE.search(title or ""):
+        return eur <= 20000
+    if _SEALED_TYPE_RE.search(title or ""):
+        return eur <= 6000
+    if _GRADED_RE.search(title or ""):
+        return eur <= 15000
+    return eur <= 3000   # jednotlivá karta bez gradingu
+
+
+def parse_price(text, title=""):
     """Cena v EUR (Kč sa prepočíta aktuálnym kurzom)."""
-    value, cur = parse_price_raw(text)
+    value, cur = parse_price_raw(text, title)
     if value is None:
         return None
     return czk_to_eur(value) if cur == "CZK" else value
