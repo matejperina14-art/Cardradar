@@ -79,18 +79,56 @@ SHOPS = [
      "base_url": "https://www.cardyx.sk/",
      "search_url": "https://www.cardyx.sk/search?q={q}",
      "link_selector": 'a[href*="/products/"]'},
+    # Shoptet obchody: celý Pokémon sortiment z kategórií (raz za hodinu, všetky strany);
+    # kým sa katalóg načíta (alebo keby kategórie nefungovali), hľadá sa cez search_url.
+    # Kategórie sú z menu obchodu (október 2026) – keď obchod pridá novú, doplň ju sem.
     {"name": "TCG Zone Nitra", "country": "SK", "enabled": True, "loose_set": True,
      "base_url": "https://www.tcgzonenitra.sk/",
      "search_url": "https://www.tcgzonenitra.sk/vyhladavanie/?string={q}",
-     "link_selector": "div.product a.name"},
+     "link_selector": "div.product a.name",
+     "catalog": [
+         "https://www.tcgzonenitra.sk/pokemon/",
+         "https://www.tcgzonenitra.sk/booster-packy/",
+         "https://www.tcgzonenitra.sk/mystery-pokemon-balicky/",
+         "https://www.tcgzonenitra.sk/single-karty/",
+         "https://www.tcgzonenitra.sk/single-karty-svet-2/",
+     ],
+     "max_pages": 150},
     {"name": "Beardex", "country": "SK", "enabled": True,
      "base_url": "https://www.beardex.eu/",
      "search_url": "https://www.beardex.eu/vyhladavanie/?string={q}",
-     "link_selector": "div.product a.name"},
+     "link_selector": "div.product a.name",
+     "catalog": [
+         "https://www.beardex.eu/pokemon-tcg/",
+         "https://www.beardex.eu/elite-trainer-box/",
+         "https://www.beardex.eu/booster/",
+         "https://www.beardex.eu/booster-bundle/",
+         "https://www.beardex.eu/booster-box/",
+         "https://www.beardex.eu/tinky/",
+         "https://www.beardex.eu/sealed-case/",
+         "https://www.beardex.eu/single-karty/",
+     ],
+     "max_pages": 100},
     {"name": "CardEmpire", "country": "SK", "enabled": True,
      "base_url": "https://www.cardempire.sk/",
      "search_url": "https://www.cardempire.sk/vyhladavanie/?string={q}",
-     "link_selector": "div.product a.name"},
+     "link_selector": "div.product a.name",
+     "catalog": [
+         "https://www.cardempire.sk/pokemon/",
+         "https://www.cardempire.sk/elite-trainer-boxy/",
+         "https://www.cardempire.sk/booster-boxy/",
+         "https://www.cardempire.sk/booster-bundle/",
+         "https://www.cardempire.sk/booster-packy/",
+         "https://www.cardempire.sk/sleeved-booster-pack/",
+         "https://www.cardempire.sk/premiove-boxy/",
+         "https://www.cardempire.sk/tinky/",
+         "https://www.cardempire.sk/blistre/",
+         "https://www.cardempire.sk/build-battle-kity/",
+         "https://www.cardempire.sk/build-battle-stadiumy/",
+         "https://www.cardempire.sk/sealed-casy/",
+         "https://www.cardempire.sk/pokemon-karty/",
+     ],
+     "max_pages": 100},
     {"name": "iHRYsko", "country": "SK", "enabled": True,
      "base_url": "https://www.ihrysko.sk/",
      "catalog": [
@@ -947,6 +985,7 @@ def _shopify_product_js(r):
 # =========================================================
 
 _cat_mem = {}            # obchod -> (monotonic, položky, čas aktualizácie)
+_crawl_sem = threading.Semaphore(1)
 _cat_lock = threading.Lock()
 _crawling = set()
 
@@ -1269,7 +1308,8 @@ def crawl_in_background(shop):
 
     def run():
         try:
-            crawl_shop(shop)
+            with _crawl_sem:   # katalógy sa sťahujú po jednom – slabý server inak nestíha hľadanie
+                crawl_shop(shop)
         except Exception as e:
             print(f"[CardRadar] Katalóg {shop['name']}: {e}", flush=True)
         finally:
