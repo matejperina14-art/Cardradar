@@ -335,7 +335,7 @@ def _email_html(*, preheader, heading, intro, title, shop, image, price_html,
     img_cell = (f'<td width="104" valign="top" style="padding:0 16px 0 0"><img src="{e(image)}" width="104" alt="" '
                 f'style="display:block;width:104px;height:auto;border-radius:10px;border:1px solid #e3e7f1;background:#fff"></td>'
                 if image else "")
-    logo = (f'<img src="{e(site)}/static/icon-192.png" width="40" height="40" alt="CardRadar" '
+    logo = (f'<img src="{e(site)}/static/cr-logo.png" width="40" height="40" alt="CardRadar" '
             f'style="display:block;border-radius:10px">' if site else "")
     font = "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
     return f"""<!doctype html>
