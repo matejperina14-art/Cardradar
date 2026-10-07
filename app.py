@@ -336,9 +336,13 @@ def _static_report():
     files = sorted(os.listdir(STATIC_DIR))[:50]
     needed = ["cr-logo.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon-32.png",
               "apple-touch-icon.png"]
+    used = {}
+    for role in ICON_ROLES:
+        p = _auto_pick(role)
+        used["cr-logo.png" if role == "logo" else role] = os.path.basename(p) if p else None
     return {"static_exists": True, "static_files": files,
-            "static_missing": [f for f in needed if f.lower() not in {x.lower() for x in files}],
-            "static_wrong_case": [x for x in files if x.lower() in needed and x not in needed]}
+            "icons_used": used,
+            "static_missing": [f for f, v in used.items() if not v]}
 
 
 @app.get("/health")
@@ -414,10 +418,76 @@ LOGO_ALTERNATIVES = ["icon-512.png", "icon-192.png", "apple-touch-icon.png", "ic
 SAFE_IMAGES = {"image/png", "image/jpeg", "image/gif", "image/webp"}   # tieto zobrazí každý prehliadač
 
 
+# Rola -> (presný názov, požadovaný rozmer, priehľadné pozadie?)
+ICON_ROLES = {
+    "logo":                  ("cr-logo.png", None, True),
+    "favicon-32.png":        ("favicon-32.png", 32, None),
+    "apple-touch-icon.png":  ("apple-touch-icon.png", 180, None),
+    "icon-192.png":          ("icon-192.png", 192, None),
+    "icon-512.png":          ("icon-512.png", 512, True),
+    "icon-maskable-512.png": ("icon-maskable-512.png", 512, False),
+}
+_scan = {"key": None, "images": []}
+
+
+def _image_info(path):
+    """(šírka, výška, priehľadný roh?) – PNG aj bez Pillow, ostatné cez Pillow."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(32)
+        w = h = None
+        if head[:8] == b"\x89PNG\r\n\x1a\n":
+            w, h = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+        transparent = None
+        if Image is not None:
+            with Image.open(path) as im:
+                w, h = im.size
+                rgba = im.convert("RGBA")
+                transparent = rgba.getpixel((0, 0))[3] < 128
+        return (w, h, transparent) if w and h else None
+    except Exception:
+        return None
+
+
+def _static_images():
+    """Obrázky v static/ s rozmermi (pamätá si ich, kým sa priečinok nezmení)."""
+    if not os.path.isdir(STATIC_DIR):
+        return []
+    files = sorted(f for f in os.listdir(STATIC_DIR)
+                   if os.path.splitext(f)[1].lower() in (".png", ".webp", ".jpg", ".jpeg", ".gif"))
+    key = tuple((f, os.path.getmtime(os.path.join(STATIC_DIR, f))) for f in files)
+    if key != _scan["key"]:
+        imgs = []
+        for f in files:
+            info = _image_info(os.path.join(STATIC_DIR, f))
+            if info:
+                imgs.append((f,) + info)
+        _scan.update(key=key, images=imgs)
+    return _scan["images"]
+
+
+def _auto_pick(role):
+    """Súbor pre rolu: presný názov, inak obrázok so správnym rozmerom (názov nevadí)."""
+    exact, size, transparent = ICON_ROLES[role]
+    p = _find_static(exact)
+    if p:
+        return p
+    squares = [i for i in _static_images() if i[1] == i[2]]
+    if role == "logo":
+        named = [i for i in squares if "logo" in i[0].lower()]
+        cands = named or [i for i in squares if i[3]] or squares
+        cands = sorted(cands, key=lambda i: -i[1])          # najväčšie
+    else:
+        cands = [i for i in squares if i[1] == size]
+        if transparent is not None and len(cands) > 1:
+            cands = sorted(cands, key=lambda i: i[3] is not transparent)
+    return os.path.join(STATIC_DIR, cands[0][0]) if cands else None
+
+
 def _logo_source():
     """Súbor s logom: cr-logo.png, inak súbor s „logo“ v názve, inak niektorá ikona.
     Web tak ukáže logo, aj keď sa súbor v GitHube premenuje."""
-    p = _find_static(ICON_FALLBACK)
+    p = _auto_pick("logo")
     if p:
         return p
     if os.path.isdir(STATIC_DIR):
@@ -518,7 +588,7 @@ def icon_report():
             "logo_format": _magic_mime(head) or "neznámy (prehliadač ho nemusí vedieť zobraziť)",
             "icons_from_logo": Image is not None}
     if os.path.basename(src) != ICON_FALLBACK:
-        info["upozornenie"] = f"cr-logo.png chýba, používa sa {os.path.basename(src)}"
+        info["poznamka"] = f"logo nájdené podľa rozmeru: {os.path.basename(src)}"
     if Image is not None:
         try:
             with Image.open(src) as im:
@@ -533,6 +603,10 @@ def icon_report():
 @app.get("/static/<path:name>")
 def static_files(name):
     base = os.path.basename(name).lower()
+    if base in ICON_ROLES and not _find_static(name):
+        found = _auto_pick(base)                         # napr. IMG_0857.png má 32×32 -> favicon
+        if found:
+            name = os.path.relpath(found, STATIC_DIR)
     if base in ICON_SIZES and not _find_static(name):   # vlastná ikona v static/ má prednosť
         made = _make_icon(base)
         if made:
@@ -542,8 +616,8 @@ def static_files(name):
         if src:
             with open(src, "rb") as f:
                 kind = _magic_mime(f.read(16))
-            if kind not in SAFE_IMAGES or os.path.basename(src) != ICON_FALLBACK:
-                made = _make_icon("logo")   # HEIC / AVIF / iný súbor -> PNG
+            if kind not in SAFE_IMAGES:
+                made = _make_icon("logo")   # HEIC / AVIF -> PNG
                 if made:
                     return _icon_response(*made)
             name = os.path.relpath(src, STATIC_DIR)
