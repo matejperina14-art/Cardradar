@@ -19,6 +19,7 @@ Premenné prostredia (Render → Environment):
 
 import gzip
 import hashlib
+import io
 import json
 import os
 import threading
@@ -27,6 +28,11 @@ import urllib.parse
 from collections import deque
 
 from flask import Flask, Response, jsonify, redirect, request
+
+try:
+    from PIL import Image   # Pillow: z loga vyrobí ikony v správnych veľkostiach (requirements.txt: Pillow)
+except ImportError:
+    Image = None
 
 import logika as L
 import obchody as O
@@ -339,7 +345,7 @@ def health():
         "alerts_enabled": strazca.ALERTS_ENABLED, **kurz_info(),
         "db_path": O.DB_PATH, "db_persistent": O.db_persistent(),
         **({"db_warning": O.db_problem()} if O.db_problem() else {}),
-        **_static_report(),
+        **_static_report(), "icons": icon_report(),
     })
 
 
@@ -347,7 +353,7 @@ def health():
 # LOGO, IKONY, MOBILNÁ APLIKÁCIA (PWA)
 # =========================================================
 
-ICON_V = "5"   # zvýš, keď zmeníš ikony – prehliadače si ich stiahnu znova
+ICON_V = "6"   # zvýš, keď zmeníš ikony – prehliadače si ich stiahnu znova
 _MIMES = {".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
           ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".ico": "image/x-icon",
           ".gif": "image/gif", ".avif": "image/avif",
@@ -391,17 +397,115 @@ def _find_static(name):
     return None
 
 
-# Ikony, ktoré prehliadač / mobil / e-maily pýtajú. Ak súbor v static/ chýba,
-# pošle sa logo cr-logo.png – na záložke tak nikdy nie je prázdna zemeguľa.
+# =========================================================
+# IKONY Z LOGA
+# Všetky ikony (záložka, iPhone, Android, nová karta) sa vyrábajú z static/cr-logo.png
+# v presných veľkostiach a ako skutočné PNG / ICO – aj keď je logo veľké alebo v inom
+# formáte (WebP, JPG). Bez Pillow sa pošle samotné logo.
+# =========================================================
+
 ICON_FALLBACK = "cr-logo.png"
-ICON_NAMES = {"favicon-32.png", "favicon-16.png", "icon-192.png", "icon-512.png",
-              "icon-maskable-512.png", "apple-touch-icon.png", "apple-touch-icon-precomposed.png"}
+ICON_SIZES = {"favicon-16.png": 16, "favicon-32.png": 32, "favicon-48.png": 48,
+              "apple-touch-icon.png": 180, "apple-touch-icon-precomposed.png": 180,
+              "icon-192.png": 192, "icon-512.png": 512, "icon-maskable-512.png": 512}
+ICON_BG = (16, 27, 68, 255)   # tmavomodrá ako hlavička webu (iPhone nevie priehľadné ikony)
+_icon_mem = {}
+
+
+def _magic_mime(data):
+    """Skutočný formát obrázka podľa obsahu, nie podľa koncovky súboru."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:4] == b"\x00\x00\x01\x00":
+        return "image/x-icon"
+    if data[4:12] in (b"ftypavif", b"ftypavis"):
+        return "image/avif"
+    return None
+
+
+def _make_icon(name):
+    """(dáta, mime) ikony vyrobenej z loga, alebo None."""
+    src = _find_static(ICON_FALLBACK)
+    if not src or Image is None:
+        return None
+    key = (name, os.path.getmtime(src))
+    if key in _icon_mem:
+        return _icon_mem[key]
+    out = None
+    try:
+        with Image.open(src) as im:
+            im.load()
+            logo = im.convert("RGBA")
+        bbox = logo.getbbox()   # odstráni prázdny priehľadný okraj okolo loga
+        if bbox:
+            logo = logo.crop(bbox)
+        buf = io.BytesIO()
+        if name == "favicon.ico":
+            canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+            inner = logo.copy()
+            inner.thumbnail((256, 256), Image.LANCZOS)
+            canvas.alpha_composite(inner, ((256 - inner.width) // 2, (256 - inner.height) // 2))
+            canvas.save(buf, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+            out = (buf.getvalue(), "image/x-icon")
+        else:
+            size = ICON_SIZES[name]
+            solid = name.startswith("apple-touch") or "maskable" in name
+            pad = int(size * (0.14 if "maskable" in name else 0.08 if solid else 0))
+            canvas = Image.new("RGBA", (size, size), ICON_BG if solid else (0, 0, 0, 0))
+            inner = logo.copy()
+            inner.thumbnail((size - 2 * pad, size - 2 * pad), Image.LANCZOS)
+            canvas.alpha_composite(inner, ((size - inner.width) // 2, (size - inner.height) // 2))
+            if solid:
+                canvas = canvas.convert("RGB")
+            canvas.save(buf, format="PNG", optimize=True)
+            out = (buf.getvalue(), "image/png")
+    except Exception as e:
+        print(f"[CardRadar] Ikona {name} sa nedala vyrobiť z loga: {e}", flush=True)
+    _icon_mem[key] = out
+    return out
+
+
+def _icon_response(data, mime):
+    resp = Response(data, mimetype=mime)
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+def icon_report():
+    """Pre /health: stav loga a ikon."""
+    src = _find_static(ICON_FALLBACK)
+    if not src:
+        return {"logo": "CHÝBA static/cr-logo.png"}
+    with open(src, "rb") as f:
+        head = f.read(16)
+    info = {"logo": os.path.basename(src), "logo_kb": round(os.path.getsize(src) / 1024),
+            "logo_format": _magic_mime(head) or "neznámy", "icons_from_logo": Image is not None}
+    if Image is not None:
+        try:
+            with Image.open(src) as im:
+                info["logo_px"] = f"{im.width}x{im.height}"
+        except Exception as e:
+            info["logo_error"] = str(e)[:120]
+    else:
+        info["tip"] = "Pridaj riadok Pillow do requirements.txt – ikony budú v presných veľkostiach."
+    return info
 
 
 @app.get("/static/<path:name>")
 def static_files(name):
+    base = os.path.basename(name).lower()
+    if base in ICON_SIZES:
+        made = _make_icon(base)
+        if made:
+            return _icon_response(*made)
     path = _find_static(name)
-    if not path and os.path.basename(name).lower() in ICON_NAMES:
+    if not path and base in ICON_SIZES:
         path = _find_static(ICON_FALLBACK)
     mime = _MIMES.get(os.path.splitext(path or name)[1].lower())
     if not mime or not path:
@@ -414,6 +518,8 @@ def static_files(name):
         with open(path, "rb") as f:
             data = f.read()
         hit = _static_mem[path] = (mtime, _strip_png(data) if mime == "image/png" else data)
+    if mime.startswith("image/"):
+        mime = _magic_mime(hit[1][:16]) or mime   # WebP / JPG s koncovkou .png
     resp = Response(hit[1], mimetype=mime)
     resp.headers["Cache-Control"] = "public, max-age=86400"
     return resp
@@ -421,7 +527,8 @@ def static_files(name):
 
 @app.get("/favicon.ico")
 def favicon():
-    return static_files("favicon-32.png")   # chýba -> cr-logo.png
+    made = _make_icon("favicon.ico")
+    return _icon_response(*made) if made else static_files("favicon-32.png")
 
 
 @app.get("/apple-touch-icon.png")
@@ -439,7 +546,6 @@ def manifest():
         "start_url": "/?source=pwa", "scope": "/", "display": "standalone",
         "background_color": "#0a1422", "theme_color": "#101b44", "lang": "sk",
         "icons": [
-            {"src": "/static/cr-logo.png" + v, "sizes": "any", "type": "image/png"},
             {"src": "/static/icon-192.png" + v, "sizes": "192x192", "type": "image/png"},
             {"src": "/static/icon-512.png" + v, "sizes": "512x512", "type": "image/png"},
             {"src": "/static/icon-maskable-512.png" + v, "sizes": "512x512", "type": "image/png",
@@ -455,7 +561,7 @@ def manifest():
 # Obrázky zo static/: najprv sieť (nové logo sa ukáže hneď), cache len keď je offline.
 # Ukladajú sa len úspešné odpovede – predtým sa uložila aj chyba 404 a logo potom chýbalo navždy.
 SERVICE_WORKER = """
-const CACHE = 'cardradar-v12';
+const CACHE = 'cardradar-v13';
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.add('/')).catch(() => {}).then(() => self.skipWaiting()));
 });
