@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.5 – app.py
+CARD RADAR 7.6 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -48,7 +48,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.5"
+VERSION = "7.6"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -79,6 +79,7 @@ class RateLimiter:
             return True
 
 
+MAX_RESULTS = 600   # najviac ponúk v jednej odpovedi (najlacnejšie)
 LIMIT_SEARCH = RateLimiter(30)
 LIMIT_RETRY = RateLimiter(90)    # tiché dopĺňanie pomalých obchodov (r=1) sa nepočíta do LIMIT_SEARCH
 LIMIT_SUGGEST = RateLimiter(120)
@@ -177,13 +178,16 @@ def api_search():
     parsed = L.normalize_query(original)
     normalized = parsed["normalized"] or original
     results, diagnostics = O.search_all(normalized)
-    O.add_trends(results)
     # r=1 = stránka si potichu dopĺňa pomalé obchody, do „Najhľadanejšie“ sa to nepočíta
     O.save_history(results, log_query=None if request.args.get("r") else original)
+    # celkový počet aj s ponukami, ktoré katalógy pre veľké množstvo neposlali
+    total = len(results) + sum(max(0, (d.get("total_matches") or 0) - (d.get("results") or 0)) for d in diagnostics)
+    results = results[:MAX_RESULTS]   # „scarlet violet“ = tisíce ponúk; web by ich nevedel naraz zobraziť
+    O.add_trends(results)
     prices = [r["price_eur"] for r in results if r.get("price_eur")]
     payload = {
         "query": original, "normalized_query": normalized, "parsed": parsed, "results": results,
-        "summary": {"count": len(results), "lowest_eur": min(prices) if prices else None},
+        "summary": {"count": len(results), "total": total, "lowest_eur": min(prices) if prices else None},
         **kurz_info(), "shops": O.shops_status(diagnostics),
         "query_lang": L.query_language(original),
     }
