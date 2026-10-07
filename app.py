@@ -33,7 +33,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.0"
+VERSION = "7.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -69,6 +69,7 @@ LIMIT_SUGGEST = RateLimiter(120)
 LIMIT_IMAGES = RateLimiter(60)
 LIMIT_HISTORY = RateLimiter(60)
 LIMIT_ALERTS = RateLimiter(5, window=600)
+LIMIT_GO = RateLimiter(60)   # počítanie klikov (presmerovanie funguje vždy, nad limit sa len nezapočíta)
 
 
 def client_ip():
@@ -236,8 +237,9 @@ def api_alerts():
     if not LIMIT_ALERTS.allow():
         return too_many()
     d = json_body()
+    kind = "stock" if d.get("type") == "stock" else "price"   # type: "stock" = strážca naskladnenia
     code, body = strazca.create_alert(d.get("email", ""), d.get("link", ""), d.get("title", ""),
-                                      d.get("shop", ""), d.get("target"), site_url())
+                                      d.get("shop", ""), d.get("target"), site_url(), kind)
     return jsonify(body), code
 
 
@@ -250,9 +252,11 @@ def alerts_confirm():
     target, title = row
     import html
     stop = html.escape(f"{site_url()}/alerts/stop?token={urllib.parse.quote(token)}")
+    name = html.escape(title or "produkt")
+    goal = (f"bude {name} znova skladom" if strazca.is_stock_alert(target)
+            else f"{name} klesne na {strazca.eur(target)} alebo menej")
     return S.simple_page("Strážca je zapnutý 🔔",
-                         f"Napíšeme ti, keď {html.escape(title or 'produkt')} klesne na "
-                         f"{strazca.eur(target)} alebo menej.<br><br><a href='{stop}'>Zrušiť strážcu</a>")
+                         f"Napíšeme ti, keď {goal}.<br><br><a href='{stop}'>Zrušiť strážcu</a>")
 
 
 @app.get("/alerts/stop")
@@ -273,6 +277,24 @@ app.add_url_rule("/robots.txt", "robots", S.robots_txt)
 app.add_url_rule("/admin/test", "admin_test", S.admin_test)
 app.add_url_rule("/admin/obchody", "admin_obchody", S.admin_obchody, methods=["GET", "POST"])
 app.add_url_rule("/admin/katalog", "admin_katalog", S.admin_katalog)
+app.add_url_rule("/admin/report", "admin_report", S.admin_report)
+app.add_url_rule("/sety", "sets", S.sets_page)
+app.add_url_rule("/set/<slug>", "set_detail", S.set_page)
+app.add_url_rule("/sitemap.xml", "sitemap", S.sitemap_xml)
+
+
+@app.get("/go")
+def go():
+    """Odchod do obchodu: započíta klik a presmeruje (s utm alebo partnerským odkazom)."""
+    link = L.clean_text(request.args.get("u", ""))
+    if not O.is_allowed_link(link):
+        return redirect("/", code=302)
+    if LIMIT_GO.allow():
+        O.count_click(link)
+    resp = redirect(O.out_url(link), code=302)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return resp
 
 
 @app.get("/admin/cache")
@@ -315,7 +337,7 @@ def health():
         "active_shops": [f"{s['name']} ({s['country']})" for s in O.active_shops()],
         "alerts_enabled": strazca.ALERTS_ENABLED, **kurz_info(),
         "db_path": O.DB_PATH, "db_persistent": O.db_persistent(),
-        **({"db_warning": O.DB_WARNING} if O.DB_WARNING else {}),
+        **({"db_warning": O.db_problem()} if O.db_problem() else {}),
         **_static_report(),
     })
 
@@ -497,6 +519,8 @@ def finalize(resp):
 # =========================================================
 
 O.init_db()
+if O.db_problem():
+    print("[CardRadar] VAROVANIE: " + O.db_problem(), flush=True)
 O.start_background()
 S.start_background()
 strazca.start_background()
