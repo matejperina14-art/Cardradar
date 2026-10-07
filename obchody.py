@@ -333,11 +333,22 @@ def init_db():
         if "price_czk" not in cols:
             conn.execute("ALTER TABLE catalog_items ADD COLUMN price_czk REAL")
         _fix_czk_once(conn)
+        _drop_implausible(conn)
         _prune(conn)
         conn.commit()
     finally:
         conn.close()
     _load_czk()
+
+
+def _drop_implausible(conn):
+    """Zmaže z histórie a katalógu nezmyselné ceny (napr. 21 929 € za kartu)."""
+    for table in ("price_daily", "catalog_items"):
+        rows = conn.execute(f"SELECT rowid, title, price_eur FROM {table} WHERE price_eur > 2000").fetchall()
+        bad = [(rid,) for rid, title, price in rows if not L.price_plausible(title or "", price)]
+        if bad:
+            conn.executemany(f"DELETE FROM {table} WHERE rowid = ?", bad)
+            print(f"[CardRadar] {table}: zmazaných {len(bad)} nezmyselných cien", flush=True)
 
 
 def _fix_czk_once(conn):
@@ -517,12 +528,28 @@ def extract_image(a, base):
     return img_url(img, base) if img is not None else ""
 
 
+def _has_other_product(el, own_href):
+    """Obsahuje prvok odkaz na INÝ produkt? (potom to už nie je dlaždica jedného produktu)"""
+    own = (own_href or "").lower().rstrip("/").split("?")[0]
+    for x in el.find_all("a", href=True):
+        h = x["href"].lower().rstrip("/").split("?")[0]
+        if own and (h == own or own.endswith(h) or h.endswith(own)):
+            continue
+        if L.is_tcg_product(extract_title(x)):
+            return True
+    return False
+
+
 def find_block(a):
-    """Dlaždica produktu okolo odkazu (najbližší rodič s cenou), bez prečiarknutej ceny."""
+    """Dlaždica produktu okolo odkazu (najbližší rodič s cenou), bez prečiarknutej ceny.
+    Nikdy nevystúpi tak vysoko, aby obsahovala iný produkt – inak by sa zobrala jeho cena."""
     cur, best = a, None
+    own = urllib.parse.urlsplit(a.get("href") or "").path
     for level in range(1, 7):
         cur = cur.parent
         if not cur:
+            break
+        if _has_other_product(cur, own):
             break
         text = L.clean_text(cur.get_text(" ", strip=True))
         if text and any(c in text for c in ("€", "Kč", "CZK")) and len(text) < 1800:
@@ -657,14 +684,17 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT):
                 debug["match_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason=reason)
                 continue
-            amount, cur = L.parse_price_raw(block_text)
+            amount, cur = L.parse_price_raw(block_text, title)
             if amount is None and a.parent:
-                amount, cur = L.parse_price_raw(a.parent.get_text(" ", strip=True))
+                amount, cur = L.parse_price_raw(a.parent.get_text(" ", strip=True), title)
             if not amount or amount <= 0:
                 _log(debug, title=title, decision="filtered", reason="no_price")
                 continue
             price_czk = amount if cur == "CZK" else None
             price = L.czk_to_eur(amount) if price_czk else amount
+            if not L.price_plausible(title, price):
+                _log(debug, title=title, decision="filtered", reason=f"price_implausible:{amount} {cur}")
+                continue
             results.append(L.make_result(shop, title, price, href,
                                          extract_image(a, shop["base_url"]), detect_stock_el(block),
                                          price_czk=price_czk))
@@ -819,7 +849,7 @@ def _other_links(block, href, page_url):
     return len(other)
 
 
-def _parse_listing(shop, html, page_url):
+def _parse_listing(shop, html, page_url, debug=None):
     soup = BeautifulSoup(html, HTML_PARSER)
     host = host_of(shop["base_url"])
     by_href = {}
@@ -839,11 +869,19 @@ def _parse_listing(shop, html, page_url):
         block = find_block(a)
         if block is None or _other_links(block, href, page_url) > 3:
             continue   # menu, päta, zoznam – nie dlaždica produktu
-        amount, cur = L.parse_price_raw(block.get_text(" ", strip=True))
+        amount, cur = L.parse_price_raw(block.get_text(" ", strip=True), title)
         if not amount or amount <= 0:
             continue
         price_czk = amount if cur == "CZK" else None
         price = L.czk_to_eur(amount) if price_czk else amount
+        if not L.price_plausible(title, price):
+            if debug is not None:
+                debug.append({"title": title, "rejected": f"nezmyselná cena {amount} {cur}",
+                              "text": L.clean_text(block.get_text(" ", strip=True))[:300]})
+            continue
+        if debug is not None:
+            debug.append({"title": title, "price": amount, "currency": cur, "price_eur": round(price, 2),
+                          "text": L.clean_text(block.get_text(" ", strip=True))[:300]})
         image = extract_image(a, page_url)
         if image and shop.get("image_replace"):
             image = image.replace(*shop["image_replace"])
@@ -865,6 +903,17 @@ def _next_page(soup, page_url, n, host):
             if host_of(u) == host:
                 return u
     return None
+
+
+def debug_listing(shop, url=None):
+    """Pre admina: ako sa prečítala jedna strana katalógu (názov, cena, text dlaždice)."""
+    url = url if url and host_of(url) == host_of(shop["base_url"]) else shop["catalog"][0]
+    resp, info = fetch(url, timeout=15)
+    if not resp:
+        return {"url": url, "error": info["error"] or info["status"]}
+    rows = []
+    _parse_listing(shop, resp.text, url, debug=rows)
+    return {"url": url, "kurz_czk": L.KURZ["CZK"], "items": rows}
 
 
 def crawl_shop(shop):
@@ -960,6 +1009,8 @@ def crawl_feed(shop):
             price_czk = None
             if "CZK" in raw.upper() or "KČ" in raw.upper() or shop.get("currency") == "CZK":
                 price_czk, price = price, L.czk_to_eur(price)
+            if not L.price_plausible(title, price):
+                continue
             items[link] = {"link": link, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
                            "image": d.get("IMGURL") or d.get("IMAGE_LINK") or "",
                            "stock": _feed_stock(d)}
@@ -1023,6 +1074,8 @@ def catalog_scrape(shop, query):
             continue
         if not _matches(shop, it["title"], "", parsed, kind)[0]:
             debug["match_filtered"] += 1
+            continue
+        if not L.price_plausible(it["title"], it["price_eur"]):   # staršie zle prečítané položky
             continue
         results.append(L.make_result(shop, it["title"], it["price_eur"], it["link"], it["image"], it["stock"],
                                      price_czk=it.get("price_czk")))
