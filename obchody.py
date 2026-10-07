@@ -72,7 +72,10 @@ OK_STATUSES = ("ok", "no_results")
 # =========================================================
 
 SHOPS = [
+    # shopify_catalog = celý Pokémon katalóg cez Shopify JSON (všetky produkty, nie len 1. strana hľadania);
+    # kým sa načíta (alebo ak by JSON nefungoval), hľadá sa cez search_url
     {"name": "CardyX", "country": "SK", "enabled": True, "shopify": True,
+     "shopify_catalog": ["https://www.cardyx.sk/collections/pokemon"],
      "base_url": "https://www.cardyx.sk/",
      "search_url": "https://www.cardyx.sk/search?q={q}",
      "link_selector": 'a[href*="/products/"]'},
@@ -164,7 +167,27 @@ PLATFORM_PRESETS = {
 
 
 def is_catalog(shop):
-    return bool(shop.get("catalog") or shop.get("feed"))
+    return bool(shop.get("catalog") or shop.get("feed") or shop.get("shopify_catalog"))
+
+
+def is_local(shop):
+    """Hľadá sa len v našej databáze (žiadny internet) – môže bežať hneď v požiadavke."""
+    return is_catalog(shop) and not shop.get("search_url")
+
+
+def shop_query(query):
+    """Čo poslať do vyhľadávania obchodu. Kratšie = obchod vráti viac (napr. „pitch black“
+    namiesto „pitch black elite trainer box“, lebo obchod môže písať len „ETB“).
+    Presný typ produktu, set a číslo karty sa potom vyfiltrujú u nás."""
+    p = L.normalize_query(query)
+    set_name = p.get("set_name") or ""
+    if set_name and set_name not in L.SET_PARTS and set_name not in L.SERIE:
+        q = " ".join(x for x in (set_name, p.get("pokemon")) if x)
+    elif p.get("pokemon") and not p.get("card_number"):
+        q = " ".join(x for x in (p.get("pokemon"), p.get("suffix")) if x)
+    else:
+        q = p.get("normalized") or ""
+    return L.clean_text(q) or query
 
 
 def host_of(url):
@@ -739,24 +762,62 @@ def _matches(shop, title, extra, parsed, kind):
 # OBCHOD S VYHĽADÁVANÍM
 # =========================================================
 
-def scrape_search(shop, query, timeout=SEARCH_TIMEOUT):
+MAX_SEARCH_PAGES = 5        # koľko strán výsledkov vyhľadávania obchodu prejdeme
+SEARCH_PAGES_BUDGET = 12    # sekúnd na všetky strany spolu
+_page_cache = TTLCache(600, 120)   # stiahnuté stránky vyhľadávania (10 min)
+
+
+def fetch_page(url, timeout=SEARCH_TIMEOUT):
+    """(html alebo None, info) – rovnaká stránka sa 10 min nesťahuje znova."""
+    hit = _page_cache.get(url)
+    if hit is not None:
+        return hit, {"url": url, "http_status": 200, "status": "http_ok", "error": "", "elapsed_ms": 0, "cache": True}
+    resp, info = fetch(url, timeout)
+    if not resp:
+        return None, info
+    html = resp.text
+    _page_cache.set(url, html)
+    return html, info
+
+
+def scrape_search(shop, query, timeout=SEARCH_TIMEOUT, fetch_q=None):
+    """fetch_q = text pre vyhľadávanie obchodu (kratší); query = čo naozaj hľadáme (filter)."""
     start = time.monotonic()
     debug = _new_debug(shop, query)
     results = []
+    fetch_q = fetch_q or query
     # Shopify: JSON so skladom sa sťahuje súčasne s vyhľadávaním
-    shopify_fut = JSON_POOL.submit(_shopify_suggest_raw, shop, query) if shop.get("shopify") else None
+    shopify_fut = JSON_POOL.submit(_shopify_suggest_raw, shop, fetch_q) if shop.get("shopify") else None
     try:
-        url = shop["search_url"].format(q=urllib.parse.quote(query))
+        url = shop["search_url"].format(q=urllib.parse.quote(fetch_q))
         debug["url"] = url
-        resp, info = fetch(url, timeout)
+        html, info = fetch_page(url, timeout)
         debug["http_status"] = info["http_status"]
         debug["fetch_ms"] = info.get("elapsed_ms")
-        if not resp:
+        if not html:
             debug.update(status=info["status"], error=info["error"])
             return results, debug
 
-        soup = BeautifulSoup(resp.text, HTML_PARSER)
+        soup = BeautifulSoup(html, HTML_PARSER)
         links = soup.select(shop["link_selector"])
+        # ďalšie strany výsledkov (odkaz „ďalšia strana“ priamo z obchodu – funguje pre každú platformu)
+        page_url, n, visited, host = url, 1, {url}, host_of(shop["base_url"])
+        while (n < MAX_SEARCH_PAGES and len(links) >= 8 * n
+               and time.monotonic() - start < SEARCH_PAGES_BUDGET):
+            nxt = _next_page(soup, page_url, n, host)
+            if not nxt or nxt in visited:
+                break
+            visited.add(nxt)
+            html2, _ = fetch_page(nxt, timeout)
+            if not html2:
+                break
+            soup = BeautifulSoup(html2, HTML_PARSER)
+            more = soup.select(shop["link_selector"])
+            if not more:
+                break
+            links += more
+            page_url, n = nxt, n + 1
+        debug["pages"] = n
         debug["links_scanned"] = len(links)
         parsed = L.normalize_query(query)
         kind = L.classify_query(parsed)
@@ -1019,6 +1080,8 @@ def crawl_shop(shop):
     """Prejde katalóg obchodu a uloží ho. Vráti prehľad (pre admin)."""
     if shop.get("feed"):
         return crawl_feed(shop)
+    if shop.get("shopify_catalog"):
+        return crawl_shopify(shop)
     start = time.monotonic()
     host = host_of(shop["base_url"])
     items, pages, errors = {}, 0, []
@@ -1056,6 +1119,75 @@ def crawl_shop(shop):
     return {"shop": shop["name"], "items": len(result), "pages": pages, "errors": errors,
             "updated": updated, "elapsed_ms": round((time.monotonic() - start) * 1000),
             "sample": result[:10]}
+
+
+def _shopify_items(shop, products, pokemon_only=False):
+    base = shop["base_url"].rstrip("/")
+    items = []
+    for p in products or []:
+        title = L.clean_text(p.get("title"))
+        if not title or not p.get("handle"):
+            continue
+        if pokemon_only:
+            meta = L.fold(" ".join([title, str(p.get("product_type") or ""), " ".join(p.get("tags") or [])
+                                    if isinstance(p.get("tags"), list) else str(p.get("tags") or ""),
+                                    str(p.get("vendor") or "")]))
+            if "pokemon" not in meta:
+                continue
+        if not L.is_tcg_product(title):
+            continue
+        variants = p.get("variants") or []
+        avail = [v for v in variants if v.get("available")]
+        prices = [L.to_float(v.get("price")) for v in (avail or variants)]
+        prices = [x for x in prices if x]
+        if not prices:
+            continue
+        price = min(prices)
+        if not L.price_plausible(title, price):
+            continue
+        imgs = p.get("images") or []
+        img = imgs[0].get("src", "") if imgs and isinstance(imgs[0], dict) else ""
+        items.append({"link": f"{base}/products/{p['handle']}", "title": title, "price_eur": round(price, 2),
+                      "price_czk": None, "image": _shopify_img(img, 400) if img else "",
+                      "stock": "in" if avail else "out"})
+    return items
+
+
+def crawl_shopify(shop):
+    """Celý katalóg Shopify obchodu cez verejný JSON (/collections/<x>/products.json).
+    Ak kolekcia neexistuje, skúsi /products.json a nechá len Pokémon produkty."""
+    start = time.monotonic()
+    items, errors, pages = {}, [], 0
+    sources = [(c.rstrip("/") + "/products.json", False) for c in shop["shopify_catalog"]]
+    for src, pokemon_only in sources + [(shop["base_url"].rstrip("/") + "/products.json", True)]:
+        if items and pokemon_only:
+            break   # kolekcie fungovali, celý obchod netreba
+        for page in range(1, 41):
+            resp, info = fetch(f"{src}?limit=250&page={page}", timeout=20)
+            if not resp:
+                errors.append({"url": src, "page": page, "error": info["error"] or info["status"]})
+                break
+            try:
+                products = resp.json().get("products") or []
+            except Exception as e:
+                errors.append({"url": src, "page": page, "error": "nie je JSON: " + str(e)[:80]})
+                break
+            pages += 1
+            if not products:
+                break
+            for it in _shopify_items(shop, products, pokemon_only):
+                items[it["link"]] = it
+            if len(products) < 250:
+                break
+            time.sleep(0.5)
+    result = list(items.values())
+    updated = ""
+    if result:
+        updated = _save_catalog(shop["name"], result)
+        save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
+    return {"shop": shop["name"], "source": "shopify_json", "items": len(result), "pages": pages,
+            "errors": errors, "updated": updated,
+            "elapsed_ms": round((time.monotonic() - start) * 1000), "sample": result[:10]}
 
 
 def _tag(tag):
@@ -1233,7 +1365,7 @@ def clear_caches():
 
 
 def _scrape_and_store(shop, query, key, timeout):
-    res, dbg = scrape_search(shop, query, timeout)
+    res, dbg = scrape_search(shop, query, timeout, fetch_q=shop_query(query))
     if dbg["status"] in OK_STATUSES:
         _cache_put(key, res, dbg)
     return res, dbg
@@ -1253,10 +1385,15 @@ def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT, wait_inflig
     """Hľadanie v jednom obchode -> (výsledky, debug).
     wait_inflight=False: ak to isté práve hľadá iné vlákno, nečaká (vráti 'pending') –
     stránka si výsledok o chvíľu dotiahne z cache. Čakajúce vlákna predtým zapĺňali pool."""
+    res = dbg = None
     if is_catalog(shop):
         res, dbg = catalog_scrape(shop, query)
+        if dbg["status"] == "catalog_loading" and shop.get("search_url"):
+            res = dbg = None   # katalóg ešte nie je (alebo nefunguje) – hľadáme cez vyhľadávanie obchodu
+    if res is not None:
+        pass
     elif not use_cache:
-        res, dbg = scrape_search(shop, query, timeout)
+        res, dbg = scrape_search(shop, query, timeout, fetch_q=shop_query(query))
     else:
         key = shop["name"].lower() + "|" + L.clean_text(query).lower()
         res = dbg = None
@@ -1324,8 +1461,8 @@ def search_all(query, wait_all=False):
     # obchody s vyhľadávaním idú cez internet súbežne vo vláknach;
     # katalógy sú v našej databáze, tie sa prejdú hneď tu (nečakajú na voľné vlákno)
     started = time.monotonic()
-    futs = {s["name"]: SHOP_POOL.submit(run, s) for s in shops if not is_catalog(s)}
-    local = {s["name"]: run(s) for s in shops if is_catalog(s)}
+    futs = {s["name"]: SHOP_POOL.submit(run, s) for s in shops if not is_local(s)}
+    local = {s["name"]: run(s) for s in shops if is_local(s)}
     budget = SEARCH_TIMEOUT + 6 if wait_all else SEARCH_BUDGET
     wait(list(futs.values()), timeout=max(0.3, budget - (time.monotonic() - started)))
     results, diagnostics = [], []
