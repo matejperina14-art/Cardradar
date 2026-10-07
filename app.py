@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.6 – app.py
+CARD RADAR 7.7 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -48,7 +48,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.6"
+VERSION = "7.7"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -363,6 +363,42 @@ def admin_logout():
                                "prehliadača vymazané.</p></div>", back=True)
     resp.delete_cookie(S.ADMIN_COOKIE, path="/")
     return resp
+
+
+@app.get("/admin/obchod")
+def admin_obchod():
+    """Diagnostika: /admin/obchod?name=all&q=pikachu – priamo vyskúša obchody (bez cache)
+    a ukáže stav, HTTP kód, chybu, čas sťahovania a spracovania."""
+    if not S.is_admin():
+        return jsonify({"error": "Nepovolené."}), 403
+    q = L.clean_text(request.args.get("q", "")) or "pikachu"
+    norm = L.normalize_query(q)["normalized"] or q
+    name = L.clean_text(request.args.get("name", "all")).lower()
+    shops = [s for s in O.active_shops() if name == "all" or s["name"].lower() == name]
+    if not shops:
+        return jsonify({"error": "Neznámy obchod.", "shops": [s["name"] for s in O.active_shops()]}), 400
+
+    def one(shop):
+        t0 = time.monotonic()
+        try:
+            if O.is_catalog(shop):
+                res, dbg = O.catalog_scrape(shop, norm)
+            else:
+                res, dbg = O.scrape_search(shop, norm, 15)
+        except Exception as e:
+            res, dbg = [], {"status": "exception", "error": str(e)[:300]}
+        return {"shop": shop["name"], "typ": "katalóg" if O.is_catalog(shop) else "vyhľadávanie",
+                "status": dbg.get("status"), "http_status": dbg.get("http_status"), "error": dbg.get("error"),
+                "spolu_ms": round((time.monotonic() - t0) * 1000), "stiahnutie_ms": dbg.get("fetch_ms"),
+                "odkazov_na_stranke": dbg.get("links_scanned"), "vysledkov": len(res),
+                "ukazka": [f"{r['title']} – {r['price_eur']} €" for r in res[:4]],
+                "vyradene": [f"{d.get('title', '')[:60]} → {d.get('reason')}" for d in dbg.get("sample_decisions", [])
+                             if d.get("decision") == "filtered"][:6]}
+
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=8) as ex:
+        out = list(ex.map(one, shops))
+    return jsonify({"hladanie": norm, "pools": O.pool_stats(), "obchody": out})
 
 
 @app.get("/admin/cache")
