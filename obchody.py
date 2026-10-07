@@ -186,13 +186,15 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
-_local = threading.local()
+# Každé vlákno má vlastné HTTP spojenie (requests.Session nie je bezpečná pre viac vlákien).
+# POZOR: názov _thread_local nepoužívaj nikde inde v tomto súbore.
+_thread_local = threading.local()
 
 
 def http():
-    s = getattr(_local, "session", None)
+    s = getattr(_thread_local, "session", None)
     if s is None:
-        s = _local.session = requests.Session()
+        s = _thread_local.session = requests.Session()
         s.headers.update(HEADERS)
         adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
         s.mount("https://", adapter)
@@ -1045,7 +1047,8 @@ def crawl_shop(shop):
             "sample": result[:10]}
 
 
-def _local(tag):
+def _tag(tag):
+    """Názov XML značky bez menného priestoru, veľkými písmenami ({ns}item -> ITEM)."""
     return tag.rsplit("}", 1)[-1].upper()
 
 
@@ -1076,12 +1079,12 @@ def crawl_feed(shop):
             raise RuntimeError(f"HTTP {resp.status_code}")
         resp.raw.decode_content = True
         for _, el in ET.iterparse(resp.raw, events=("end",)):
-            if _local(el.tag) not in ("SHOPITEM", "ITEM", "ENTRY"):
+            if _tag(el.tag) not in ("SHOPITEM", "ITEM", "ENTRY"):
                 continue
             scanned += 1
             d = {}
             for ch in el:
-                d.setdefault(_local(ch.tag), (ch.text or "").strip())
+                d.setdefault(_tag(ch.tag), (ch.text or "").strip())
             el.clear()
             title = L.clean_text(d.get("PRODUCTNAME") or d.get("PRODUCT") or d.get("TITLE"))
             link = clean_link(L.clean_text(d.get("URL") or d.get("LINK")))
