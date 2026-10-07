@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.2 – app.py
+CARD RADAR 7.3 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -9,7 +9,9 @@ Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroc
   static/     logo a ikony
 
 Premenné prostredia (Render → Environment):
-  ADMIN_KEY      heslo k /admin/... stránkam (a k detailu /health?key=...)
+  ADMIN_KEY      heslo k /admin/... stránkam. Stačí raz otvoriť /admin/test?key=HESLO –
+                 prehliadač si prihlásenie zapamätá na 30 dní a heslo z adresy zmizne.
+                 Odhlásenie: /admin/logout
   PUBLIC_URL     hlavná adresa, napr. https://getcardradar.com
   DB_PATH        databáza na trvalom disku, napr. /var/data/cardradar.db
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM   e-maily strážcu
@@ -19,6 +21,7 @@ Premenné prostredia (Render → Environment):
 
 import gzip
 import hashlib
+import hmac
 import html
 import io
 import json
@@ -45,7 +48,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.2"
+VERSION = "7.3"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -183,7 +186,7 @@ def api_search():
         **kurz_info(), "shops": O.shops_status(diagnostics),
         "query_lang": L.query_language(original),
     }
-    if S.is_admin():
+    if request.args.get("debug") and S.is_admin():   # /?q=...&debug=1 len pre admina
         payload["debug"] = diagnostics
     return jsonify(payload)
 
@@ -349,6 +352,14 @@ def go():
     return resp
 
 
+@app.get("/admin/logout")
+def admin_logout():
+    resp = S.page("Odhlásené", "<div class='box'><h1>Odhlásené</h1><p>Admin prihlásenie je z tohto "
+                               "prehliadača vymazané.</p></div>", back=True)
+    resp.delete_cookie(S.ADMIN_COOKIE, path="/")
+    return resp
+
+
 @app.get("/admin/cache")
 def admin_cache():
     """Stav pamäte; s &clear=1 ju vymaže (napr. po zmene filtrov)."""
@@ -386,7 +397,7 @@ def _static_report():
 
 @app.get("/health")
 def health():
-    """Verejne len stav (pre Render). Detail: /health?key=ADMIN_KEY"""
+    """Verejne len stav (pre Render). Detail vidí prihlásený admin."""
     problems = []
     if load_index() is None:
         problems.append("index.html chýba")
@@ -780,6 +791,24 @@ def main_domain():
     if main and host != main and (host.endswith(".onrender.com") or host == "www." + main):
         return redirect(public + request.full_path.rstrip("?"), code=308)
     return None
+
+
+@app.before_request
+def admin_login():
+    """/admin/...?key=HESLO: uloží prihlásenie do cookie a presmeruje na adresu BEZ hesla
+    (heslo tak neostane v histórii prehliadača, v záložkách ani v logoch)."""
+    if not (request.path.startswith("/admin/") or request.path == "/health") or request.method != "GET":
+        return None
+    key = request.args.get("key", "")
+    if not key or not S.ADMIN_KEY or not hmac.compare_digest(key.encode(), S.ADMIN_KEY.encode()):
+        return None
+    args = [(k, v) for k, v in request.args.items(multi=True) if k != "key"]
+    resp = redirect(request.path + ("?" + urllib.parse.urlencode(args) if args else ""), code=303)
+    local = request.host.split(":")[0] in ("localhost", "127.0.0.1")
+    resp.set_cookie(S.ADMIN_COOKIE, S.admin_cookie_value(), max_age=30 * 86400, path="/",
+                    secure=not local, httponly=True, samesite="Lax")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.after_request
