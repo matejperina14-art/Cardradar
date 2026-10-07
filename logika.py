@@ -16,7 +16,14 @@ import unicodedata
 from functools import lru_cache
 
 # 1 € = x Kč. Denne sa aktualizuje z Európskej centrálnej banky (obchody.py).
+# Hodnota tu je len záloha pri štarte, kým sa nenačíta kurz z databázy / ECB.
 KURZ = {"CZK": 24.4618}
+KURZ_INFO = {"date": "", "source": "default"}   # dátum kurzu ECB (napr. 2026-10-06)
+
+
+def czk_to_eur(czk):
+    """Kč -> € podľa aktuálneho kurzu."""
+    return czk / KURZ["CZK"] if czk else None
 
 
 # =========================================================
@@ -134,7 +141,7 @@ POKEMON_ALIASES = {
 PRODUCT_PATTERNS = [
     ("elite trainer box", r"\belite\s+trainer\s+box\b"),
     ("elite trainer box", r"\betb\b"),
-    ("booster box", r"\bbooster\s*box\b"),
+    ("booster box", r"\bbooster\s*(?:box|display)\b"),
     ("booster bundle", r"\bbooster\s*bundle\b"),
     ("collection box", r"\bcollection\s+box\b"),
     ("premium collection", r"\bpremium\s+collection\b"),
@@ -177,7 +184,7 @@ def _normalize(query):
 
     m = _CARDNUM_RE.search(q)
     if m:
-        out["card_number"] = f"{m.group(1)}/{m.group(2)}"
+        out["card_number"] = f"{int(m.group(1))}/{int(m.group(2))}"   # 004/102 = 4/102
         q = _CARDNUM_RE.sub(" ", q, count=1)
 
     for canonical, pattern in _PRODUCT_RE:
@@ -272,7 +279,16 @@ def _wanted_words(parsed):
 
 
 _BULK_RE = re.compile(r"\bcase\b|(?<![\w/.,])\d{1,2}\s*x(?![a-z0-9])(?!\s*\d)|\bx\s*\d{1,2}\b", re.I)
-_WANT_BULK_RE = re.compile(r"\bcase\b|display|\b\d{1,2}\s*x\b", re.I)
+_WANT_BULK_RE = re.compile(r"\bcase\b|(?:bundle|blister|etb|tin|trainer\s+box)\s+display|\b\d{1,2}\s*x\b", re.I)
+
+
+def card_number_in(text, number):
+    """Je v texte presne toto číslo karty? 4/102 = 004/102, ale 4/102 != 104/102."""
+    try:
+        a, b = (int(x) for x in number.split("/"))
+    except (ValueError, AttributeError):
+        return False
+    return any(int(m.group(1)) == a and int(m.group(2)) == b for m in _CARDNUM_RE.finditer(text or ""))
 
 
 def card_matches_query(title, extra_text, parsed, loose_set=False):
@@ -284,7 +300,7 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
 
     if pokemon and not has_word(title, pokemon):
         return False, "pokemon_not_in_title"
-    if number and number.replace(" ", "").lower() not in re.sub(r"\s+", "", searchable.lower()):
+    if number and not card_number_in(searchable, number):
         return False, "card_number_not_found"
     if set_name and not (loose_set and number) and not set_matches_text(searchable, set_name):
         return False, "set_not_found"
@@ -298,28 +314,46 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
     return True, "matched"
 
 
+# Ako obchody píšu typ produktu v názve
+_PTYPE_TITLE_RE = {
+    "elite trainer box": re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b", re.I),
+    "booster bundle": re.compile(r"\bbundle\b", re.I),   # niektoré obchody píšu len „Bundle“
+    "collection box": re.compile(r"collection\s+box|kolekci\w*\s+box", re.I),
+    "premium collection": re.compile(r"premium\s+collection|pr[ée]miov\w*\s+kolekci", re.I),
+    "blister": re.compile(r"blister", re.I),
+    "tin": re.compile(r"\btins?\b|plechovk\w*", re.I),
+}
+# „Display“ booster bundlov / blistrov / ETB nie je booster box, a pod.
+_PTYPE_NOT_RE = {
+    "booster box": re.compile(r"bundle|blister|\btins?\b|elite\s+trainer|\betb\b|sleeved|"
+                              r"build\s*(?:&|and)?\s*battle|collection", re.I),
+    "booster bundle": re.compile(r"elite\s+trainer|\betb\b|booster\s*box", re.I),
+}
+
+
 def sealed_matches_query(title, extra_text, parsed):
     """Hľadanie ETB, boxov, bundlov..."""
     title = clean_text(title)
     extra_text = extra_text or ""
     set_name, ptype = parsed.get("set_name"), parsed.get("product_type")
     original = parsed.get("original", "") or ""
-    searchable = clean_text(title + " " + extra_text).lower()
-
-    # niektoré obchody píšu len „Bundle“ namiesto „Booster Bundle“
-    if (ptype == "booster bundle" and re.search(r"\bbundle\b", title, re.I)
-            and not re.search(r"booster\s*bundle", title, re.I)):
-        searchable += " booster bundle"
 
     if set_name and not set_matches_text(title, set_name):
         return False, "set_not_in_title"
-    if ptype == "elite trainer box":
-        if not ("elite trainer box" in searchable or re.search(r"\betb\b", searchable)):
-            return False, "etb_not_found"
-        if re.search(r"\b(case|10x|12x|6x)\b", searchable):
-            return False, "bulk_product"
-    elif ptype and ptype not in searchable:
-        return False, "product_type_not_found"
+    # typ produktu len z NÁZVU (text dlaždice môže obsahovať iné produkty, menu...)
+    if ptype:
+        rx = _PTYPE_TITLE_RE.get(ptype)
+        if rx is not None:
+            if not rx.search(title):
+                return False, "product_type_not_found"
+        elif ptype not in title.lower():
+            return False, "product_type_not_found"
+        bad = _PTYPE_NOT_RE.get(ptype)
+        if bad is not None and bad.search(title):
+            return False, "other_product_type"
+    if ptype == "elite trainer box" and re.search(r"\b(case|10x|12x|6x)\b", title, re.I):
+        return False, "bulk_product"
     # set, ktorý nepoznáme: ostatné hľadané slová musia byť v názve
     if not set_name and _wanted_words(parsed) - fold_words(title + " " + extra_text):
         return False, "words_not_found"
@@ -341,9 +375,15 @@ _NUM = (r"(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?(?!\d)"   # 1.099,00
         r"|\d{1,3}(?:,\d{3})+\.\d{1,2}(?!\d)"            # 1,099.00
         r"|\d{1,3}(?:[ ]\d{3})+(?:[.,]\d{1,2})?"         # 1 099,00
         r"|\d{1,8}(?:[.,]\d{1,2})?)")
-_EX_VAT = re.compile(r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|Kč|CZK))\s*(?:bez\s+DPH|excl\.?\s*VAT)", re.I)
+_CZK = r"(?:,-|,–|\.-|-)?\s*(?:Kč|Kc|CZK)(?![a-z])"          # 1 299,- Kč
+_EX_VAT = re.compile(r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|" + _CZK + r"))\s*(?:bez\s+DPH|excl\.?\s*VAT)", re.I)
+# Sumy, ktoré nie sú cenou produktu: „Ušetríte 10 €“, „doprava od 3,90 €“, „(0,15 € / ks)“
+_NOISE_RE = re.compile(
+    r"(?:u[šs]etr[íi]te|u[šs]et[řr][íi]te|[úu]spora|you\s+save|\bsave\b|doprava(?:\s+zdarma)?(?:\s+od)?"
+    r"|po[šs]tovn[ée](?:\s+od)?|zdarma\s+od|nad)\s*:?\s*-?\s*(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|" + _CZK + r"))"
+    r"|" + _NUM + r"\s*(?:€|" + _CZK + r")\s*/\s*(?:ks|kus|pack|booster|bal\w*)", re.I)
 _EUR_RES = [re.compile(r"€\s*" + _NUM), re.compile(_NUM + r"\s*€")]
-_CZK_RES = [re.compile(_NUM + r"\s*(?:Kč|CZK)", re.I), re.compile(r"(?:Kč|CZK)\s*" + _NUM, re.I)]
+_CZK_RES = [re.compile(_NUM + r"\s*" + _CZK, re.I), re.compile(r"CZK\s*" + _NUM, re.I)]
 
 
 def to_float(value):
@@ -363,20 +403,29 @@ def to_float(value):
         return None
 
 
-def parse_price(text):
-    """Cena v EUR (Kč sa prepočíta). Ceny 'bez DPH' sa ignorujú."""
-    text = _EX_VAT.sub(" ", clean_text(text))
+def parse_price_raw(text):
+    """(suma, 'EUR' | 'CZK') alebo (None, ''). Ceny 'bez DPH' a úspory sa ignorujú."""
+    text = clean_text(text)
+    text = _NOISE_RE.sub(" ", _EX_VAT.sub(" ", text))
     if not text:
-        return None
+        return None, ""
     for rx in _EUR_RES:
         m = rx.search(text)
-        if m and to_float(m.group(1)) is not None:
-            return to_float(m.group(1))
+        if m and to_float(m.group(1)):
+            return to_float(m.group(1)), "EUR"
     for rx in _CZK_RES:
         m = rx.search(text)
-        if m and to_float(m.group(1)) is not None:
-            return to_float(m.group(1)) / KURZ["CZK"]
-    return None
+        if m and to_float(m.group(1)):
+            return to_float(m.group(1)), "CZK"
+    return None, ""
+
+
+def parse_price(text):
+    """Cena v EUR (Kč sa prepočíta aktuálnym kurzom)."""
+    value, cur = parse_price_raw(text)
+    if value is None:
+        return None
+    return czk_to_eur(value) if cur == "CZK" else value
 
 
 # =========================================================
@@ -439,6 +488,11 @@ ACCESSORY_PATTERNS = [
     r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?", r"r[áa]m[čc]ek\w*",
     r"akryl\w*", r"acrylic", r"ochrann\w*\s+box\w*", r"protector\w*",
     r"magnetick\w*\s+box\w*", r"box\s+na\s+ulo[žz]\w*",
+    # prázdne krabice, kódy, nepravé karty – nie sú to produkty s kartami
+    r"pr[áa]zdn\w*", r"empty", r"bez\s+(?:booster\w*|bal[íi][čc]\w*|kar[ite]\w*|obsahu)",
+    r"(?:only\s+)?box\s+only", r"len\s+(?:krabic\w*|box)", r"jen\s+(?:krabic\w*|box)",
+    r"code\s*cards?", r"online\s+(?:code|k[óo]d\w*)", r"ptcgl\s+code\w*",
+    r"proxy\w*", r"replik\w*", r"fake", r"custom\s+cards?", r"fan\s*-?made",
 ]
 
 MERCH_HARD_PATTERNS = [
@@ -696,7 +750,7 @@ def group_key(title, lang=""):
 # =========================================================
 
 _PACKS_EXPLICIT_RE = re.compile(
-    r"(?<![\d/.,])(\d{1,2})\s*(?:-|x)?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|packungen|boost\w*)", re.I)
+    r"(?<![\w/.,#-])(\d{1,2})\s*(?:-|x)?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|packungen|boost\w*)", re.I)
 _PACKS_PAREN_RE = re.compile(r"booster\s*(?:box|display)\D{0,10}\((\d{1,2})\)", re.I)
 
 
@@ -723,15 +777,26 @@ def estimate_packs(title, lang=""):
     return None
 
 
-def make_result(shop, title, price, link, image="", stock=""):
-    """Jedna ponuka vo výsledkoch hľadania (rovnaký tvar pre všetky typy obchodov)."""
+def make_result(shop, title, price, link, image="", stock="", price_czk=None):
+    """Jedna ponuka vo výsledkoch hľadania (rovnaký tvar pre všetky typy obchodov).
+    price_czk = pôvodná cena v Kč (CZ obchody) – € sa z nej vždy počíta aktuálnym kurzom."""
     lang = detect_language(title)
     packs = estimate_packs(title, lang)
-    return {
+    r = {
         "title": title, "shop": shop["name"], "country": shop["country"],
         "condition": "Nové", "language": lang, "price_eur": round(price, 2),
+        "price_czk": round(price_czk) if price_czk else None,
         "link": link, "image": image or "", "stock": stock or "",
-        "packs": packs,
-        "price_per_pack": round(price / packs, 2) if packs and packs > 1 else None,
+        "packs": packs, "price_per_pack": None,
         "group": group_key(title, lang),
     }
+    return reprice(r)
+
+
+def reprice(r):
+    """Prepočíta € z Kč aktuálnym kurzom (aj pri výsledkoch z cache a katalógu)."""
+    if r.get("price_czk"):
+        r["price_eur"] = round(czk_to_eur(r["price_czk"]), 2)
+    packs = r.get("packs")
+    r["price_per_pack"] = round(r["price_eur"] / packs, 2) if packs and packs > 1 and r.get("price_eur") else None
+    return r
