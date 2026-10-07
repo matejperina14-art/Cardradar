@@ -88,6 +88,12 @@ def json_body():
     return request.get_json(silent=True) or {}
 
 
+def kurz_info():
+    """Aktuálny kurz pre web: 1 € = x Kč a dátum kurzu ECB."""
+    return {"czk_per_eur": L.KURZ["CZK"], "czk_date": L.KURZ_INFO.get("date", ""),
+            "czk_source": L.KURZ_INFO.get("source", "")}
+
+
 # =========================================================
 # WEB
 # =========================================================
@@ -126,11 +132,13 @@ def home():
 
 @app.get("/api/config")
 def api_config():
+    O.ensure_czk()
     resp = jsonify({
-        "version": VERSION, "czk_per_eur": L.KURZ["CZK"], "alerts_enabled": strazca.ALERTS_ENABLED,
+        "version": VERSION, **kurz_info(), "alerts_enabled": strazca.ALERTS_ENABLED,
         "shops": [{"name": s["name"], "country": s["country"], "url": s["base_url"]} for s in O.active_shops()],
     })
-    resp.headers["Cache-Control"] = "public, max-age=300"
+    # kratšie, aby web nedržal starý kurz
+    resp.headers["Cache-Control"] = "public, max-age=60"
     return resp
 
 
@@ -158,7 +166,7 @@ def api_search():
     payload = {
         "query": original, "normalized_query": normalized, "parsed": parsed, "results": results,
         "summary": {"count": len(results), "lowest_eur": min(prices) if prices else None},
-        "czk_per_eur": L.KURZ["CZK"], "shops": O.shops_status(diagnostics),
+        **kurz_info(), "shops": O.shops_status(diagnostics),
         "query_lang": L.query_language(original),
     }
     if S.is_admin():
@@ -207,7 +215,9 @@ def api_latest():
 
 @app.get("/api/home")
 def api_home():
-    resp = jsonify(S.home_data())
+    data = dict(S.home_data())
+    data["kurz_czk"] = {"rate": L.KURZ["CZK"], "date": L.KURZ_INFO.get("date", "")}   # vždy aktuálny
+    resp = jsonify(data)
     resp.headers["Cache-Control"] = "public, max-age=120"
     return resp
 
@@ -217,7 +227,8 @@ def api_home():
 # =========================================================
 
 def site_url():
-    return strazca.PUBLIC_URL or request.url_root.rstrip("/")
+    """Adresa webu do e-mailov a odkazov (za Renderom príde požiadavka ako http, preto https)."""
+    return strazca._site(strazca.PUBLIC_URL or request.url_root)
 
 
 @app.post("/api/alerts")
@@ -276,15 +287,36 @@ def admin_cache():
                     "suggestions": len(O.SUGGESTIONS)})
 
 
+@app.get("/admin/kurz")
+def admin_kurz():
+    """Okamžite načíta kurz z ECB a ukáže ho."""
+    if not S.is_admin():
+        return jsonify({"error": "Nepovolené."}), 403
+    ok = O.update_czk()
+    return jsonify({"updated": ok, **kurz_info()})
+
+
+def _static_report():
+    """Ktoré súbory sú v static/ (na kontrolu loga a ikon)."""
+    if not os.path.isdir(STATIC_DIR):
+        return {"static_exists": False, "static_files": []}
+    files = sorted(os.listdir(STATIC_DIR))[:50]
+    needed = ["icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon-32.png"]
+    return {"static_exists": True, "static_files": files,
+            "static_missing": [f for f in needed if f.lower() not in {x.lower() for x in files}],
+            "static_wrong_case": [x for x in files if x.lower() in needed and x not in needed]}
+
+
 @app.get("/health")
 def health():
     return jsonify({
         "service": "CardRadar", "status": "ok", "version": VERSION,
         "index_exists": load_index() is not None, "html_parser": O.HTML_PARSER,
         "active_shops": [f"{s['name']} ({s['country']})" for s in O.active_shops()],
-        "alerts_enabled": strazca.ALERTS_ENABLED, "czk_per_eur": L.KURZ["CZK"],
+        "alerts_enabled": strazca.ALERTS_ENABLED, **kurz_info(),
         "db_path": O.DB_PATH, "db_persistent": O.db_persistent(),
         **({"db_warning": O.DB_WARNING} if O.DB_WARNING else {}),
+        **_static_report(),
     })
 
 
@@ -292,9 +324,12 @@ def health():
 # LOGO, IKONY, MOBILNÁ APLIKÁCIA (PWA)
 # =========================================================
 
-ICON_V = "3"   # zvýš, keď zmeníš ikony – prehliadače si ich stiahnu znova
+ICON_V = "4"   # zvýš, keď zmeníš ikony – prehliadače si ich stiahnu znova
 _MIMES = {".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
-          ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".ico": "image/x-icon"}
+          ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".ico": "image/x-icon",
+          ".gif": "image/gif", ".avif": "image/avif",
+          ".css": "text/css", ".js": "application/javascript", ".json": "application/json",
+          ".woff2": "font/woff2", ".woff": "font/woff", ".txt": "text/plain"}
 _static_mem = {}
 
 
@@ -317,12 +352,30 @@ def _strip_png(data):
     return b"".join(out)
 
 
+def _find_static(name):
+    """Súbor v static/. Ak nesedí veľkosť písmen (Logo.PNG vs logo.png), nájde ho aj tak –
+    na Windows to funguje, ale Render (Linux) veľké a malé písmená rozlišuje."""
+    path = os.path.normpath(os.path.join(STATIC_DIR, name))
+    if not path.startswith(STATIC_DIR + os.sep):
+        return None
+    if os.path.isfile(path):
+        return path
+    folder, base = os.path.split(path)
+    if os.path.isdir(folder):
+        for f in os.listdir(folder):
+            if f.lower() == base.lower() and os.path.isfile(os.path.join(folder, f)):
+                return os.path.join(folder, f)
+    return None
+
+
 @app.get("/static/<path:name>")
 def static_files(name):
-    path = os.path.normpath(os.path.join(STATIC_DIR, name))
-    mime = _MIMES.get(os.path.splitext(path)[1].lower())
-    if not mime or not path.startswith(STATIC_DIR + os.sep) or not os.path.isfile(path):
-        return Response("Nenájdené", status=404, mimetype="text/plain")
+    path = _find_static(name)
+    mime = _MIMES.get(os.path.splitext(path or name)[1].lower())
+    if not mime or not path:
+        resp = Response("Nenájdené", status=404, mimetype="text/plain")
+        resp.headers["Cache-Control"] = "no-store"   # chýbajúci súbor si nikto nesmie zapamätať
+        return resp
     mtime = os.path.getmtime(path)
     hit = _static_mem.get(path)
     if not hit or hit[0] != mtime:
@@ -330,7 +383,7 @@ def static_files(name):
             data = f.read()
         hit = _static_mem[path] = (mtime, _strip_png(data) if mime == "image/png" else data)
     resp = Response(hit[1], mimetype=mime)
-    resp.headers["Cache-Control"] = "public, max-age=604800"
+    resp.headers["Cache-Control"] = "public, max-age=86400"
     return resp
 
 
@@ -360,32 +413,33 @@ def manifest():
 
 
 # Offline kópia hlavnej stránky; ceny (/api/) vždy čerstvé zo siete.
+# Obrázky zo static/: najprv sieť (nové logo sa ukáže hneď), cache len keď je offline.
+# Ukladajú sa len úspešné odpovede – predtým sa uložila aj chyba 404 a logo potom chýbalo navždy.
 SERVICE_WORKER = """
-const CACHE = 'cardradar-v10';
-const SHELL = ['/', '/static/icon-192.png'];
+const CACHE = 'cardradar-v11';
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.add('/')).catch(() => {}).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
+function save(req, r) {
+  if (r && r.ok && r.type === 'basic') { const copy = r.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+  return r;
+}
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin/')) return;
   if (e.request.mode === 'navigate') {
     if (url.pathname !== '/') return;
-    e.respondWith(fetch(e.request).then(r => {
-      if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put('/', copy)); }
-      return r;
-    }).catch(() => caches.match('/')));
+    e.respondWith(fetch(e.request).then(r => save('/', r)).catch(() => caches.match('/')));
     return;
   }
   if (url.pathname.startsWith('/static/')) {
-    e.respondWith(caches.match(e.request).then(m => m || fetch(e.request).then(r => {
-      const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return r;
-    })));
+    e.respondWith(fetch(e.request).then(r => r.ok ? save(e.request, r) : caches.match(e.request).then(m => m || r))
+      .catch(() => caches.match(e.request)));
   }
 });
 """
@@ -429,7 +483,7 @@ def finalize(resp):
             and "Content-Encoding" not in resp.headers
             and "gzip" in request.headers.get("Accept-Encoding", "").lower()
             and resp.mimetype in ("application/json", "text/html", "application/javascript",
-                                  "application/manifest+json", "image/svg+xml", "text/plain")):
+                                  "application/manifest+json", "image/svg+xml", "text/plain", "text/css")):
         data = resp.get_data()
         if len(data) >= 1024:
             resp.set_data(gzip.compress(data, compresslevel=5))
