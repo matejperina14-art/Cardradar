@@ -62,6 +62,13 @@ OK_STATUSES = ("ok", "no_results")
 #   catalog      = zoznam kategórií, ktoré sa prechádzajú (max_pages strán)
 #   feed         = adresa XML feedu (Heureka / Google)
 #   image_replace = (z, na) úprava adresy obrázka
+#   shipping     = poštovné (najlacnejší spôsob), napr.
+#                  {"price": 3.9, "free_from": 60, "currency": "EUR"}
+#                  {"price": 89, "free_from": 1500, "currency": "CZK"}
+#                  free_from = od akej sumy je doprava zdarma (None = nikdy)
+#                  Bez "shipping" sa poštovné nezobrazuje (radšej nič ako zlé číslo).
+#   affiliate    = partnerský odkaz, {url} = adresa produktu (zakódovaná), napr.
+#                  "https://partner.example/click?id=123&url={url}"
 # =========================================================
 
 SHOPS = [
@@ -278,9 +285,21 @@ def _choose_db():
                 dst.close()
         DB_PATH = want
         print(f"[CardRadar] Databáza na disku: {want}", flush=True)
+        return
     except Exception as e:
         DB_WARNING = f"DB_PATH={want} sa nedá použiť: {e}"
         print(f"[CardRadar] VAROVANIE: {DB_WARNING}. Používam {_DEFAULT_DB}.", flush=True)
+
+
+def db_problem():
+    """Text problému s databázou alebo '' (história cien by sa pri nasadení stratila)."""
+    if DB_WARNING:
+        return DB_WARNING
+    if not db_persistent():
+        return ("DB_PATH nie je nastavená – databáza je v priečinku aplikácie a pri každom nasadení "
+                "sa zmaže (história cien, šípky, zľavy, strážcovia). Na Renderi pridaj Disk "
+                "(napr. /var/data) a premennú DB_PATH=/var/data/cardradar.db.")
+    return ""
 
 
 def db_persistent():
@@ -324,6 +343,9 @@ def init_db():
                 price_eur REAL, image TEXT, stock TEXT,
                 PRIMARY KEY (shop, link));
             CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+            CREATE TABLE IF NOT EXISTS clicks (
+                day TEXT NOT NULL, shop TEXT NOT NULL, n INTEGER DEFAULT 1,
+                PRIMARY KEY (day, shop));
         """)
         # staršie databázy nemali stĺpec image / price_czk
         cols = {r[1] for r in conn.execute("PRAGMA table_info(price_daily)")}
@@ -445,6 +467,70 @@ def is_allowed_link(url):
         return False
     hosts = {host_of(s["base_url"]) for s in all_shops()}
     return p.scheme in ("http", "https") and p.netloc.lower() in hosts
+
+
+def shop_by_link(url):
+    host = host_of(url).replace("www.", "")
+    return next((s for s in all_shops() if host_of(s["base_url"]).replace("www.", "") == host), None)
+
+
+def add_shipping(shop, r):
+    ship = L.shipping_eur(shop, r.get("price_eur"))
+    r["shipping_eur"] = ship
+    r["total_eur"] = round(r["price_eur"] + ship, 2) if ship is not None else None
+
+
+# =========================================================
+# ODCHOD DO OBCHODU (/go): utm parametre, partnerský odkaz, počítanie klikov
+# =========================================================
+
+def go_link(link):
+    """Adresa tlačidla „Do obchodu“ na webe (prejde cez /go a započíta klik)."""
+    return "/go?u=" + urllib.parse.quote(link or "", safe="")
+
+
+def out_url(link, medium="referral"):
+    """Skutočná adresa v obchode: partnerský odkaz, inak odkaz s utm_source=cardradar."""
+    shop = shop_by_link(link) or {}
+    tpl = shop.get("affiliate")
+    if tpl and "{url}" in tpl:
+        return tpl.replace("{url}", urllib.parse.quote(link, safe=""))
+    try:
+        p = urllib.parse.urlsplit(link)
+        q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True) if not k.startswith("utm_")]
+        q += [("utm_source", "cardradar"), ("utm_medium", medium), ("utm_campaign", "porovnanie")]
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), p.fragment))
+    except Exception:
+        return link
+
+
+def _count_click_now(shop_name):
+    conn = db()
+    try:
+        conn.execute("""INSERT INTO clicks (day, shop, n) VALUES (?, ?, 1)
+                        ON CONFLICT(day, shop) DO UPDATE SET n = n + 1""", (today_str(), shop_name))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def count_click(link):
+    shop = shop_by_link(link)
+    if shop:
+        BG_POOL.submit(_count_click_now, shop["name"])
+
+
+def click_stats(days=30):
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    conn = db()
+    try:
+        rows = conn.execute("SELECT shop, SUM(n) FROM clicks WHERE day >= ? GROUP BY shop ORDER BY 2 DESC",
+                            (since,)).fetchall()
+    finally:
+        conn.close()
+    return [{"shop": s, "clicks": n} for s, n in rows]
 
 
 # =========================================================
@@ -1173,6 +1259,8 @@ def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT):
                         event.set()
     for r in res or []:
         L.reprice(r)   # Kč -> € vždy aktuálnym kurzom, aj pri starších výsledkoch z cache
+        add_shipping(shop, r)
+        r["out"] = go_link(r["link"])
     fill_images_from_cache(res)
     add_suggestions(res)
     return res, dbg
