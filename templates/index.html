@@ -435,6 +435,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
     <div>
       <h4>Informácie</h4>
       <ul>
+        <li><a href="/sety">Ceny podľa setov</a></li>
         <li><a href="/podmienky">Podmienky používania</a></li>
         <li><a href="/ochrana-udajov">Ochrana údajov</a></li>
       </ul>
@@ -444,7 +445,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.4 */
+/* CARD RADAR FRONTEND 8.5 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -453,8 +454,9 @@ const imageOf = i => String(i?.image || i?.image_url || '').trim();
 const plural = (n, one, few, many) => n === 1 ? one : (n >= 2 && n <= 4 ? few : many);
 const radik = (cls = '') => `<img class="radik ${cls}" src="/static/cr-logo.png" alt="" width="96" height="96" decoding="async">`;
 const BASE_TITLE = 'CardRadar – porovnávač cien Pokémon kariet';
-// odkazy do obchodov: obchod uvidí návštevy z CardRadaru vo svojej analytike
-const outLink = u => { try { const x = new URL(u); x.searchParams.set('utm_source', 'cardradar'); x.searchParams.set('utm_medium', 'referral'); return x.toString(); } catch (e) { return u; } };
+// odkazy do obchodov idú cez /go: server započíta klik a pridá utm_source=cardradar
+// (alebo partnerský odkaz obchodu, ak je nastavený v obchody.py)
+const outLink = u => u ? '/go?u=' + encodeURIComponent(u) : '#';
 
 let CZK_RATE = 24.4618;
 let SHOPS = [], ALERTS = false;
@@ -462,6 +464,10 @@ const eurFmt = new Intl.NumberFormat('sk-SK', {minimumFractionDigits: 2, maximum
 const czkFmt = new Intl.NumberFormat('cs-CZ', {maximumFractionDigits: 0});
 const eur = n => num(n) === null ? '–' : eurFmt.format(n) + ' €';
 const czk = n => num(n) === null ? '' : czkFmt.format(Math.round(n * CZK_RATE)) + ' Kč';
+// české obchody: presná cena v Kč z obchodu, inak orientačný prepočet
+const czkOf = (o, p) => num(o && o.price_czk) !== null && priceOf(o) === p ? czkFmt.format(o.price_czk) + ' Kč' : '≈ ' + czk(p);
+// poštovné (len ak ho obchod má vyplnené v obchody.py)
+const shipTxt = o => num(o && o.shipping_eur) === null ? '' : (o.shipping_eur === 0 ? ' · doprava zdarma' : ` · + ${eur(o.shipping_eur)} doprava`);
 function ago(ts){
   if (!num(ts)) return '';
   const s = Math.max(0, (Date.now() / 1000) - ts);
@@ -778,6 +784,7 @@ function view(g, ignore = {}){
 }
 function sortKey(v){
   if (sortMode === 'pack') return num(v.best.price_per_pack) ?? (1e6 + (priceOf(v.best) ?? 0));
+  if (sortMode === 'total') return num(v.best.total_eur) ?? (priceOf(v.best) ?? 1e9);
   return priceOf(v.best) ?? 1e9;
 }
 function visibleViews(){
@@ -922,9 +929,9 @@ function groupHtml(v, best){
         <div class="kinds"><span class="k k-${g._c}">${CATS[g._c][2]}</span>${best ? '<span class="k k-best">Najlacnejšie</span>' : ''}</div>
         <h3 class="p-title" title="${esc(g.title)}">${esc(g.title)}</h3>
         <div class="p-price num">
-          ${p === null ? '<b class="none">Cena nezistená</b>' : `<b>${multi ? '<small>od</small>' : ''}${eur(p)}</b><span class="czk">≈ ${czk(p)}</span>`}
+          ${p === null ? '<b class="none">Cena nezistená</b>' : `<b>${multi ? '<small>od</small>' : ''}${eur(p)}</b><span class="czk">${czkOf(b, p)}</span>`}
         </div>
-        <div class="p-extra">${ppp !== null ? `<span class="ppp num"><b>${eur(ppp)}</b> / booster</span>` : ''}${trendHtml(b)}${savedLine}</div>
+        <div class="p-extra">${ppp !== null ? `<span class="ppp num"><b>${eur(ppp)}</b> / booster</span>` : ''}${num(b.shipping_eur) > 0 && num(b.total_eur) !== null ? `<span class="ppp num">s dopravou <b>${eur(b.total_eur)}</b></span>` : ''}${trendHtml(b)}${savedLine}</div>
       </div>
     </div>
     <ul class="offers">
@@ -934,7 +941,7 @@ function groupHtml(v, best){
         const fresh = ago(shopFresh[o.shop]);
         return `<li class="offer${cheap ? ' cheap' : ''}${o.stock === 'out' ? ' sold' : ''}">
           <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener">
-            <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}</b><span class="o-meta">${st[0]}${fresh ? ' · ' + fresh : ''}</span></span>
+            <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
             <span class="o-price num">${eur(priceOf(o))}</span>
             <span class="o-go" aria-hidden="true">↗</span>
           </a></li>`;
@@ -1006,6 +1013,8 @@ function renderSide(){
   const langs = Object.keys(LANGS).filter(l => l === 'EN' || allResults.some(i => langKey(i) === l));
   const hasPack = allResults.some(i => num(i.price_per_pack) !== null);
   if (!hasPack && sortMode === 'pack') sortMode = 'asc';
+  const hasTotal = allResults.some(i => num(i.total_eur) !== null);
+  if (!hasTotal && sortMode === 'total') sortMode = 'asc';
   const nOut = allResults.filter(i => i.stock === 'out').length;
   $('side').innerHTML = `
     <div class="side-head"><b>Filtre</b><button class="m-x" id="sideClose" aria-label="Zavrieť">✕</button></div>
@@ -1014,6 +1023,7 @@ function renderSide(){
         <option value="asc"${sortMode==='asc'?' selected':''}>Od najlacnejšieho</option>
         <option value="desc"${sortMode==='desc'?' selected':''}>Od najdrahšieho</option>
         ${hasPack ? `<option value="pack"${sortMode==='pack'?' selected':''}>Najlacnejší booster</option>` : ''}
+        ${hasTotal ? `<option value="total"${sortMode==='total'?' selected':''}>Najlacnejšie s dopravou</option>` : ''}
       </select>
       ${nOut ? `<label class="opt" style="margin-top:6px"><input type="checkbox" id="outChk"${showOut ? ' checked' : ''}> Zobraziť aj vypredané (${nOut})</label>` : ''}
     </div>` : ''}
@@ -1164,34 +1174,37 @@ function openAlert(g){
   let o = v.best;
   const sold = g.offers.every(x => x.stock === 'out');
   let email = ''; try { email = localStorage.getItem('cr_email') || ''; } catch(e){}
-  const tgt = x => { const p = priceOf(x); return p !== null ? (sold ? p : Math.max(0.01, Math.floor(p * 0.9 * 100) / 100)) : ''; };
+  const tgt = x => { const p = priceOf(x); return p !== null ? Math.max(0.01, Math.floor(p * 0.9 * 100) / 100) : ''; };
   openModal(sold ? 'Upozornenie na naskladnenie' : 'Strážca ceny', `<p class="m-sub">${esc(g.title)}</p>
     <form id="alertForm" class="m-form" novalidate>
       ${g.offers.length > 1 ? `<label>Obchod
         <select id="aShop" class="input">${g.offers.map(x => `<option value="${esc(x.link)}"${x.link === o.link ? ' selected' : ''}>${esc(x.shop)} – ${x.stock === 'out' ? 'vypredané' : 'teraz'} ${eur(priceOf(x))}</option>`).join('')}</select>
       </label>` : `<p class="m-note" style="margin:0">${esc(o.shop)} · ${o.stock === 'out' ? 'vypredané' : 'teraz'} ${eur(priceOf(o))}</p>`}
-      <label>${sold ? 'Napíš mi, keď bude skladom za najviac' : 'Napíš mi, keď cena klesne na'}
+      ${sold ? '' : `<label>Napíš mi, keď cena klesne na
         <span class="inrow"><input id="aTarget" class="input num" type="number" inputmode="decimal" step="0.01" min="0.01" value="${tgt(o)}" required> €</span>
-      </label>
+      </label>`}
       <label>Na e-mail
         <input id="aEmail" class="input" type="email" inputmode="email" autocomplete="email" value="${esc(email)}" placeholder="meno@email.sk" required>
       </label>
-      <button class="primary" type="submit" id="aSubmit">${sold ? 'Upozorniť ma' : 'Zapnúť strážcu'}</button>
-      <p class="m-note">Pošleme ti jeden potvrdzovací e-mail. Cenu a sklad kontrolujeme niekoľkokrát denne a napíšeme ti len raz.</p>
+      <button class="primary" type="submit" id="aSubmit">${sold ? 'Upozorniť ma, keď bude skladom' : 'Zapnúť strážcu'}</button>
+      <p class="m-note">${sold ? 'Napíšeme ti raz, keď bude produkt vo zvolenom obchode znova skladom.' : 'Cenu kontrolujeme niekoľkokrát denne a napíšeme ti len raz.'} Najprv ti príde jeden potvrdzovací e-mail.</p>
       <div id="aMsg" aria-live="polite"></div>
     </form>`);
-  if ($('aShop')) $('aShop').addEventListener('change', e => { o = g.offers.find(x => x.link === e.target.value) || o; $('aTarget').value = tgt(o); });
-  $('aTarget').focus();
+  if ($('aShop')) $('aShop').addEventListener('change', e => { o = g.offers.find(x => x.link === e.target.value) || o; if ($('aTarget')) $('aTarget').value = tgt(o); });
+  ($('aTarget') || $('aEmail')).focus();
   $('alertForm').addEventListener('submit', async e => {
     e.preventDefault();
-    const em = $('aEmail').value.trim(), tg = parseFloat(String($('aTarget').value).replace(',', '.'));
+    const em = $('aEmail').value.trim();
+    const tg = sold ? null : parseFloat(String($('aTarget').value).replace(',', '.'));
     if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(em)) { $('aMsg').innerHTML = '<p class="m-text error">Zadaj platný e-mail.</p>'; return; }
-    if (!(tg > 0)) { $('aMsg').innerHTML = '<p class="m-text error">Zadaj cieľovú cenu.</p>'; return; }
+    if (!sold && !(tg > 0)) { $('aMsg').innerHTML = '<p class="m-text error">Zadaj cieľovú cenu.</p>'; return; }
     try { localStorage.setItem('cr_email', em); } catch(e){}
     $('aSubmit').disabled = true;
+    const payload = {email: em, link: o.link, title: o.title, shop: o.shop};
+    if (sold) payload.type = 'stock'; else payload.target = tg;
     try {
       const r = await fetch('/api/alerts', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({email: em, target: tg, link: o.link, title: o.title, shop: o.shop})});
+        body: JSON.stringify(payload)});
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || 'Strážcu sa nepodarilo zapnúť.');
       $('alertForm').innerHTML = `<p class="m-text ok">✓ ${esc(d.message || 'Hotovo.')}</p><button type="button" class="primary" id="mDone">Zavrieť</button>`;
@@ -1281,7 +1294,7 @@ function renderHome(){
   const any = deals.length || etb.length || (d.cheap_box || []).length;
   let h = '';
   if (!any) h += `<section class="hint" id="hint" role="button" tabindex="0" aria-label="Začať hľadať">${radik()}<p><b>Ahoj, som Scanix.</b> Napíš kartu alebo produkt do vyhľadávania hore a ja prejdem všetky obchody naraz.</p></section>`;
-  if (sets.length) h += `<section class="hsec"><div class="hsec-head"><h2>Nové sety</h2>
+  if (sets.length) h += `<section class="hsec"><div class="hsec-head"><h2>Nové sety <small><a href="/sety">všetky ceny podľa setov →</a></small></h2>
     <div class="arrows"><button data-scroll="-1" aria-label="Posunúť doľava">‹</button><button data-scroll="1" aria-label="Posunúť doprava">›</button></div></div>
     <div class="rail" role="list">${sets.map(setHtml).join('')}</div></section>`;
   h += railSec('Zľavy dňa', deals, 'deal', 'pokles ceny za 30 dní');
@@ -1379,6 +1392,7 @@ function showData(q, data, push, opts = {}){
   ITEMS.clear();
   if (!opts.quiet) { openGroups.clear(); showOut = false; }   // pri tichom doplnení nechávame tvoje nastavenia
   groups = buildGroups(allResults, 'g');
+  if (!opts.quiet) cat = defaultCat(data);   // predtým ostala kategória z minulého hľadania
   const sh = data.shops || [];
   loadingShops = sh.filter(isWaiting).map(s => s.name);
   const pendingNow = sh.some(s => s.status === 'pending');
@@ -1399,6 +1413,12 @@ function showData(q, data, push, opts = {}){
       search(norm, {push: false, quiet: true, retry: tries + 1});
     }, pendingNow ? 2000 : 20000);
   }
+}
+// hľadanie karty („charizard ex“, „mew 151/165“) otvorí rovno záložku Karty, ak tam niečo je
+function defaultCat(data){
+  const p = data.parsed || {};
+  if (!p.product_type && (p.pokemon || p.card_number) && groups.some(g => g._c === 'card' && view(g))) return 'card';
+  return 'all';
 }
 async function search(qArg, opts = {}){
   const quiet = !!opts.quiet;
