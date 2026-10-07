@@ -4,17 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>CardRadar – porovnávač cien Pokémon kariet</title>
-<meta name="description" content="Porovnaj ceny Pokémon kariet, ETB a booster boxov v slovenských obchodoch na jednom mieste. Aktuálna cena, dostupnosť a odkaz priamo do obchodu.">
+<meta name="description" content="Porovnaj ceny Pokémon kariet, ETB a booster boxov zo slovenských a českých obchodov na jednom mieste. Aktuálna cena, dostupnosť a odkaz priamo do obchodu.">
 <meta name="theme-color" content="#101b44">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="CardRadar">
 <meta property="og:title" content="CardRadar – porovnávač cien Pokémon kariet">
-<meta property="og:description" content="Karty, ETB a booster boxy zo slovenských obchodov na jednom mieste. Aktuálna cena, sklad a odkaz priamo do obchodu.">
-<meta property="og:image" content="https://getcardradar.com/static/icon-512.png?v=3">
+<meta property="og:description" content="Karty, ETB a booster boxy zo slovenských a českých obchodov na jednom mieste. Aktuálna cena, sklad a odkaz priamo do obchodu.">
+<meta property="og:image" content="https://getcardradar.com/static/icon-512.png?v=6">
 <meta name="twitter:card" content="summary">
-<link rel="icon" href="/static/cr-logo.png?v=3" type="image/png">
-<link rel="shortcut icon" href="/favicon.ico?v=3">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=3">
+<link rel="icon" href="/favicon.ico?v=6" sizes="any">
+<link rel="icon" href="/static/favicon-32.png?v=6" sizes="32x32" type="image/png">
+<link rel="icon" href="/static/icon-192.png?v=6" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=6">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -400,7 +401,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
   <div class="container">
     <div>
       <h1>Porovnaj ceny Pokémon kariet</h1>
-      <p class="lead" id="factShops">Karty, ETB a booster boxy zo slovenských obchodov na jednom mieste.</p>
+      <p class="lead">Karty, ETB a booster boxy zo slovenských a českých obchodov na jednom mieste.</p>
       <div class="chips" id="tags"></div>
       <div class="chips" id="recent"></div>
     </div>
@@ -448,7 +449,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.6 */
+/* CARD RADAR FRONTEND 8.7 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -517,8 +518,6 @@ fetch('/api/config').then(r => r.ok ? r.json() : null).then(c => {
   if (c.alerts_enabled && !ALERTS) { ALERTS = true; if (mode === 'search' && allResults.length) renderView(); }
   SHOPS = Array.isArray(c.shops) ? c.shops : [];
   if (!SHOPS.length) return;
-  const n = SHOPS.length;
-  $('factShops').textContent = `Karty, ETB a booster boxy z ${n} ${plural(n, 'slovenského obchodu', 'slovenských obchodov', 'slovenských obchodov')} na jednom mieste. Zadarmo.`;
   $('footShops').innerHTML = 'Prehľadávame: ' + SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener">${esc(s.name)}</a>`).join(', ') +
     `. Ceny sú orientačné, pred nákupom ich over u predajcu. Prepočet: 1 € = ${String(Math.round(CZK_RATE * 1000) / 1000).replace('.', ',')} Kč.`;
   renderSide();
@@ -1464,8 +1463,7 @@ async function search(qArg, opts = {}){
     clearTimeout(retryTimer);
     btn.disabled = true;
     mode = 'search'; renderFavBtn(); setLayout(); renderSide();
-    const n = SHOPS.length;
-    $('status').innerHTML = `<div class="scan">${radik()}<div>Prehľadávam ${n ? n + ' ' + plural(n,'obchod','obchody','obchodov') : 'obchody'}…<small>„${esc(q)}“</small></div><span class="spin"></span></div>`;
+    $('status').innerHTML = `<div class="scan">${radik()}<div>Prehľadávam obchody…<small>„${esc(q)}“</small></div><span class="spin"></span></div>`;
     skeleton();
     if (window.innerWidth < 680) $('q').blur();
     window.scrollTo({top: 0});
