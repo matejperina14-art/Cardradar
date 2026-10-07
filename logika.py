@@ -34,10 +34,17 @@ def clean_text(value):
     return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
 
 
-def fold(text):
-    """Malé písmená bez diakritiky (Pokémon -> pokemon)."""
-    t = unicodedata.normalize("NFKD", str(text or "").lower())
+@lru_cache(maxsize=50000)
+def _fold(text):
+    t = unicodedata.normalize("NFKD", text.lower())
+    if t.isascii():
+        return t
     return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def fold(text):
+    """Malé písmená bez diakritiky (Pokémon -> pokemon). Výsledky si pamätá (rýchle)."""
+    return _fold(str(text or ""))
 
 
 def fold_words(text):
@@ -259,16 +266,14 @@ def classify_query(parsed):
 # ZHODA NÁZVU S HĽADANÍM
 # =========================================================
 
-_ALIAS_RX = {}
+# oficiálny názov setu (bez diakritiky) -> regexy jeho skratiek; pripravené raz pri štarte
+_ALIASES_BY_SET = {}
+for _alias, _canonical in SET_ALIASES.items():
+    _ALIASES_BY_SET.setdefault(fold(_canonical), []).append(
+        re.compile(r"(?<![a-z0-9/])" + re.escape(fold(_alias)) + r"(?![a-z0-9/])"))
 
 
-def _alias_re(alias):
-    rx = _ALIAS_RX.get(alias)
-    if rx is None:
-        rx = _ALIAS_RX[alias] = re.compile(r"(?<![a-z0-9/])" + re.escape(fold(alias)) + r"(?![a-z0-9/])")
-    return rx
-
-
+@lru_cache(maxsize=50000)
 def set_matches_text(text, set_name):
     """Je v texte daný set? Bez diakritiky, skratky len ako celé slová, aj množné číslo."""
     s, n = fold(clean_text(text)), fold(clean_text(set_name))
@@ -280,9 +285,8 @@ def set_matches_text(text, set_name):
     nw, sw = fold_words(n), fold_words(s)
     if nw and nw <= sw:
         return True
-    for alias, canonical in SET_ALIASES.items():
-        if fold(canonical) == n and _alias_re(alias).search(s):
-            return True
+    if any(rx.search(s) for rx in _ALIASES_BY_SET.get(n, ())):
+        return True
     stem_n = {_stem(w) for w in nw}
     return bool(stem_n) and stem_n <= {_stem(w) for w in sw}
 
