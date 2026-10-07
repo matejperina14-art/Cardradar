@@ -33,6 +33,11 @@ try:
     from PIL import Image   # Pillow: z loga vyrobí ikony v správnych veľkostiach (requirements.txt: Pillow)
 except ImportError:
     Image = None
+try:
+    from pillow_heif import register_heif_opener   # fotky z iPhonu (HEIC), requirements.txt: pillow-heif
+    register_heif_opener()
+except Exception:
+    pass
 
 import logika as L
 import obchody as O
@@ -405,6 +410,25 @@ def _find_static(name):
 # =========================================================
 
 ICON_FALLBACK = "cr-logo.png"
+LOGO_ALTERNATIVES = ["icon-512.png", "icon-192.png", "apple-touch-icon.png", "icon-maskable-512.png", "favicon-32.png"]
+SAFE_IMAGES = {"image/png", "image/jpeg", "image/gif", "image/webp"}   # tieto zobrazí každý prehliadač
+
+
+def _logo_source():
+    """Súbor s logom: cr-logo.png, inak súbor s „logo“ v názve, inak niektorá ikona.
+    Web tak ukáže logo, aj keď sa súbor v GitHube premenuje."""
+    p = _find_static(ICON_FALLBACK)
+    if p:
+        return p
+    if os.path.isdir(STATIC_DIR):
+        for f in sorted(os.listdir(STATIC_DIR)):
+            if "logo" in f.lower() and os.path.splitext(f)[1].lower() in _MIMES:
+                return os.path.join(STATIC_DIR, f)
+    for name in LOGO_ALTERNATIVES:
+        p = _find_static(name)
+        if p:
+            return p
+    return None
 ICON_SIZES = {"favicon-16.png": 16, "favicon-32.png": 32, "favicon-48.png": 48,
               "apple-touch-icon.png": 180, "apple-touch-icon-precomposed.png": 180,
               "icon-192.png": 192, "icon-512.png": 512, "icon-maskable-512.png": 512}
@@ -431,10 +455,10 @@ def _magic_mime(data):
 
 def _make_icon(name):
     """(dáta, mime) ikony vyrobenej z loga, alebo None."""
-    src = _find_static(ICON_FALLBACK)
+    src = _logo_source()
     if not src or Image is None:
         return None
-    key = (name, os.path.getmtime(src))
+    key = (name, src, os.path.getmtime(src))
     if key in _icon_mem:
         return _icon_mem[key]
     out = None
@@ -446,7 +470,12 @@ def _make_icon(name):
         if bbox:
             logo = logo.crop(bbox)
         buf = io.BytesIO()
-        if name == "favicon.ico":
+        if name == "logo":
+            if max(logo.size) > 512:
+                logo.thumbnail((512, 512), Image.LANCZOS)
+            logo.save(buf, format="PNG", optimize=True)
+            out = (buf.getvalue(), "image/png")
+        elif name == "favicon.ico":
             canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
             inner = logo.copy()
             inner.thumbnail((256, 256), Image.LANCZOS)
@@ -479,13 +508,17 @@ def _icon_response(data, mime):
 
 def icon_report():
     """Pre /health: stav loga a ikon."""
-    src = _find_static(ICON_FALLBACK)
+    src = _logo_source()
+    files = sorted(os.listdir(STATIC_DIR)) if os.path.isdir(STATIC_DIR) else []
     if not src:
-        return {"logo": "CHÝBA static/cr-logo.png"}
+        return {"logo": "CHÝBA – v static/ nie je cr-logo.png ani iný obrázok loga", "static": files}
     with open(src, "rb") as f:
         head = f.read(16)
     info = {"logo": os.path.basename(src), "logo_kb": round(os.path.getsize(src) / 1024),
-            "logo_format": _magic_mime(head) or "neznámy", "icons_from_logo": Image is not None}
+            "logo_format": _magic_mime(head) or "neznámy (prehliadač ho nemusí vedieť zobraziť)",
+            "icons_from_logo": Image is not None}
+    if os.path.basename(src) != ICON_FALLBACK:
+        info["upozornenie"] = f"cr-logo.png chýba, používa sa {os.path.basename(src)}"
     if Image is not None:
         try:
             with Image.open(src) as im:
@@ -504,6 +537,16 @@ def static_files(name):
         made = _make_icon(base)
         if made:
             return _icon_response(*made)
+    if base == ICON_FALLBACK:
+        src = _logo_source()
+        if src:
+            with open(src, "rb") as f:
+                kind = _magic_mime(f.read(16))
+            if kind not in SAFE_IMAGES or os.path.basename(src) != ICON_FALLBACK:
+                made = _make_icon("logo")   # HEIC / AVIF / iný súbor -> PNG
+                if made:
+                    return _icon_response(*made)
+            name = os.path.relpath(src, STATIC_DIR)
     path = _find_static(name)
     if not path and base in ICON_SIZES:
         path = _find_static(ICON_FALLBACK)
@@ -561,7 +604,7 @@ def manifest():
 # Obrázky zo static/: najprv sieť (nové logo sa ukáže hneď), cache len keď je offline.
 # Ukladajú sa len úspešné odpovede – predtým sa uložila aj chyba 404 a logo potom chýbalo navždy.
 SERVICE_WORKER = """
-const CACHE = 'cardradar-v13';
+const CACHE = 'cardradar-v14';
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.add('/')).catch(() => {}).then(() => self.skipWaiting()));
 });
