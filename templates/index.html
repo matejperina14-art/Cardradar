@@ -496,7 +496,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 9.0 */
+/* CARD RADAR FRONTEND 9.1 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -613,6 +613,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('#favBtn')) { mode === 'fav' ? leaveFavorites() : showFavorites(); }
   if (e.target.closest('#backBtn')) leaveFavorites();
   if (e.target.closest('#hint')) focusSearch();
+  if (e.target.closest('#homeRetry')) retryHome();
   const ar = e.target.closest('[data-scroll]');
   if (ar) { const rail = ar.closest('.hsec').querySelector('.rail'); if (rail) rail.scrollBy({left: +ar.dataset.scroll * rail.clientWidth * 0.85, behavior: 'smooth'}); }
   if (!e.target.closest('.search-wrap')) hideSug();
@@ -1385,6 +1386,11 @@ function railSec(title, items, kind, note){
     <div class="arrows"><button data-scroll="-1" aria-label="Posunúť doľava">‹</button><button data-scroll="1" aria-label="Posunúť doprava">›</button></div></div>
     <div class="rail" role="list">${items.map(x => tileHtml(x, kind)).join('')}</div></section>`;
 }
+// záloha, keď server chvíľu neodpovedá (napr. počas nasadzovania novej verzie) – rovnaké ako NOVE_SETY v logika.py
+const FALLBACK_SETS = [['Delta Reign','delta reign'],['30th Celebration','30th celebration'],['Pitch Black','pitch black'],
+  ['Chaos Rising','chaos rising'],['Perfect Order','perfect order'],['Ascended Heroes','ascended heroes'],
+  ['Phantasmal Flames','phantasmal flames'],['Mega Evolution','mega evolution']].map(([name, query]) => ({name, query}));
+let homeRetryTimer = null;
 const SET_COLORS = ['#e8a900','#2453d6','#6b45d8','#0a8a4a','#d4334b','#0d8a7c','#d6407f','#d9561c'];
 function setHtml(s, i){
   const prices = [num(s.etb_from) !== null ? `<div>ETB od <b>${eur(s.etb_from)}</b></div>` : '', num(s.box_from) !== null ? `<div>Box od <b>${eur(s.box_from)}</b></div>` : ''].filter(Boolean);
@@ -1399,10 +1405,12 @@ function setHtml(s, i){
 function renderHome(){
   if (mode !== 'home') return;
   const d = homeData || {};
-  const deals = d.deals || [], etb = d.cheap_etb || [], sets = d.new_sets || [];
+  const deals = d.deals || [], etb = d.cheap_etb || [];
+  const sets = (d.new_sets && d.new_sets.length) ? d.new_sets : FALLBACK_SETS;
   const any = deals.length || etb.length || (d.cheap_box || []).length;
   let h = '';
-  if (!any) h += `<section class="hint" id="hint" role="button" tabindex="0" aria-label="Začať hľadať">${radik()}<p><b>Ahoj, som Scanix.</b> Napíš kartu alebo produkt do vyhľadávania hore a ja prejdem všetky obchody naraz.</p></section>`;
+  if (d._failed) h += `<div class="notice"><span>Aktuálne ceny sa nepodarilo načítať. Server sa možno práve aktualizuje.</span><button class="btn" id="homeRetry" style="margin-left:auto;padding:6px 12px;flex:none">Skúsiť znova</button></div>`;
+  else if (!any) h += `<section class="hint" id="hint" role="button" tabindex="0" aria-label="Začať hľadať">${radik()}<p><b>Ahoj, som Scanix.</b> Napíš kartu alebo produkt do vyhľadávania hore a ja prejdem všetky obchody naraz.</p></section>`;
   if (sets.length) h += `<section class="hsec"><div class="hsec-head"><h2>Nové sety <small><a href="/sety">všetky ceny podľa setov →</a></small></h2>
     <div class="arrows"><button data-scroll="-1" aria-label="Posunúť doľava">‹</button><button data-scroll="1" aria-label="Posunúť doprava">›</button></div></div>
     <div class="rail" role="list">${sets.map(setHtml).join('')}</div></section>`;
@@ -1443,13 +1451,21 @@ function renderHome(){
 }
 let homePromise = null;
 function loadHome(){
-  if (!homePromise) homePromise = fetch('/api/home').then(r => r.ok ? r.json() : {}).catch(() => ({}))
-    .then(d => { homeData = d || {}; renderTags(homeData.popular); return homeData; });
+  if (!homePromise) homePromise = fetch('/api/home').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(d => { homeData = d || {}; renderTags(homeData.popular); return homeData; })
+    .catch(() => {
+      homePromise = null; homeData = {_failed: true};
+      // skúsi to samo znova o 15 s (kým je človek na úvodnej stránke)
+      clearTimeout(homeRetryTimer);
+      homeRetryTimer = setTimeout(() => { if (mode === 'home' && homeData && homeData._failed) retryHome(); }, 15000);
+      return homeData;
+    });
   return homePromise;
 }
+function retryHome(){ homeData = null; homePromise = null; showHome(); }
 async function showHome(){
   mode = 'home'; renderFavBtn(); setLayout(); renderSide();
-  if (!homeData) {
+  if (!homeData || homeData._failed) {
     $('status').innerHTML = '';
     $('results').innerHTML = '<div class="m-load"><span class="spin"></span>Načítavam…</div>';
     await loadHome();
