@@ -80,18 +80,19 @@ def create_alert(email, link, title, shop, target, site, kind="price"):
         return 400, {"error": "Zadaj cieľovú cenu."}
 
     site = _site(PUBLIC_URL or site)
-    token = secrets.token_urlsafe(24)
     conn = O.db()
     try:
-        if conn.execute("SELECT COUNT(*) FROM alerts WHERE email = ?", (email,)).fetchone()[0] >= ALERTS_PER_EMAIL:
-            return 400, {"error": f"Na jeden e-mail môžeš mať najviac {ALERTS_PER_EMAIL} strážcov."}
-        existing = conn.execute("SELECT id, confirmed FROM alerts WHERE email = ? AND link = ?",
+        existing = conn.execute("SELECT id, confirmed, token FROM alerts WHERE email = ? AND link = ?",
                                 (email, link)).fetchone()
         if existing:
-            conn.execute("UPDATE alerts SET target = ?, notified = NULL, token = ? WHERE id = ?",
-                         (target, token, existing[0]))
+            # Token ostáva rovnaký – odkaz „Zrušiť strážcu“ zo starších e-mailov musí fungovať ďalej.
+            token = existing[2]
+            conn.execute("UPDATE alerts SET target = ?, notified = NULL WHERE id = ?", (target, existing[0]))
             confirmed = bool(existing[1])
         else:
+            if conn.execute("SELECT COUNT(*) FROM alerts WHERE email = ?", (email,)).fetchone()[0] >= ALERTS_PER_EMAIL:
+                return 400, {"error": f"Na jeden e-mail môžeš mať najviac {ALERTS_PER_EMAIL} strážcov."}
+            token = secrets.token_urlsafe(24)
             conn.execute("INSERT INTO alerts (email, link, title, shop, target, token, confirmed, created, site) "
                          "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
                          (email, link, title, shop, target, token,
@@ -112,8 +113,22 @@ def create_alert(email, link, title, shop, target, site, kind="price"):
     return 200, {"status": "ok", "message": "Poslali sme ti e-mail. Strážca začne fungovať po potvrdení."}
 
 
+def alert_by_token(token):
+    """(cieľová cena, názov, potvrdený?) alebo None. Nič nemení – len na zobrazenie stránky."""
+    if not token:
+        return None
+    conn = O.db()
+    try:
+        row = conn.execute("SELECT target, title, confirmed FROM alerts WHERE token = ?", (token,)).fetchone()
+    finally:
+        conn.close()
+    return (row[0], row[1], bool(row[2])) if row else None
+
+
 def confirm_alert(token):
     """Vráti (cieľová cena, názov) alebo None, ak odkaz neplatí."""
+    if not token:
+        return None
     conn = O.db()
     try:
         row = conn.execute("SELECT id, target, title FROM alerts WHERE token = ?", (token,)).fetchone()
@@ -126,6 +141,8 @@ def confirm_alert(token):
 
 
 def stop_alert(token):
+    if not token:
+        return False
     conn = O.db()
     try:
         deleted = conn.execute("DELETE FROM alerts WHERE token = ?", (token,)).rowcount
@@ -441,7 +458,9 @@ def _drop_mail(email, title, shop, link, target, price, token, site):
         footer_html=(f'Strážca sa po tomto upozornení vypína. Nový si nastavíš na '
                      f'<a href="{e(site)}" style="color:#6b7aa0">{e(site.replace("https://", ""))}</a>.<br>'
                      f'<a href="{e(stop)}" style="color:#6b7aa0">Zrušiť strážcu</a>'))
-    _send(email, subject, text, body, headers={"List-Unsubscribe": f"<{stop}>"})
+    # List-Unsubscribe-Post: Gmail / Apple Mail ukážu tlačidlo „Odhlásiť“, ktoré pošle POST na /alerts/stop
+    _send(email, subject, text, body, headers={"List-Unsubscribe": f"<{stop}>",
+                                               "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"})
 
 
 def send_admin_mail(to, subject, text, html_body):
