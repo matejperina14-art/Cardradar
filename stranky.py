@@ -48,6 +48,7 @@ _SEALED_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kole
                         r"starter|academy|\bcase\b|mystery|plechovk|\bsada\b", re.I)
 
 _home = {"t": 0.0, "data": None}
+_items = {"t": 0.0, "all": None}
 _home_lock = threading.Lock()
 
 
@@ -126,6 +127,7 @@ def build_home():
         s["offers"] = len(mine)
         sets.append(s)
 
+    _items["all"], _items["t"] = all_items, time.monotonic()   # pre stránky setov
     return {
         "deals": _uniq(deals, 12, key=lambda d: d["drop_pct"], reverse=True),
         "cheap_etb": _uniq(etb, 8),
@@ -166,6 +168,8 @@ def _home_warmer():
 
 def start_background():
     threading.Thread(target=_home_warmer, daemon=True, name="home").start()
+    if O.only_one_process("report"):
+        threading.Thread(target=_report_loop, daemon=True, name="report").start()
 
 
 # =========================================================
@@ -196,13 +200,13 @@ table{width:100%;border-collapse:collapse}td,th{padding:7px 6px;border-bottom:1p
 """
 
 
-def page(title, body, back=True, status=200):
+def page(title, body, back=True, status=200, extra_head="", css=""):
     home = PUBLIC_URL or "/"
     link = f'<a class="back" href="{home}">← Späť na CardRadar</a>' if back else ""
     doc = f"""<!doctype html><html lang="sk"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} – CardRadar</title>
 <link rel="icon" href="/static/icon-192.png">
-<style>{PAGE_CSS}</style><header><a href="{home}"><img src="/static/icon-192.png" alt="" onerror="this.remove()">CardRadar</a></header>
+{extra_head}<style>{PAGE_CSS}{css}</style><header><a href="{home}"><img src="/static/icon-192.png" alt="" onerror="this.remove()">CardRadar</a></header>
 <main>{link}{body}</main>"""
     return Response(doc, status=status, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
@@ -315,7 +319,8 @@ def shops_page():
 
 def robots_txt():
     if ALLOW_INDEXING:
-        body = "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin/\nDisallow: /alerts/\n"
+        body = ("User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin/\nDisallow: /alerts/\n"
+                "Disallow: /go\n" + (f"Sitemap: {PUBLIC_URL}/sitemap.xml\n" if PUBLIC_URL else ""))
     else:
         body = "User-agent: *\nDisallow: /\n"
     return Response(body, mimetype="text/plain")
@@ -567,3 +572,239 @@ def admin_katalog():
     return jsonify({"refresh_min": O.CATALOG_REFRESH_MIN, "catalogs": [
         {"shop": s["name"], "enabled": s.get("enabled", True), "items": len(O.load_catalog(s["name"])[0]),
          "updated": O.load_catalog(s["name"])[1], "crawling": O.is_crawling(s["name"])} for s in shops]})
+
+
+# =========================================================
+# STRÁNKY SETOV (/sety, /set/pitch-black) – pre Google aj návštevníkov
+# Údaje sú z rovnakej databázy ako úvodná stránka (posledné 3 dni, skladom).
+# Nový set = pridaj ho do NOVE_SETY v logika.py, stránka vznikne sama.
+# =========================================================
+
+SET_SECTIONS = [
+    ("Elite Trainer Box", _ETB_RE),
+    ("Booster Box", _BOX_RE),
+    ("Booster Bundle", _BUNDLE_RE),
+    ("Ostatné balíky", _SEALED_RE),
+]
+
+
+def slugify(name):
+    return re.sub(r"[^a-z0-9]+", "-", L.fold(name)).strip("-")
+
+
+def set_by_slug(slug):
+    return next((s for s in L.NOVE_SETY if slugify(s["name"]) == slug), None)
+
+
+def _all_items():
+    if _items["all"] is None or time.monotonic() - _items["t"] > 900:
+        home_data()   # build_home naplní _items
+        if _items["all"] is None:
+            try:
+                build_home()
+            except Exception:
+                _items["all"] = []
+    return _items["all"] or []
+
+
+def _abs(path):
+    return (PUBLIC_URL or "") + path
+
+
+SET_CSS = """
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin:10px 0 6px}
+.card{border:1px solid #e2e6ef;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px;background:#fff}
+.card img{width:100%;height:150px;object-fit:contain;background:#f6f8fc;border-radius:8px}
+.card .t{font-weight:700;font-size:14px;line-height:1.35;color:#0d1633}
+.card .s{font-size:13px;color:#6b7aa0}.card .p{font-size:19px;font-weight:800;color:#0d1633}
+.card .pp{font-size:12px;color:#6b7aa0}.card a.go{margin-top:auto;text-align:center;background:#101b44;color:#fff;
+ border-radius:9px;padding:8px;font-weight:700;text-decoration:none;font-size:14px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.chips a{border:1px solid #d3d9e6;border-radius:99px;
+ padding:6px 12px;text-decoration:none;font-size:14px;color:#0d1633;background:#fff}
+main{max-width:1000px}
+"""
+
+
+def _eur(v):
+    return f"{v:,.2f}".replace(",", " ").replace(".", ",") + " €"
+
+
+def _offer_card(it):
+    e = html.escape
+    img = f'<img src="{e(it["image"])}" alt="{e(it["title"])}" loading="lazy">' if it["image"].startswith("https://") else ""
+    packs = L.estimate_packs(it["title"], it.get("language", ""))
+    pp = (f'<span class="pp">{_eur(it["price_eur"] / packs)} / booster</span>' if packs and packs > 1 else "")
+    return (f'<div class="card">{img}<span class="t">{e(it["title"])}</span><span class="s">{e(it["shop"])}</span>'
+            f'<span class="p">{_eur(it["price_eur"])}</span>{pp}'
+            f'<a class="go" href="{e(O.go_link(it["link"]))}" rel="nofollow sponsored">Do obchodu</a></div>')
+
+
+def set_page(slug):
+    s = set_by_slug(slug)
+    if not s:
+        return page("Set nenájdený", "<h1>Set nenájdený</h1><p>Pozri si <a href='/sety'>všetky sety</a>.</p>",
+                    status=404)
+    e = html.escape
+    mine = [i for i in _all_items() if L.set_matches_text(i["title"], s["query"])]
+    used, blocks = set(), ""
+    for label, rx in SET_SECTIONS:
+        part = [i for i in mine if i["link"] not in used and rx.search(i["title"])
+                and not L.is_combo(i["title"]) and not L._BULK_RE.search(i["title"])]
+        part = _uniq(part, 12)
+        used |= {i["link"] for i in part}
+        if part:
+            blocks += f"<h2>{e(s['name'])} {e(label)}</h2><div class='grid'>" + "".join(map(_offer_card, part)) + "</div>"
+    cards = _uniq([i for i in mine if i["link"] not in used and L.product_kind(i["title"]) == "card"], 12,
+                  reverse=True)
+    if cards:
+        blocks += f"<h2>Karty zo setu {e(s['name'])}</h2><div class='grid'>" + "".join(map(_offer_card, cards)) + "</div>"
+    if not blocks:
+        blocks = "<p>Momentálne nemáme žiadne ponuky skladom. Skús to neskôr.</p>"
+    search = "/?q=" + urllib.parse.quote(s["query"])
+    others = "".join(f'<a href="/set/{slugify(x["name"])}">{e(x["name"])}</a>'
+                     for x in L.NOVE_SETY if x["name"] != s["name"])
+    body = (f"<h1>Pokémon {e(s['name'])} – ceny ETB, booster boxov a bundle</h1>"
+            f"<p>Najlepšie ceny setu <b>{e(s['name'])}</b> zo slovenských a českých obchodov skladom. "
+            f"Ceny z českých obchodov sú prepočítané z Kč podľa denného kurzu ECB. "
+            f"<a href='{e(search)}'>Hľadať všetko zo setu →</a></p>{blocks}"
+            f"<h2>Ďalšie sety</h2><div class='chips'>{others}</div>"
+            f"<p class='upd'>Ceny sa aktualizujú priebežne, pred nákupom ich over v obchode.</p>")
+    desc = f"Porovnanie cien Pokémon {s['name']}: Elite Trainer Box, Booster Box, Booster Bundle a karty skladom."
+    return page(f"Pokémon {s['name']} ceny", body, extra_head=_meta(desc, f"/set/{slug}"), css=SET_CSS)
+
+
+def sets_page():
+    e = html.escape
+    items = _all_items()
+    rows = ""
+    for s in L.NOVE_SETY:
+        mine = [i for i in items if L.set_matches_text(i["title"], s["query"])]
+        etb = [i["price_eur"] for i in mine if _ETB_RE.search(i["title"]) and not L.is_combo(i["title"])]
+        box = [i["price_eur"] for i in mine if _BOX_RE.search(i["title"]) and not L.is_combo(i["title"])]
+        rows += (f"<tr><td><a href='/set/{slugify(s['name'])}'><b>{e(s['name'])}</b></a></td>"
+                 f"<td>{_eur(min(etb)) if etb else '–'}</td><td>{_eur(min(box)) if box else '–'}</td>"
+                 f"<td>{len(mine)}</td></tr>")
+    body = ("<h1>Pokémon sety – najlepšie ceny</h1><p>Najnižšie ceny skladom v slovenských a českých obchodoch.</p>"
+            "<div class='wrap'><table><tr><th>Set</th><th>ETB od</th><th>Booster Box od</th><th>Ponúk</th></tr>"
+            f"{rows}</table></div>")
+    return page("Pokémon sety", body, extra_head=_meta("Ceny Pokémon setov: ETB a booster boxy skladom.", "/sety"),
+                css=SET_CSS)
+
+
+def _meta(desc, path):
+    e = html.escape
+    canon = f'<link rel="canonical" href="{e(_abs(path))}">' if PUBLIC_URL else ""
+    return f'<meta name="description" content="{e(desc)}">{canon}'
+
+
+def sitemap_xml():
+    base = PUBLIC_URL or request.url_root.rstrip("/")
+    paths = ["/", "/sety"] + [f"/set/{slugify(s['name'])}" for s in L.NOVE_SETY] + \
+            ["/podmienky", "/ochrana-udajov", "/pre-obchody"]
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    urls = "".join(f"<url><loc>{html.escape(base + p)}</loc><lastmod>{day}</lastmod></url>" for p in paths)
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>'
+    return Response(xml, mimetype="application/xml")
+
+
+# =========================================================
+# DENNÁ KONTROLA (e-mail prevádzkovateľovi)
+# Raz denne (REPORT_HOUR UTC) prebehne /admin/test a príde e-mail na ADMIN_EMAIL
+# (inak CONTACT_EMAIL): obchody, ktoré nefungujú, podozrivé ceny, kurz, databáza, katalógy.
+# =========================================================
+
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "") or CONTACT_EMAIL
+REPORT_HOUR = int(os.environ.get("REPORT_HOUR", "5"))   # 5 UTC = 6:00 / 7:00 u nás
+
+
+def build_report(state):
+    """Zhrnutie problémov z testu + stav servera. Vráti (zoznam problémov, zoznam OK správ)."""
+    problems, ok = [], []
+    shops = {}
+    for qr in state.get("report", []):
+        for d in qr["shops"]:
+            x = shops.setdefault(d["name"], {"n": 0, "ok": 0, "res": 0, "errs": set()})
+            x["n"] += 1
+            x["res"] += d["results"] or 0
+            if d["ok"]:
+                x["ok"] += 1
+            else:
+                x["errs"].add(d["status"])
+    for name, x in sorted(shops.items()):
+        if x["ok"] < x["n"] / 2:
+            problems.append(f"{name}: odpovedal len v {x['ok']} z {x['n']} hľadaní ({', '.join(sorted(x['errs']))})")
+        elif x["res"] == 0:
+            problems.append(f"{name}: odpovedá, ale nevrátil ani jeden produkt – asi sa zmenil web obchodu")
+        else:
+            ok.append(f"{name}: {x['res']} ponúk")
+    serious = [(qr["query"], i) for qr in state.get("report", []) for i in qr["issues"]
+               if set(i["why"]) - {"bez obrázka", "sklad neuvedený"}]
+    if serious:
+        problems.append(f"Podozrivé ponuky: {len(serious)} (detail v /admin/test)")
+        for q, i in serious[:8]:
+            problems.append(f"  · {q}: {i['shop']} – {i['title'][:70]} – {i['price']:.2f} € ({', '.join(i['why'])})")
+    if O.db_problem():
+        problems.append("Databáza: " + O.db_problem())
+    if L.KURZ_INFO.get("source") != "ECB":
+        problems.append(f"Kurz CZK sa nenačítal z ECB, používa sa záložný {L.KURZ['CZK']}")
+    else:
+        try:
+            age = (datetime.now(timezone.utc).date() - datetime.strptime(L.KURZ_INFO["date"], "%Y-%m-%d").date()).days
+        except Exception:
+            age = 0
+        (problems if age > 4 else ok).append(f"Kurz CZK {L.KURZ['CZK']} z {L.KURZ_INFO.get('date')}")
+    for s in O.SHOPS:
+        if s.get("enabled", True) and O.is_catalog(s):
+            items, updated = O.load_catalog(s["name"])
+            if not items or O._is_stale(updated, factor=4):
+                problems.append(f"Katalóg {s['name']}: {len(items)} položiek, naposledy {updated or 'nikdy'}")
+    clicks = O.click_stats(1)
+    if clicks:
+        ok.append("Kliky včera/dnes: " + ", ".join(f"{c['shop']} {c['clicks']}" for c in clicks))
+    return problems, ok
+
+
+def send_report(state):
+    import strazca
+    problems, ok = build_report(state)
+    e = html.escape
+    subject = (f"CardRadar: ⚠️ {len([p for p in problems if not p.startswith('  ')])} problémov"
+               if problems else "CardRadar: ✅ všetko funguje")
+    text = "Denná kontrola CardRadar\n\n" + ("PROBLÉMY:\n" + "\n".join(problems) + "\n\n" if problems else "") + \
+           "OK:\n" + "\n".join(ok) + f"\n\nDetail: {PUBLIC_URL}/admin/test"
+    body = (f"<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
+            f"<h2>Denná kontrola CardRadar</h2>"
+            + (f"<h3 style='color:#d4334b'>Problémy</h3><ul>{''.join(f'<li>{e(p)}</li>' for p in problems)}</ul>"
+               if problems else "<p style='color:#0a8a4a'><b>Všetko funguje.</b></p>")
+            + f"<h3>OK</h3><ul>{''.join(f'<li>{e(x)}</li>' for x in ok)}</ul>"
+            f"<p>Detail: /admin/test?key=…</p></div>")
+    return strazca.send_admin_mail(ADMIN_EMAIL, subject, text, body)
+
+
+def _report_loop():
+    time.sleep(120)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            day = now.strftime("%Y-%m-%d")
+            if now.hour >= REPORT_HOUR and O.meta_get("report_day") != day:
+                O.meta_set("report_day", day)   # najprv zapísať, aby sa nespustil dvakrát
+                _run_selftest(SELFTEST_QUERIES)
+                state = json.loads(O.meta_get("selftest") or "{}")
+                if not send_report(state):
+                    print("[CardRadar] Denná kontrola: e-mail sa neodoslal (chýba SMTP alebo ADMIN_EMAIL).",
+                          flush=True)
+        except Exception as ex:
+            print(f"[CardRadar] Denná kontrola: {ex}", flush=True)
+        time.sleep(900)
+
+
+def admin_report():
+    """/admin/report?key=... – ukáže zhrnutie poslednej kontroly; &send=1 ho pošle e-mailom."""
+    if not is_admin():
+        return jsonify({"error": "Nepovolené."}), 403
+    state = json.loads(O.meta_get("selftest") or "{}")
+    problems, ok = build_report(state)
+    sent = send_report(state) if request.args.get("send") else None
+    return jsonify({"problems": problems, "ok": ok, "email": ADMIN_EMAIL or None, "sent": sent,
+                    "clicks_30d": O.click_stats(30)})
