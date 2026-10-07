@@ -4,3 +4,4 @@ beautifulsoup4>=4.12,<5
 gunicorn>=22,<24
 lxml>=5,<7
 Pillow
+pillow-heif
