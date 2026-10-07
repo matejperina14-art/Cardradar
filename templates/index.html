@@ -378,7 +378,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 <header class="topbar">
   <div class="container">
     <a href="/" id="home" class="brand" aria-label="CardRadar – domov">
-      <img class="radik" src="/static/cr-logo.png" alt="" width="96" height="96" decoding="async">
+      <img class="radik" src="/static/cr-logo.png?v=7" alt="" width="96" height="96" decoding="async" onerror="this.onerror=function(){this.style.visibility='hidden'};this.src='/static/icon-192.png?v=7'">
       <span class="wordmark">CardRadar</span>
     </a>
     <div class="search-wrap">
@@ -405,7 +405,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
       <div class="chips" id="tags"></div>
       <div class="chips" id="recent"></div>
     </div>
-    <img class="radik" src="/static/cr-logo.png" alt="" width="96" height="96" decoding="async">
+    <img class="radik" src="/static/cr-logo.png?v=7" alt="" width="96" height="96" decoding="async" onerror="this.onerror=function(){this.style.visibility='hidden'};this.src='/static/icon-192.png?v=7'">
   </div>
 </section>
 
@@ -449,14 +449,14 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 8.7 */
+/* CARD RADAR FRONTEND 8.8 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
 const priceOf = i => num(i?.price_eur ?? i?.price);
 const imageOf = i => String(i?.image || i?.image_url || '').trim();
 const plural = (n, one, few, many) => n === 1 ? one : (n >= 2 && n <= 4 ? few : many);
-const radik = (cls = '') => `<img class="radik ${cls}" src="/static/cr-logo.png" alt="" width="96" height="96" decoding="async">`;
+const radik = (cls = '') => `<img class="radik ${cls}" src="/static/cr-logo.png?v=7" alt="" width="96" height="96" decoding="async" onerror="this.style.visibility='hidden'">`;
 const BASE_TITLE = 'CardRadar – porovnávač cien Pokémon kariet';
 // odkazy do obchodov idú cez /go: server započíta klik a pridá utm_source=cardradar
 // (alebo partnerský odkaz obchodu, ak je nastavený v obchody.py)
