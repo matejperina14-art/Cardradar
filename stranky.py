@@ -86,7 +86,7 @@ def _uniq(items, limit, key=lambda x: x["price_eur"], reverse=False):
 def build_home():
     deals, etb, boxes, bundles, cards, all_items = [], [], [], [], [], []
     for link, title, shop, price, stock, image, old_max, any_image in _latest_rows():
-        if not L.is_tcg_product(title):
+        if not L.is_tcg_product(title) or not L.price_plausible(title, price):
             continue
         lang = L.detect_language(title)
         if lang in L.ASIAN_LANGS:
@@ -560,6 +560,8 @@ def admin_katalog():
             return jsonify({"error": "Neznámy obchod.", "shops": [s["name"] for s in shops]}), 400
         if request.args.get("refresh"):
             return jsonify(O.crawl_shop(shop))
+        if request.args.get("debug") and shop.get("catalog"):
+            return jsonify(O.debug_listing(shop, request.args.get("url")))
         items, updated = O.load_catalog(shop["name"])
         return jsonify({"shop": shop["name"], "items": len(items), "updated": updated, "sample": items[:20]})
     return jsonify({"refresh_min": O.CATALOG_REFRESH_MIN, "catalogs": [
