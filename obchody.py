@@ -1171,11 +1171,20 @@ def is_crawling(shop_name):
     return shop_name in _crawling
 
 
+_cat_query_cache = None   # vytvorí sa nižšie (TTLCache je definovaná vyššie)
+
+
 def catalog_scrape(shop, query):
     start = time.monotonic()
     debug = _new_debug(shop, query)
     debug["url"] = "catalog"
     items, updated = load_catalog(shop["name"])
+    ckey = f"{shop['name']}|{L.clean_text(query).lower()}|{updated}"
+    hit = _cat_query_cache.get(ckey) if items else None
+    if hit is not None:   # rovnaké hľadanie v posledných 2 min – bez prechádzania tisícok položiek
+        res, dbg = hit
+        dbg["cache"] = "hit"
+        return res, dbg
     if not items or _is_stale(updated, factor=3):
         crawl_in_background(shop)
     if not items:
@@ -1203,7 +1212,11 @@ def catalog_scrape(shop, query):
     debug.update(links_scanned=len(items), accepted=len(results), results=len(results),
                  status="ok" if results else "no_results",
                  elapsed_ms=round((time.monotonic() - start) * 1000))
+    _cat_query_cache.set(ckey, (results, debug))
     return results, debug
+
+
+_cat_query_cache = TTLCache(120, 400)
 
 
 # =========================================================
@@ -1249,8 +1262,10 @@ def _refresh(shop, query, key):
             _busy.discard(key)
 
 
-def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT):
-    """Hľadanie v jednom obchode -> (výsledky, debug)."""
+def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT, wait_inflight=False):
+    """Hľadanie v jednom obchode -> (výsledky, debug).
+    wait_inflight=False: ak to isté práve hľadá iné vlákno, nečaká (vráti 'pending') –
+    stránka si výsledok o chvíľu dotiahne z cache. Čakajúce vlákna predtým zapĺňali pool."""
     if is_catalog(shop):
         res, dbg = catalog_scrape(shop, query)
     elif not use_cache:
@@ -1276,7 +1291,9 @@ def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT):
                 owner = event is None
                 if owner:
                     event = _inflight[key] = threading.Event()
-            if not owner:   # to isté práve hľadá iné vlákno
+            if not owner and not wait_inflight:   # to isté práve hľadá iné vlákno
+                res, dbg = [], dict(_new_debug(shop, query), status="pending")
+            elif not owner:
                 event.wait(timeout + 3)
                 with _cache_lock:
                     ent = _cache.get(key)
@@ -1311,17 +1328,25 @@ def search_all(query, wait_all=False):
     def run(shop):
         start = time.monotonic()
         try:
-            res, dbg = shop_search(shop, query)
+            res, dbg = shop_search(shop, query, wait_inflight=wait_all)
         except Exception as e:
             res, dbg = [], dict(_new_debug(shop, query), status="runner_error", error=str(e)[:200])
         dbg["elapsed_ms"] = round((time.monotonic() - start) * 1000)
         return res, dbg
 
-    futs = [(s, SHOP_POOL.submit(run, s)) for s in shops]
-    wait([f for _, f in futs], timeout=SEARCH_TIMEOUT + 6 if wait_all else SEARCH_BUDGET)
+    # obchody s vyhľadávaním idú cez internet súbežne vo vláknach;
+    # katalógy sú v našej databáze, tie sa prejdú hneď tu (nečakajú na voľné vlákno)
+    started = time.monotonic()
+    futs = {s["name"]: SHOP_POOL.submit(run, s) for s in shops if not is_catalog(s)}
+    local = {s["name"]: run(s) for s in shops if is_catalog(s)}
+    budget = SEARCH_TIMEOUT + 6 if wait_all else SEARCH_BUDGET
+    wait(list(futs.values()), timeout=max(0.3, budget - (time.monotonic() - started)))
     results, diagnostics = [], []
-    for shop, fut in futs:
-        if fut.done():
+    for shop in shops:
+        fut = futs.get(shop["name"])
+        if fut is None:
+            res, dbg = local[shop["name"]]
+        elif fut.done():
             res, dbg = fut.result()
         else:
             res, dbg = [], dict(_new_debug(shop, query), status="pending",
