@@ -533,7 +533,7 @@ def icon_report():
 @app.get("/static/<path:name>")
 def static_files(name):
     base = os.path.basename(name).lower()
-    if base in ICON_SIZES:
+    if base in ICON_SIZES and not _find_static(name):   # vlastná ikona v static/ má prednosť
         made = _make_icon(base)
         if made:
             return _icon_response(*made)
