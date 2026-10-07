@@ -39,6 +39,14 @@ ALERTS_PER_EMAIL = 20
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[a-z]{2,24}$", re.I)
 
 
+def _site(url):
+    """Adresa webu pre e-maily: bez lomky na konci a cez https (inak e-mail logo nezobrazí)."""
+    url = (url or "").strip().rstrip("/")
+    if url.startswith("http://") and not re.match(r"http://(?:localhost|127\.|0\.0\.0\.0)", url):
+        url = "https://" + url[len("http://"):]
+    return url
+
+
 def eur(v):
     try:
         return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + " €"
@@ -67,7 +75,7 @@ def create_alert(email, link, title, shop, target, site):
     if not 0 < target < 100000:
         return 400, {"error": "Zadaj cieľovú cenu."}
 
-    site = PUBLIC_URL or site
+    site = _site(PUBLIC_URL or site)
     token = secrets.token_urlsafe(24)
     conn = O.db()
     try:
@@ -173,8 +181,8 @@ def product_offer(link):
                     currency = L.clean_text(cur.get("content") or cur.get_text()).upper() or "EUR"
                 break
 
-    if price and currency in ("CZK", "KČ"):
-        price /= L.KURZ["CZK"]
+    if price and currency in ("CZK", "KČ", "KC"):
+        price = L.czk_to_eur(price)
     if not stock:
         stock = L.detect_stock(soup.get_text(" ", strip=True)[:20000])
     return (round(price, 2) if price else None), stock
@@ -220,7 +228,7 @@ def check_alerts_once():
                              (link, O.today_str(), shop, title, price, stock))
             if _should_notify(price, stock, target):
                 try:
-                    _drop_mail(email, title, shop, link, target, price, token, PUBLIC_URL or site or "")
+                    _drop_mail(email, title, shop, link, target, price, token, _site(PUBLIC_URL or site))
                     conn.execute("UPDATE alerts SET notified = ? WHERE id = ?", (now, aid))
                 except Exception as e:
                     print(f"[CardRadar] E-mail strážcu sa neodoslal: {e}", flush=True)
@@ -310,7 +318,7 @@ def _email_html(*, preheader, heading, intro, title, shop, image, price_html,
     img_cell = (f'<td width="104" valign="top" style="padding:0 16px 0 0"><img src="{e(image)}" width="104" alt="" '
                 f'style="display:block;width:104px;height:auto;border-radius:10px;border:1px solid #e3e7f1;background:#fff"></td>'
                 if image else "")
-    logo = (f'<img src="{e(site)}/static/icon-192.png" width="40" height="40" alt="" '
+    logo = (f'<img src="{e(site)}/static/icon-192.png" width="40" height="40" alt="CardRadar" '
             f'style="display:block;border-radius:10px">' if site else "")
     font = "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
     return f"""<!doctype html>
