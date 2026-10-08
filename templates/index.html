@@ -803,7 +803,7 @@ function langTag(x){
 function categoryOf(t){
   t = String(t || '');
   if (/elite\s+trainer\s+box|\betb\b/i.test(t)) return 'etb';
-  if (/booster\s*(?:box|display)/i.test(t) && !/bundle|blister/i.test(t)) return 'box';
+  if ((/booster\s*(?:box|display)|boosterbox/i.test(t) || /\bBB\b/.test(t)) && !/bundle|blister/i.test(t)) return 'box';
   if (/\bbundle\b/i.test(t) && !/display/i.test(t)) return 'bundle';
   if (/booster|bundle|collection|kolekci|\btins?\b|blister|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|premium|display/i.test(t)) return 'other';
   return 'card';
