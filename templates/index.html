@@ -230,6 +230,7 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .o-meta{font-size:12px;color:var(--mute);padding-left:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sd{width:8px;height:8px;border-radius:50%;flex:none;background:#c9cfdc}
 .s-in{background:var(--green)}.s-out{background:var(--red)}.s-pre{background:var(--blue)}.s-ord{background:#e8a900}
+.partner{font-size:10px;font-weight:700;color:var(--green);background:var(--green-bg);border-radius:5px;padding:0 5px;flex:none}
 .o-price{font-weight:750;font-size:15px;white-space:nowrap}
 .offer.cheap .o-price{color:var(--green)}
 .offer.sold .o-price,.offer.sold .o-shop b{color:var(--mute)}
@@ -291,7 +292,7 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .drop{position:absolute;left:6px;bottom:6px;background:#d4334b;color:#fff;font-size:10.5px;font-weight:800;padding:1px 5px;border-radius:5px}
 .setcard{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;text-align:left;padding:0;cursor:pointer;transition:box-shadow .15s}
 .setcard:hover{box-shadow:var(--shadow-hi)}
-.setcard .tile-img{height:130px;background:linear-gradient(160deg,color-mix(in srgb,var(--c) 22%,#fff),#f6f7fb)}
+.setcard .tile-img{height:130px;background:linear-gradient(160deg,color-mix(in srgb,var(--c) 22%,var(--img-bg)),var(--img-bg))}
 .setcard .tile-img .ph{width:30%}
 .set-n{font-size:15px;font-weight:750}
 .set-p{font-size:12.5px;color:var(--sub)}
@@ -498,7 +499,7 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 9.4 */
+/* CARD RADAR FRONTEND 9.5 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -803,6 +804,14 @@ function langTag(x){
   const title = guess ? 'Jazyk neuvedený – zvyčajne anglická verzia' : LANGS[k] + ' verzia';
   return `<span class="lang-tag${guess ? ' guess' : ''}${ASIAN.includes(k) ? ' asia' : ''}" title="${title}">${flag(k)}${k}${guess ? '?' : ''}</span>`;
 }
+// kategória: server vie, či je to karta / balík / príslušenstvo; jemné delenie balíkov podľa názvu
+function catOf(o){
+  if (o.kind === 'accessory') return 'acc';
+  const c = categoryOf(o.title);
+  if (o.kind === 'card') return c === 'etb' || c === 'box' ? c : 'card';
+  if (o.kind === 'sealed' && c === 'card') return 'other';
+  return c;
+}
 function categoryOf(t){
   t = String(t || '');
   if (/elite\s+trainer(?:\s+box)?|\betb\b/i.test(t)) return 'etb';
@@ -867,7 +876,7 @@ function buildGroups(items, prefix){
     // obrázok: z ponuky, inak už raz dotiahnutý (žiadne blikanie pri dopĺňaní pomalých obchodov)
     const image = imageOf(offers.find(o => imageOf(o)) || {}) || offers.map(o => imgByLink.get(o.link)).find(Boolean) || '';
     const g = {
-      id: prefix + (n++), key, offers, title, _c: first.kind === 'accessory' ? 'acc' : categoryOf(first.title),
+      id: prefix + (n++), key, offers, title, _c: catOf(first),
       language: first.language || '', image, _imgTried: !!image,
       _fav: !!first._fav, saved_price: first.saved_price
     };
@@ -1084,7 +1093,7 @@ function groupHtml(v, best){
         const fresh = ago(shopFresh[o.shop]);
         return `<li class="offer${cheap ? ' cheap' : ''}${o.stock === 'out' ? ' sold' : ''}">
           <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener">
-            <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
+            <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}${o.partner ? '<span class="partner" title="Overený partner CardRadaru">Partner</span>' : ''}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
             <span class="o-price num">${eur(priceOf(o))}</span>
             <span class="o-go" aria-hidden="true">↗</span>
           </a></li>`;
@@ -1615,7 +1624,8 @@ async function search(qArg, opts = {}){
   if (!q) { $('q').focus(); return; }
   if (!quiet) $('q').value = q;
   const push = opts.push !== false;
-  if (quiet && searchCtrl) return;
+  // práve beží iné hľadanie: tiché dopĺňanie neruší, len ho skúsi znova o chvíľu (predtým sa tu zaseklo)
+  if (quiet && searchCtrl) { clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (mode === 'search') search(currentQuery, {push: false, quiet: true, retry: opts.retry || 0}); }, 1500); return; }
   if (!quiet) focusLink = opts.focus || '';   // práve beží tvoje nové hľadanie, nerušíme ho
   if (searchCtrl) searchCtrl.abort();
   const key = q.toLowerCase();
