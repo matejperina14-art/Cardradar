@@ -17,6 +17,7 @@ Premenné prostredia (Render → Environment):
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM   e-maily strážcu
   ALLOW_INDEXING 1 = web môže byť v Google
   OPERATOR_NAME, CONTACT_EMAIL   do podmienok a ochrany údajov
+  OPERATOR_DETAILS  adresa, IČO, zápis v registri (povinné, keď zarábaš – zákon o e-obchode)
   CRAWL_PARALLEL koľko obchodov sa prechádza naraz (predvolené 2)
 
 Spolupráca s obchodmi (XML feedy, partnerské odkazy, cena za klik): /admin/obchody
@@ -138,14 +139,39 @@ def load_index():
     return None
 
 
+_home_inline = {"key": None, "html": None, "etag": None}
+
+
+def _page_with_home(page_html):
+    """Do index.html vloží hotové dáta úvodnej stránky – web ich ukáže hneď, bez ďalšej požiadavky."""
+    data = S.home_data() if not request.args.get("q") else S.home_cached()
+    if not data:
+        return page_html, _index["etag"]
+    key = (_index["etag"], id(data))
+    if _home_inline["key"] != key:
+        d = dict(data)
+        d["kurz_czk"] = {"rate": L.KURZ["CZK"], "date": L.KURZ_INFO.get("date", "")}
+        js = json.dumps(d, ensure_ascii=False).replace("</", "<\\/")
+        tag = f"<script>window.__HOME__={js};</script>\n"
+        mark = "<script>\n/* CARD RADAR FRONTEND"
+        out = page_html.replace(mark, tag + mark, 1) if mark in page_html else page_html
+        _home_inline.update(key=key, html=out, etag=hashlib.md5(out.encode()).hexdigest()[:20])
+    return _home_inline["html"], _home_inline["etag"]
+
+
 @app.get("/")
 def home():
     page_html = load_index()
     if page_html is None:
         return Response("<h1>CardRadar</h1><p>index.html nebol nájdený.</p>", status=500, mimetype="text/html")
+    try:
+        page_html, etag = _page_with_home(page_html)
+    except Exception as e:
+        print(f"[CardRadar] Vloženie úvodnej stránky: {e}", flush=True)
+        etag = _index["etag"]
     resp = Response(page_html, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-cache"
-    resp.set_etag(_index["etag"])
+    resp.set_etag(etag)
     return resp.make_conditional(request)   # opakovaná návšteva = len „304 Not Modified“
 
 
