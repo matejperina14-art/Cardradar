@@ -98,7 +98,7 @@ SET_ALIASES = {
     "sv1": "scarlet violet base", "sv2": "paldea evolved", "sv3": "obsidian flames",
     "sv4": "paradox rift", "sv5": "temporal forces", "sv6": "twilight masquerade",
     "sv7": "stellar crown", "sv8": "surging sparks", "sv8a": "terastal festival",
-    "sv9": "journey together", "sv9a": "destined rivals", "sv10": "destined rivals",
+    "sv9": "journey together", "sv9a": "heat wave arena", "sv10": "destined rivals",
     "sv10.5": "black bolt white flare", "sv11": "black bolt white flare",
     "me01": "mega evolution", "me1": "mega evolution",
     "me02": "phantasmal flames", "me2": "phantasmal flames",
@@ -131,7 +131,13 @@ KNOWN_SETS = sorted(
         "temporal forces", "obsidian flames", "mega evolution", "phantasmal flames",
         "ascended heroes", "perfect order", "black bolt", "white flare", "delta reign",
         "30th celebration", "paldean fates", "shrouded fable", "paldea evolved",
-        "pitch black", "chaos rising",
+        "pitch black", "chaos rising", "heat wave arena",
+        # staršie sety (len viacslovné názvy, aby sa nepomýlili s bežnými slovami)
+        "crown zenith", "silver tempest", "lost origin", "astral radiance", "brilliant stars",
+        "fusion strike", "evolving skies", "chilling reign", "battle styles", "shining fates",
+        "vivid voltage", "champion's path", "darkness ablaze", "rebel clash", "cosmic eclipse",
+        "hidden fates", "unified minds", "unbroken bonds", "lost thunder", "pokemon go",
+        "shiny treasure", "vstar universe", "scarlet violet base", "celebrations",
     },
     key=len, reverse=True,
 )
@@ -644,6 +650,8 @@ FOREIGN_QUERY_RE = re.compile(r"japon|japan|jpn|k[óo]rej|korean|[čc][ií]nsk|c
 def detect_language(title):
     """'JP', 'EN', 'DE'... alebo '' ak nie je uvedený."""
     title = title or ""
+    if card_condition(title)[0] == "PL":   # „Pikachu (PAF 131) - PL“ = Played, nie poľská karta
+        title = re.sub(r"[-–—|,(\[]\s*PL\s*[)\]]?\s*$", " ", title)
     for code, words_re, codes_re in _LANG_PATTERNS:
         if words_re.search(title) or codes_re.search(title):
             return code
@@ -690,6 +698,7 @@ ACCESSORY_PATTERNS = [
     r"zahra[ťt]\w*", r"zahraj\w*", r"pr[íi][ďd]\s+si", r"hra[ťt]", r"hra\s+o", r"hra\s+na", r"\(hra\)", r"[-–—]\s*hra", r"(?:pok[eé]mon\s+)?minihr\w*", r"s[úu]ťa[žz]\w*", r"sout[ěe][žz]\w*",
     r"losovan\w*", r"losov[áa]n\w*", r"tombol\w*", r"raffle\w*", r"giveaway\w*", r"lottery", r"loter\w*",
     r"(?:box|pack|live)\s+break\w*", r"live\s+(?:opening|otv\w*|stream\w*)", r"otv[áa]ran\w*",
+    r"poukaz\w*", r"pouk[áa]\w*", r"voucher\w*", r"gift\s*card\w*", r"d[áa]rkov\w*\s+poukaz\w*",
     r"vstupn[ée]\w*", r"turnaj\w*", r"tournament\w*", r"ticket\w*", r"l[íi]stok\w*",
 ]
 
@@ -925,7 +934,7 @@ _VARIANT_RES = [
     ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
     ("rev", re.compile(r"reverse", re.I)),
     ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
-    ("used", re.compile(r"(?:[-–—|,(\[]\s*)(?:exc|excellent|lp|pl|mp|hp|played|poor|dmg|damaged)\s*[)\]]?\s*$", re.I)),
+    ("used", None),   # podľa card_condition (stav karty na konci názvu)
     # poškodené balenie sa nespája s novým (iná cena, iný produkt)
     ("dmg", re.compile(r"po[šs]kod\w*|po[šs]koz\w*|damaged|dent\w*|bez\s+f[óo]li\w*", re.I)),
 ]
@@ -968,7 +977,8 @@ def group_key(title, lang=""):
         return None
     p = normalize_query(strip_codes(t))
     lang = lang or "EN"
-    variants = ",".join(v for v, rx in _VARIANT_RES if rx.search(t))
+    variants = ",".join(v for v, rx in _VARIANT_RES
+                        if (rx.search(t) if rx is not None else card_condition(t)[2] == "used"))
     ptype = next((name for name, rx in GROUP_TYPES if rx.search(t)), "")
     pokemon = (p.get("pokemon") or "").lower()
     set_name = p.get("set_name") or ""
@@ -985,6 +995,13 @@ def group_key(title, lang=""):
         return key
     if number and pokemon:
         return f"c|{pokemon}|{number}|{variants}|{lang}"
+    # karta s kódom setu: „Charizard ex (OBF 125) - NM“ – rovnaký kód = rovnaká karta v každom obchode
+    m = re.search(r"\(([A-Z0-9]{2,5})(?:\s+([A-Z]{1,3}))?\s+([A-Z]{0,3})(\d{1,3})[a-z]?\)", t)
+    if m and not ptype:
+        name = " ".join(sorted(fold_words(t[:m.start()]) - {"pokemon", "tcg", "karta", "card"}))
+        if name:
+            code = f"{m.group(1)}{m.group(2) or ''}{m.group(3)}{int(m.group(4))}".lower()
+            return f"c|{name}|{code}|{variants}|{lang}"
     if pokemon and set_name and p.get("suffix") and not ptype:
         return f"c|{pokemon}|{p['suffix']}|{set_name}|{variants}|{lang}"
     return None
@@ -1045,6 +1062,8 @@ def card_condition(title):
     """(kód, text, skupina) stavu karty z konca názvu, alebo ("", "", "") – stav neuvedený (nová)."""
     t = clean_text(title)
     if _GRADED_RE.search(t):   # PSA / CGC – stav určuje známka, nie NM/LP
+        return "", "", ""
+    if _SEALED_TYPE_RE.search(strip_codes(t)):   # „ETB - PL“ = poľské ETB, nie použité
         return "", "", ""
     for rx, code, label, grp in _COND_RES:
         if rx.search(t):
