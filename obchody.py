@@ -1,2069 +1,1050 @@
 """
-CARD RADAR – obchody.py
-Všetko, čo súvisí s obchodmi a dátami:
-  - zoznam obchodov (SHOPS) + obchody zapnuté cez /admin/obchody
-  - sťahovanie stránok, čítanie dlaždíc produktov
-  - obchody s vyhľadávaním, katalógové obchody (prechádzajú sa kategórie), XML feedy
-  - hľadanie vo všetkých obchodoch s jednou cache
-  - obrázky, našepkávač, databáza (história cien, katalógy)
+CARD RADAR – logika.py
+Čistá logika bez internetu a databázy:
+  - rozpoznanie hľadania (Pokémon, set, číslo karty, typ produktu)
+  - či názov produktu sedí na hľadanie
+  - filter merchu a príslušenstva
+  - jazyk, sklad, cena, počet boosterov, spájanie rovnakých produktov
 
-PRIDANIE OBCHODU:
-  - Shoptet / Shopify / Upgates / WooCommerce s vyhľadávaním: najľahšie cez
-    /admin/obchody?key=ADMIN_KEY (otestuješ a zapneš, bez úpravy kódu)
-  - obchod bez použiteľného vyhľadávania: nový záznam s "catalog" do SHOPS nižšie
+KEĎ VYJDE NOVÝ SET:
+  1. pridaj ho navrch do NOVE_SETY
+  2. ak má skratku (napr. me06), pridaj ju do SET_ALIASES
 """
 
-import copy
-import json
-import os
 import re
-import sqlite3
-import threading
-import time
-import urllib.parse
-import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
-from datetime import datetime, timezone, timedelta
+import unicodedata
+from functools import lru_cache
 
-import requests
-from bs4 import BeautifulSoup
+# 1 € = x Kč. Denne sa aktualizuje z Európskej centrálnej banky (obchody.py).
+# Hodnota tu je len záloha pri štarte, kým sa nenačíta kurz z databázy / ECB.
+KURZ = {"CZK": 24.4618}
+KURZ_INFO = {"date": "", "source": "default"}   # dátum kurzu ECB (napr. 2026-10-06)
 
-import logika as L
 
-try:
-    import fcntl   # Linux: zámok, aby úlohy na pozadí bežali len v jednom procese
-except ImportError:
-    fcntl = None
-
-try:
-    import lxml  # noqa: F401  rýchlejšie parsovanie
-    HTML_PARSER = "lxml"
-except ImportError:
-    HTML_PARSER = "html.parser"
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-SEARCH_TIMEOUT = 6          # max. sekúnd na jeden obchod
-SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "2.8"))   # potom sa vráti, čo je hotové
-CACHE_FRESH = 600           # 10 min: výsledok je čerstvý
-CACHE_STALE = 6 * 3600      # do 6 h: ukáže sa hneď a na pozadí sa obnoví
-CATALOG_REFRESH_MIN = float(os.environ.get("CATALOG_REFRESH_MIN", "60"))
-PAGE_DELAY = 1.0            # pauza medzi stranami katalógu (šetrne k obchodu)
-HISTORY_KEEP_DAYS = 90
-OK_STATUSES = ("ok", "no_results")
+def czk_to_eur(czk):
+    """Kč -> € podľa aktuálneho kurzu."""
+    return czk / KURZ["CZK"] if czk else None
 
 
 # =========================================================
-# OBCHODY
-#   name, country, base_url, enabled
-#   search_url + link_selector  = obchod s vyhľadávaním ({q} = hľadaný text)
-#   shopify      = sklad a obrázky z JSON obchodu
-#   loose_set    = obchod nepíše set do názvu, stačí číslo karty
-#   catalog      = zoznam kategórií, ktoré sa prechádzajú (max_pages strán)
-#   feed         = adresa XML feedu (Heureka / Google)
-#   image_replace = (z, na) úprava adresy obrázka
-#   shipping     = poštovné (najlacnejší spôsob), napr.
-#                  {"price": 3.9, "free_from": 60, "currency": "EUR"}
-#                  {"price": 89, "free_from": 1500, "currency": "CZK"}
-#                  free_from = od akej sumy je doprava zdarma (None = nikdy)
-#                  Bez "shipping" sa poštovné nezobrazuje (radšej nič ako zlé číslo).
-#   affiliate    = partnerský odkaz, {url} = adresa produktu (zakódovaná), napr.
-#                  "https://partner.example/click?id=123&url={url}"
+# TEXT
 # =========================================================
 
-SHOPS = [
-    # shopify_catalog = celý Pokémon katalóg cez Shopify JSON (všetky produkty, nie len 1. strana hľadania);
-    # kým sa načíta (alebo ak by JSON nefungoval), hľadá sa cez search_url
-    {"name": "CardyX", "country": "SK", "enabled": True, "shopify": True,
-     "shopify_catalog": ["https://www.cardyx.sk/collections/pokemon"],
-     "base_url": "https://www.cardyx.sk/",
-     "search_url": "https://www.cardyx.sk/search?q={q}",
-     "link_selector": 'a[href*="/products/"]'},
-    # Shoptet obchody: celý Pokémon sortiment z kategórií (raz za hodinu, všetky strany);
-    # kým sa katalóg načíta (alebo keby kategórie nefungovali), hľadá sa cez search_url.
-    # Kategórie sú z menu obchodu (október 2026) – keď obchod pridá novú, doplň ju sem.
-    {"name": "TCG Zone Nitra", "country": "SK", "enabled": True, "loose_set": True,
-     "base_url": "https://www.tcgzonenitra.sk/",
-     "search_url": "https://www.tcgzonenitra.sk/vyhladavanie/?string={q}",
-     "link_selector": "div.product a.name",
-     "catalog": [
-         "https://www.tcgzonenitra.sk/pokemon/",
-         "https://www.tcgzonenitra.sk/booster-packy/",
-         "https://www.tcgzonenitra.sk/mystery-pokemon-balicky/",
-         "https://www.tcgzonenitra.sk/single-karty/",
-         "https://www.tcgzonenitra.sk/single-karty-svet-2/",
-     ],
-     "max_pages": 150},
-    {"name": "Beardex", "country": "SK", "enabled": True,
-     "base_url": "https://www.beardex.eu/",
-     "search_url": "https://www.beardex.eu/vyhladavanie/?string={q}",
-     "link_selector": "div.product a.name",
-     "catalog": [
-         "https://www.beardex.eu/pokemon-tcg/",
-         "https://www.beardex.eu/elite-trainer-box/",
-         "https://www.beardex.eu/booster/",
-         "https://www.beardex.eu/booster-bundle/",
-         "https://www.beardex.eu/booster-box/",
-         "https://www.beardex.eu/tinky/",
-         "https://www.beardex.eu/sealed-case/",
-         "https://www.beardex.eu/single-karty/",
-     ],
-     "max_pages": 100},
-    {"name": "CardEmpire", "country": "SK", "enabled": True,
-     "base_url": "https://www.cardempire.sk/",
-     "search_url": "https://www.cardempire.sk/vyhladavanie/?string={q}",
-     "link_selector": "div.product a.name",
-     "catalog": [
-         "https://www.cardempire.sk/pokemon/",
-         "https://www.cardempire.sk/elite-trainer-boxy/",
-         "https://www.cardempire.sk/booster-boxy/",
-         "https://www.cardempire.sk/booster-bundle/",
-         "https://www.cardempire.sk/booster-packy/",
-         "https://www.cardempire.sk/sleeved-booster-pack/",
-         "https://www.cardempire.sk/premiove-boxy/",
-         "https://www.cardempire.sk/tinky/",
-         "https://www.cardempire.sk/blistre/",
-         "https://www.cardempire.sk/build-battle-kity/",
-         "https://www.cardempire.sk/build-battle-stadiumy/",
-         "https://www.cardempire.sk/sealed-casy/",
-         "https://www.cardempire.sk/pokemon-karty/",
-     ],
-     "max_pages": 100},
-    {"name": "iHRYsko", "country": "SK", "enabled": True,
-     "base_url": "https://www.ihrysko.sk/",
-     "catalog": [
-         "https://www.ihrysko.sk/pokemon-tcg-c17668",
-         "https://www.ihrysko.sk/pokemon-delta-reign-c100387",
-         "https://www.ihrysko.sk/pokemon-30th-celebrations-c100385",
-         "https://www.ihrysko.sk/pokemon-pitch-black-c100378",
-         "https://www.ihrysko.sk/pokemon-chaos-rising-c100377",
-         "https://www.ihrysko.sk/pokemon-perfect-order-c100371",
-         "https://www.ihrysko.sk/pokemon-ascended-heroes-c100365",
-         "https://www.ihrysko.sk/pokemon-phantasmal-flames-c100358",
-         "https://www.ihrysko.sk/pokemon-mega-evolution-c100354",
-         "https://www.ihrysko.sk/pokemon-black-bolt-a-white-flare-sv-10-5-c100350",
-         "https://www.ihrysko.sk/pokemon-destined-rivals-c100343",
-         "https://www.ihrysko.sk/pokemon-journey-together-c100335",
-         "https://www.ihrysko.sk/pokemon-prismatic-evolutions-c100327",
-         "https://www.ihrysko.sk/pokemon-surging-sparks-c100321",
-         "https://www.ihrysko.sk/pokemon-stellar-crown-c100318",
-         "https://www.ihrysko.sk/pokemon-151-c100268",
-     ],
-     "max_pages": 8, "image_replace": ("/xs/products/", "/md/products/")},
-    {"name": "imago", "country": "SK", "enabled": True,
-     "base_url": "https://www.imago.sk/",
-     "catalog": ["https://www.imago.sk/pokemon-kartove-hra"], "max_pages": 15},
-    {"name": "Posbírej to", "country": "CZ", "enabled": True,
-     "base_url": "https://www.posbirejto.cz/",
-     "catalog": [
-         "https://www.posbirejto.cz/boosterboxy/",
-         "https://www.posbirejto.cz/balicky/",
-         "https://www.posbirejto.cz/specialniboxy/",
-         "https://www.posbirejto.cz/cinske-produkty/",
-         "https://www.posbirejto.cz/ohodnocenekarty-2/",
-         "https://www.posbirejto.cz/anglickekarty/",
-         "https://www.posbirejto.cz/japonskekarty/",
-         "https://www.posbirejto.cz/cinske-karty/",
-     ],
-     "max_pages": 25},
-    # web blokuje roboty (HTTP 403) – zapni, keď dostaneš adresu XML feedu
-    {"name": "Herný svet", "country": "SK", "enabled": False,
-     "base_url": "https://www.hernysvet.sk/", "feed": "",
-     "catalog": ["https://www.hernysvet.sk/tema/pokemon"], "max_pages": 15},
-    # Upgates: vyhľadávanie cez adresu nefunguje (HTTP chyba), preto katalóg z kategórií (október 2026)
-    {"name": "Gengar.cz", "country": "CZ", "enabled": True,
-     "base_url": "https://www.gengar.cz/",
-     "catalog": [
-         "https://www.gengar.cz/elite-trainer-box",
-         "https://www.gengar.cz/booster-box",
-         "https://www.gengar.cz/pokemon-booster",
-         "https://www.gengar.cz/collection",
-         "https://www.gengar.cz/pokemon-tin-plechovky",
-         "https://www.gengar.cz/30th-celebration-1",
-         "https://www.gengar.cz/japonske-boostery",
-         "https://www.gengar.cz/japonske-korejske-boostery-boxy",
-         "https://www.gengar.cz/kusove-karty",
-         "https://www.gengar.cz/pokemon-ohodnocene-karty",
-         "https://www.gengar.cz/vintage-produkty",
-         "https://www.gengar.cz/pokemon",
-     ],
-     "max_pages": 20},
-]
+def clean_text(value):
+    return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
 
-# Návrhy na otestovanie v /admin/obchody (nič sa nezapne samo)
-KANDIDATI = [
-    ("Veselý drak", "https://www.vesely-drak.cz/"),
-    ("Najáda", "https://www.najada.games/"),
-    ("Tlama Games", "https://www.tlamagames.com/"),
-    ("Blackfire", "https://www.blackfire.cz/"),
-    ("Xzone CZ", "https://www.xzone.cz/"),
-    ("Xzone SK", "https://www.xzone.sk/"),
-]
 
-PLATFORM_PRESETS = {
-    "shoptet": {"marker": re.compile(r"shoptet", re.I),
-                "search": ["/vyhladavanie/?string={q}", "/vyhledavani/?string={q}"],
-                "selector": "div.product a.name"},
-    "shopify": {"marker": re.compile(r"cdn\.shopify\.com|Shopify\.theme|/cdn/shop/", re.I),
-                "search": ["/search?q={q}&type=product", "/search?q={q}"],
-                "selector": 'a[href*="/products/"]'},
-    "upgates": {"marker": re.compile(r"upgates", re.I),
-                "search": ["/vyhledavani?q={q}", "/vyhladavanie?q={q}", "/search?q={q}", "/hledani?q={q}"],
-                "selector": 'a[href*="/p/"]'},
-    "woocommerce": {"marker": re.compile(r"woocommerce", re.I),
-                    "search": ["/?s={q}&post_type=product"],
-                    "selector": "li.product a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"},
-}
-
-
-def is_catalog(shop):
-    return bool(shop.get("catalog") or shop.get("feed") or shop.get("shopify_catalog"))
-
-
-def is_local(shop):
-    """Hľadá sa len v našej databáze (žiadny internet) – môže bežať hneď v požiadavke."""
-    return is_catalog(shop) and not shop.get("search_url")
-
-
-def shop_query(query):
-    """Čo poslať do vyhľadávania obchodu. Kratšie = obchod vráti viac (napr. „pitch black“
-    namiesto „pitch black elite trainer box“, lebo obchod môže písať len „ETB“).
-    Presný typ produktu, set a číslo karty sa potom vyfiltrujú u nás."""
-    p = L.normalize_query(query)
-    set_name = p.get("set_name") or ""
-    if L.is_accessory_query(query):   # „pikachu sleeves“ – „sleeves“ sa nesmie stratiť
-        q = p.get("normalized") or query
-    elif set_name and set_name not in L.SET_PARTS and set_name not in L.SERIE:
-        q = " ".join(x for x in (set_name, p.get("pokemon")) if x)
-    elif p.get("pokemon") and not p.get("card_number"):
-        q = " ".join(x for x in (p.get("pokemon"), p.get("suffix")) if x)
-    else:
-        q = p.get("normalized") or ""
-    return L.clean_text(q) or query
-
-
-def host_of(url):
-    return urllib.parse.urlparse(url or "").netloc.lower()
-
-
-# =========================================================
-# HTTP
-# =========================================================
-
-BOT_UA = "Mozilla/5.0 (compatible; CardRadarBot/1.0; +https://getcardradar.com/pre-obchody)"
-BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-_ua = os.environ.get("CRAWLER_UA", "").strip()
-HEADERS = {
-    "User-Agent": BROWSER_UA if _ua.lower() == "browser" else (_ua or BOT_UA),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "sk-SK,cs-CZ;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate",
-}
-
-# Jedno zdieľané HTTP spojenie pre všetky vlákna – tak to fungovalo od začiatku a obchody to
-# akceptujú (menej nových spojení ako pri samostatnom spojení pre každé vlákno).
-_session = None
-_session_lock = threading.Lock()
-
-
-def http():
-    global _session
-    if _session is None:
-        with _session_lock:
-            if _session is None:
-                s = requests.Session()
-                s.headers.update(HEADERS)
-                adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=50)
-                s.mount("https://", adapter)
-                s.mount("http://", adapter)
-                _session = s
-    return _session
-
-
-def fetch(url, timeout=SEARCH_TIMEOUT):
-    """(odpoveď alebo None, info). Pri chybe nikdy nevyhodí výnimku."""
-    start = time.monotonic()
-    info = {"url": url, "http_status": None, "status": "http_ok", "error": ""}
-    resp = None
-    try:
-        r = http().get(url, timeout=(4, timeout), allow_redirects=True)
-        info["http_status"] = r.status_code
-        if r.status_code == 200:
-            resp = r
-        else:
-            info.update(status="http_error", error=f"HTTP {r.status_code}")
-    except requests.Timeout:
-        info.update(status="timeout", error="Obchod neodpovedal včas")
-    except Exception as e:
-        info.update(status="request_error", error=str(e)[:200])
-    info["elapsed_ms"] = round((time.monotonic() - start) * 1000)
-    return resp, info
-
-
-# Zdieľané vlákna
-SHOP_POOL = ThreadPoolExecutor(max_workers=40, thread_name_prefix="shop")
-IMAGE_POOL = ThreadPoolExecutor(max_workers=10, thread_name_prefix="img")
-# REFRESH_POOL: obnova starších výsledkov na pozadí.
-# JSON_POOL: drobné požiadavky (Shopify sklad / obrázky). Úlohy v ňom už nič ďalšie
-# nespúšťajú – predtým jeden pool čakal sám na seba a zasekol celé hľadanie.
-REFRESH_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="refresh")
-JSON_POOL = ThreadPoolExecutor(max_workers=12, thread_name_prefix="json")
-SMALL_POOL = JSON_POOL   # starý názov (spätná kompatibilita)
-BG_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db")   # zápisy do DB po jednom
-
-
-class TTLCache:
-    def __init__(self, ttl, max_items):
-        self.ttl, self.max_items = ttl, max_items
-        self._d, self._lock = {}, threading.Lock()
-
-    def get(self, key):
-        with self._lock:
-            item = self._d.get(key)
-            if item is None:
-                return None
-            if time.monotonic() - item[0] > self.ttl:
-                self._d.pop(key, None)
-                return None
-            return copy.deepcopy(item[1])
-
-    def set(self, key, value):
-        with self._lock:
-            if key not in self._d and len(self._d) >= self.max_items:
-                self._d.pop(min(self._d, key=lambda k: self._d[k][0]), None)
-            self._d[key] = (time.monotonic(), copy.deepcopy(value))
-
-    def clear(self):
-        with self._lock:
-            self._d.clear()
-
-    def __len__(self):
-        return len(self._d)
-
-
-# =========================================================
-# DATABÁZA
-# DB_PATH (napr. /var/data/cardradar.db) = trvalý disk na Renderi.
-# Pri prvom štarte s diskom sa doň prenesú doterajšie dáta.
-# =========================================================
-
-_DEFAULT_DB = os.path.join(BASE_DIR, "cardradar.db")
-DB_PATH = _DEFAULT_DB
-DB_WARNING = ""
-
-
-def _choose_db():
-    global DB_PATH, DB_WARNING
-    want = os.environ.get("DB_PATH", "").strip()
-    if not want or os.path.abspath(want) == os.path.abspath(_DEFAULT_DB):
-        return
-    try:
-        folder = os.path.dirname(want)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
-        if not os.path.exists(want) and os.path.exists(_DEFAULT_DB):
-            src, dst = sqlite3.connect(_DEFAULT_DB), sqlite3.connect(want)
-            try:
-                src.backup(dst)
-            finally:
-                src.close()
-                dst.close()
-        DB_PATH = want
-        print(f"[CardRadar] Databáza na disku: {want}", flush=True)
-        return
-    except Exception as e:
-        DB_WARNING = f"DB_PATH={want} sa nedá použiť: {e}"
-        print(f"[CardRadar] VAROVANIE: {DB_WARNING}. Používam {_DEFAULT_DB}.", flush=True)
-
-
-def db_problem():
-    """Text problému s databázou alebo '' (história cien by sa pri nasadení stratila)."""
-    if DB_WARNING:
-        return DB_WARNING
-    if not db_persistent():
-        return ("DB_PATH nie je nastavená – databáza je v priečinku aplikácie a pri každom nasadení "
-                "sa zmaže (história cien, šípky, zľavy, strážcovia). Na Renderi pridaj Disk "
-                "(napr. /var/data) a premennú DB_PATH=/var/data/cardradar.db.")
-    return ""
-
-
-def db_persistent():
-    want = os.environ.get("DB_PATH", "").strip()
-    return bool(want) and os.path.abspath(want) == os.path.abspath(DB_PATH)
-
-
-def db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
-
-
-def today_str():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def init_db():
-    _choose_db()
-    conn = db()
-    try:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS price_daily (
-                link TEXT NOT NULL, day TEXT NOT NULL,
-                shop TEXT, title TEXT, price_eur REAL, stock TEXT, image TEXT,
-                PRIMARY KEY (link, day));
-            CREATE INDEX IF NOT EXISTS idx_pd_day ON price_daily(day);
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL, link TEXT NOT NULL, title TEXT, shop TEXT,
-                target REAL NOT NULL, token TEXT UNIQUE NOT NULL,
-                confirmed INTEGER DEFAULT 0, created TEXT, site TEXT,
-                last_price REAL, last_checked TEXT, notified TEXT);
-            CREATE INDEX IF NOT EXISTS idx_alerts_email ON alerts(email);
-            CREATE TABLE IF NOT EXISTS search_log (
-                day TEXT NOT NULL, query TEXT NOT NULL, n INTEGER DEFAULT 1,
-                PRIMARY KEY (day, query));
-            CREATE TABLE IF NOT EXISTS catalog_items (
-                shop TEXT NOT NULL, link TEXT NOT NULL, title TEXT,
-                price_eur REAL, image TEXT, stock TEXT,
-                PRIMARY KEY (shop, link));
-            CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
-            CREATE TABLE IF NOT EXISTS clicks (
-                day TEXT NOT NULL, shop TEXT NOT NULL, n INTEGER DEFAULT 1,
-                PRIMARY KEY (day, shop));
-        """)
-        # staršie databázy nemali stĺpec image / price_czk
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(price_daily)")}
-        if "image" not in cols:
-            conn.execute("ALTER TABLE price_daily ADD COLUMN image TEXT")
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(catalog_items)")}
-        if "price_czk" not in cols:
-            conn.execute("ALTER TABLE catalog_items ADD COLUMN price_czk REAL")
-        _fix_czk_once(conn)
-        _fix_prices_once(conn)
-        _drop_implausible(conn)
-        _prune(conn)
-        conn.commit()
-    finally:
-        conn.close()
-    _load_czk()
-
-
-def _drop_implausible(conn):
-    """Zmaže z histórie a katalógu nezmyselné ceny (napr. 21 929 € za kartu)."""
-    for table in ("price_daily", "catalog_items"):
-        rows = conn.execute(f"SELECT rowid, title, price_eur FROM {table} WHERE price_eur > 2000").fetchall()
-        bad = [(rid,) for rid, title, price in rows if not L.price_plausible(title or "", price)]
-        if bad:
-            conn.executemany(f"DELETE FROM {table} WHERE rowid = ?", bad)
-            print(f"[CardRadar] {table}: zmazaných {len(bad)} nezmyselných cien", flush=True)
-
-
-def _fix_czk_once(conn):
-    """Jednorazovo: ceny z CZ obchodov boli zle prečítané (napr. „1 299,- Kč“ -> 0,08 €).
-    Zmaže ich históriu a katalóg, aby sa načítali nanovo so správnym prepočtom."""
-    if conn.execute("SELECT v FROM meta WHERE k = 'fix_czk_v1'").fetchone():
-        return
-    cz = [s["name"] for s in SHOPS if s.get("country") == "CZ"]
-    if cz:
-        marks = ",".join("?" * len(cz))
-        conn.execute(f"DELETE FROM price_daily WHERE shop IN ({marks})", cz)
-        conn.execute(f"DELETE FROM catalog_items WHERE shop IN ({marks})", cz)
-        conn.execute(f"DELETE FROM meta WHERE k IN ({','.join('?' * len(cz))})", ["catalog:" + n for n in cz])
-    conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fix_czk_v1', ?)",
-                 (datetime.now(timezone.utc).isoformat(),))
-
-
-def _fix_prices_once(conn):
-    """Jednorazovo (8. 10. 2026): verzia s chybou „135 €210“ ukladala zlé ceny (Beardex a ďalšie
-    obchody s „€“ pred číslom). Zmaže dnešnú históriu a vynúti nové prejdenie katalógov."""
-    if conn.execute("SELECT v FROM meta WHERE k = 'fix_prices_v2'").fetchone():
-        return
-    conn.execute("DELETE FROM price_daily WHERE day >= '2026-10-08'")
-    conn.execute("DELETE FROM meta WHERE k LIKE 'catalog:%'")   # katalógy sa prejdú nanovo do pár minút
-    conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fix_prices_v2', ?)",
-                 (datetime.now(timezone.utc).isoformat(),))
-
-
-def _prune(conn):
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=HISTORY_KEEP_DAYS)).strftime("%Y-%m-%d")
-    conn.execute("DELETE FROM price_daily WHERE day < ?", (cutoff,))
-
-
-def meta_get(k):
-    conn = db()
-    try:
-        row = conn.execute("SELECT v FROM meta WHERE k = ?", (k,)).fetchone()
-        return row[0] if row else None
-    finally:
-        conn.close()
-
-
-def meta_set(k, v):
-    conn = db()
-    try:
-        conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", (k, v))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-# =========================================================
-# OBCHODY ZAPNUTÉ CEZ /admin/obchody (uložené v databáze)
-# Všetky procesy servera si zmenu prevezmú do 30 sekúnd.
-# =========================================================
-
-_extra = {"v": None, "t": 0.0, "shops": [], "hosts": set()}
-_extra_lock = threading.Lock()
-
-
-def extra_shops():
-    try:
-        return json.loads(meta_get("extra_shops") or "[]")
-    except Exception:
-        return []
-
-
-def save_extra_shops(shops):
-    meta_set("extra_shops", json.dumps(shops, ensure_ascii=False))
-    meta_set("extra_shops_v", str(time.time()))
-    _extra["t"] = 0   # tento proces hneď
-
-
-def _sync_extra():
-    if time.monotonic() - _extra["t"] < 30:
-        return
-    with _extra_lock:
-        _extra["t"] = time.monotonic()
-        try:
-            v = meta_get("extra_shops_v")
-        except Exception:
-            return
-        if v == _extra["v"]:
-            return
-        _extra["v"] = v
-        builtin = {host_of(s["base_url"]).replace("www.", "") for s in SHOPS}
-        _extra["shops"] = [dict(s, enabled=True, _extra=True) for s in extra_shops()
-                           if host_of(s.get("base_url")).replace("www.", "") not in builtin]
-        _extra["hosts"] = {host_of(s["base_url"]) for s in _extra["shops"]}
-
-
-def all_shops():
-    _sync_extra()
-    return SHOPS + _extra["shops"]
-
-
-def active_shops():
-    return [s for s in all_shops() if s.get("enabled", True)]
-
-
-def is_allowed_link(url):
-    try:
-        p = urllib.parse.urlparse(url)
-    except Exception:
-        return False
-    hosts = {host_of(s["base_url"]) for s in all_shops()}
-    return p.scheme in ("http", "https") and p.netloc.lower() in hosts
-
-
-def shop_by_link(url):
-    host = host_of(url).replace("www.", "")
-    return next((s for s in all_shops() if host_of(s["base_url"]).replace("www.", "") == host), None)
-
-
-def add_shipping(shop, r):
-    ship = L.shipping_eur(shop, r.get("price_eur"))
-    r["shipping_eur"] = ship
-    r["total_eur"] = round(r["price_eur"] + ship, 2) if ship is not None else None
-
-
-# =========================================================
-# ODCHOD DO OBCHODU (/go): utm parametre, partnerský odkaz, počítanie klikov
-# =========================================================
-
-def go_link(link):
-    """Adresa tlačidla „Do obchodu“ na webe (prejde cez /go a započíta klik)."""
-    return "/go?u=" + urllib.parse.quote(link or "", safe="")
-
-
-def out_url(link, medium="referral"):
-    """Skutočná adresa v obchode: partnerský odkaz, inak odkaz s utm_source=cardradar."""
-    shop = shop_by_link(link) or {}
-    tpl = shop.get("affiliate")
-    if tpl and "{url}" in tpl:
-        return tpl.replace("{url}", urllib.parse.quote(link, safe=""))
-    try:
-        p = urllib.parse.urlsplit(link)
-        q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True) if not k.startswith("utm_")]
-        q += [("utm_source", "cardradar"), ("utm_medium", medium), ("utm_campaign", "porovnanie")]
-        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), p.fragment))
-    except Exception:
-        return link
-
-
-def _count_click_now(shop_name):
-    conn = db()
-    try:
-        conn.execute("""INSERT INTO clicks (day, shop, n) VALUES (?, ?, 1)
-                        ON CONFLICT(day, shop) DO UPDATE SET n = n + 1""", (today_str(), shop_name))
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        conn.close()
-
-
-def count_click(link):
-    shop = shop_by_link(link)
-    if shop:
-        BG_POOL.submit(_count_click_now, shop["name"])
-
-
-def click_stats(days=30):
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = db()
-    try:
-        rows = conn.execute("SELECT shop, SUM(n) FROM clicks WHERE day >= ? GROUP BY shop ORDER BY 2 DESC",
-                            (since,)).fetchall()
-    finally:
-        conn.close()
-    return [{"shop": s, "clicks": n} for s, n in rows]
-
-
-# =========================================================
-# ČÍTANIE STRÁNOK OBCHODU
-# =========================================================
-
-IMG_ATTRS = ["src", "data-src", "data-lazy-src", "data-original",
-             "data-image", "data-image-src", "data-original-src"]
-_PLACEHOLDER_RE = re.compile(r"loading|placeholder|blank|spacer|lazy[-_]?load|1x1|pixel\.", re.I)
-_TRACKING_RE = re.compile(
-    r"^(?:_pos|_sid|_ss|_psq|_fid|_v|utm_\w+|fbclid|gclid|srsltid|ref|variant_id|hgtid|hgid)$", re.I)
-_STRIKE_SELECTOR = ("del, s, strike, [class*='old'], [class*='before'], [class*='original'], "
-                    "[class*='crossed'], [class*='strike'], [class*='standard'], "
-                    "[class*='compare'], [class*='regular']")
-_HIDDEN_CLASSES = {"hidden", "hide", "d-none", "is-hidden", "u-hidden"}
-
-
-def abs_url(base, href):
-    href = (href or "").strip()
-    if not href or href.startswith(("javascript:", "#")):
-        return ""
-    return urllib.parse.urljoin(base, href)
-
-
-def clean_link(url):
-    """Odkaz bez sledovacích parametrov – ten istý produkt má vždy rovnakú adresu."""
-    if not url:
-        return url
-    try:
-        p = urllib.parse.urlsplit(url)
-        q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True)
-             if not _TRACKING_RE.match(k)]
-        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), ""))
-    except Exception:
-        return url
-
-
-def img_url(img, base):
-    """Adresa obrázka z <img> (aj lazy-load), bez zástupných obrázkov."""
-    for attr in IMG_ATTRS:
-        v = L.clean_text(img.get(attr, ""))
-        if v and not v.startswith("data:image/") and not _PLACEHOLDER_RE.search(v):
-            u = abs_url(base, v)
-            if u:
-                return u
-    for attr in ("srcset", "data-srcset"):
-        cands = []
-        for part in L.clean_text(img.get(attr, "")).split(","):
-            pieces = L.clean_text(part).split()
-            if not pieces or _PLACEHOLDER_RE.search(pieces[0]):
-                continue
-            m = re.search(r"(\d+)w", pieces[1]) if len(pieces) > 1 else None
-            u = abs_url(base, pieces[0])
-            if u:
-                cands.append((int(m.group(1)) if m else 0, u))
-        if cands:
-            return max(cands)[1]
-    return ""
-
-
-def extract_title(a):
-    t = L.clean_text(a.get_text(" ", strip=True))
-    if t:
+@lru_cache(maxsize=50000)
+def _fold(text):
+    t = unicodedata.normalize("NFKD", text.lower())
+    if t.isascii():
         return t
-    for attr in ("title", "aria-label"):
-        if L.clean_text(a.get(attr, "")):
-            return L.clean_text(a.get(attr))
-    img = a.find("img")
-    if img:
-        return L.clean_text(img.get("alt") or img.get("title") or "")
+    return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def fold(text):
+    """Malé písmená bez diakritiky (Pokémon -> pokemon). Výsledky si pamätá (rýchle)."""
+    return _fold(str(text or ""))
+
+
+def fold_words(text):
+    return set(re.findall(r"[a-z0-9]+", fold(text)))
+
+
+def has_word(text, word):
+    if not text or not word:
+        return False
+    return re.search(r"\b" + re.escape(word) + r"\b", text, re.I) is not None
+
+
+def _stem(w):
+    """celebrations -> celebration (množné číslo v názvoch setov)"""
+    return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+
+# Slová, ktoré nič nehovoria o konkrétnom produkte
+GENERIC_WORDS = {
+    "pokemon", "tcg", "booster", "boosters", "box", "boxy", "display", "elite", "trainer",
+    "etb", "bundle", "pack", "packs", "blister", "tin", "tins", "mini", "collection",
+    "premium", "kolekcia", "kolekce", "set", "edicia", "edice", "the", "and", "of",
+    "en", "eng", "english", "anglicky", "anglicka", "anglicke", "card", "cards", "karty",
+    "game", "hra", "balicek", "balicky", "sealed",
+}
+
+
+# =========================================================
+# SETY A POKÉMONI
+# =========================================================
+
+# Úvodná stránka – NAJNOVŠÍ HORE
+NOVE_SETY = [
+    {"name": "Delta Reign", "query": "delta reign"},
+    {"name": "30th Celebration", "query": "30th celebration"},
+    {"name": "Pitch Black", "query": "pitch black"},
+    {"name": "Chaos Rising", "query": "chaos rising"},
+    {"name": "Perfect Order", "query": "perfect order"},
+    {"name": "Ascended Heroes", "query": "ascended heroes"},
+    {"name": "Phantasmal Flames", "query": "phantasmal flames"},
+    {"name": "Mega Evolution", "query": "mega evolution"},
+    {"name": "Black Bolt", "query": "black bolt"},
+    {"name": "White Flare", "query": "white flare"},
+    {"name": "Destined Rivals", "query": "destined rivals"},
+    {"name": "Journey Together", "query": "journey together"},
+    {"name": "Prismatic Evolutions", "query": "prismatic evolutions"},
+]
+
+# skratka / iný názov -> oficiálny názov setu
+SET_ALIASES = {
+    "sv1": "scarlet violet base", "sv2": "paldea evolved", "sv3": "obsidian flames",
+    "sv4": "paradox rift", "sv5": "temporal forces", "sv6": "twilight masquerade",
+    "sv7": "stellar crown", "sv8": "surging sparks", "sv8a": "terastal festival",
+    "sv9": "journey together", "sv9a": "destined rivals", "sv10": "destined rivals",
+    "sv10.5": "black bolt white flare", "sv11": "black bolt white flare",
+    "me01": "mega evolution", "me1": "mega evolution",
+    "me02": "phantasmal flames", "me2": "phantasmal flames",
+    "me2.5": "ascended heroes", "me 2.5": "ascended heroes",
+    "me03": "perfect order", "me3": "perfect order",
+    "me04": "chaos rising", "me4": "chaos rising",
+    "me05": "pitch black", "me5": "pitch black",
+    "151": "pokemon 151", "pokemon151": "pokemon 151", "pokemon 151": "pokemon 151",
+    "prismatic": "prismatic evolutions", "prismatic evo": "prismatic evolutions",
+    "surging": "surging sparks", "sparks": "surging sparks",
+    "destined": "destined rivals", "journey": "journey together",
+    "terastal": "terastal festival", "phantasmal": "phantasmal flames",
+    "pitch": "pitch black", "chaos": "chaos rising",
+    "mega brave": "mega evolution mega brave", "mega evolution": "mega evolution",
+    "30th celebrations": "30th celebration",
+    "30th anniversary celebration": "30th celebration",
+    "30th anniversary celebrations": "30th celebration",
+}
+
+# Spoločné vydanie dvoch setov: stačí, ak názov produktu obsahuje jeden z nich
+# (napr. „Black Bolt ETB“ sedí na hľadanie „sv10.5“).
+SET_PARTS = {
+    "black bolt white flare": ("black bolt", "white flare"),
+}
+
+KNOWN_SETS = sorted(
+    set(SET_ALIASES.values()) | {
+        "surging sparks", "pokemon 151", "prismatic evolutions", "terastal festival",
+        "destined rivals", "journey together", "twilight masquerade", "stellar crown",
+        "temporal forces", "obsidian flames", "mega evolution", "phantasmal flames",
+        "ascended heroes", "perfect order", "black bolt", "white flare", "delta reign",
+        "30th celebration", "paldean fates", "shrouded fable", "paldea evolved",
+        "pitch black", "chaos rising",
+    },
+    key=len, reverse=True,
+)
+
+# Séria (nie set): „Mega Evolution – Pitch Black“ = set Pitch Black
+SERIE = {"mega evolution"}
+
+POKEMON_ALIASES = {
+    "pikachu": "Pikachu", "pika": "Pikachu", "charizard": "Charizard", "char": "Charizard",
+    "umbreon": "Umbreon", "eevee": "Eevee", "mew": "Mew", "mewtwo": "Mewtwo",
+    "gengar": "Gengar", "lucario": "Lucario", "greninja": "Greninja", "rayquaza": "Rayquaza",
+    "gardevoir": "Gardevoir", "dragonite": "Dragonite", "gyarados": "Gyarados",
+    "blastoise": "Blastoise", "venusaur": "Venusaur", "lugia": "Lugia", "ho-oh": "Ho-Oh",
+    "hooh": "Ho-Oh", "arceus": "Arceus", "dialga": "Dialga", "palkia": "Palkia",
+    "zekrom": "Zekrom", "reshiram": "Reshiram", "celebi": "Celebi", "jolteon": "Jolteon",
+    "vaporeon": "Vaporeon", "flareon": "Flareon", "espeon": "Espeon", "sylveon": "Sylveon",
+    "leafeon": "Leafeon", "glaceon": "Glaceon",
+}
+
+# Poradie je dôležité: najprv dlhšie / presnejšie názvy, jednoslovné až na konci
+PRODUCT_PATTERNS = [
+    ("elite trainer box", r"\belite\s+trainer\s+box\b"),
+    ("elite trainer box", r"\betb\b"),
+    ("booster box", r"\bbooster\s*(?:box|display)\b"),
+    ("booster bundle", r"\bbooster\s*bundle\b"),
+    ("booster bundle", r"\bbundle\b"),                     # „bundle“ = booster bundle
+    ("collection box", r"\bcollection\s+box\b"),
+    ("premium collection", r"\bpremium\s+collection\b"),
+    ("blister", r"\bblister(?:\s+pack)?\b"),
+    ("tin", r"\btins?\b"),
+    ("booster box", r"\bdisplay\b"),                        # „display“ = booster box
+    ("collection", r"\bcollection\b|\bkolekci\w*|\bkolekce\b"),
+    ("booster", r"\bboosters?\b"),
+]
+
+
+def _compile(pairs):
+    return [(re.compile(r"\b" + re.escape(a.lower()) + r"\b"), c)
+            for a, c in sorted(pairs, key=lambda x: len(x[0]), reverse=True)]
+
+
+_SETS_RE = _compile(SET_ALIASES.items())
+_KNOWN_SETS_RE = _compile((s, s) for s in KNOWN_SETS)
+_POKEMON_RE = _compile(POKEMON_ALIASES.items())
+_PRODUCT_RE = [(c, re.compile(p)) for c, p in PRODUCT_PATTERNS]
+_SUFFIX_RE = re.compile(r"\b(vmax|vstar|ex|gx|v)\b", re.I)
+_CARDNUM_RE = re.compile(r"\b(\d{1,4})\s*/\s*(\d{1,4})\b")
+
+
+def _extract(q, candidates):
+    for pattern, canonical in candidates:
+        if pattern.search(q):
+            return canonical, pattern.sub(" ", q)
+    return "", q
+
+
+# =========================================================
+# ROZPOZNANIE HĽADANIA
+# =========================================================
+
+def _normalize(query):
+    original = clean_text(query)
+    out = {"original": original, "normalized": "", "pokemon": "", "set_name": "",
+           "product_name": "", "product_type": "", "card_number": "", "suffix": ""}
+    if not original:
+        return out
+    q = original.lower()
+
+    m = _CARDNUM_RE.search(q)
+    if m:
+        out["card_number"] = f"{int(m.group(1))}/{int(m.group(2))}"   # 004/102 = 4/102
+        q = _CARDNUM_RE.sub(" ", q, count=1)
+
+    for canonical, pattern in _PRODUCT_RE:
+        if pattern.search(q):
+            out["product_type"] = out["product_name"] = canonical
+            q = pattern.sub(" ", q)
+            break
+
+    # najprv celé názvy setov („surging sparks“), až potom skratky („sv8“)
+    set_name, q = _extract(q, _KNOWN_SETS_RE)
+    if not set_name:
+        set_name, q = _extract(q, _SETS_RE)
+    for w in set_name.split():
+        q = re.sub(r"\b" + re.escape(w) + r"\b", " ", q)
+    out["set_name"] = set_name
+
+    out["pokemon"], q = _extract(q, _POKEMON_RE)
+
+    m = _SUFFIX_RE.search(q)
+    if m:
+        out["suffix"] = m.group(1).lower()
+        q = _SUFFIX_RE.sub(" ", q)
+
+    q = clean_text(re.sub(r"\bpok[eé]mon\b", " ", q, flags=re.I))
+
+    if out["product_type"] == "elite trainer box":
+        parts = [set_name, out["pokemon"], out["suffix"], out["card_number"], "elite trainer box"]
+    else:
+        parts = [out["pokemon"], out["suffix"], q, out["card_number"], set_name, out["product_type"]]
+    out["normalized"] = clean_text(" ".join(p for p in parts if p)) or original
+    return out
+
+
+@lru_cache(maxsize=5000)
+def _normalize_cached(query):
+    p = _normalize(query)
+    if p["set_name"] in SERIE:
+        rest = re.sub(r"\bmega\s+evolution\b", " ", query, flags=re.I)
+        q = _normalize(rest)
+        if q["set_name"] and q["set_name"] not in SERIE:
+            q["original"] = p["original"]
+            p = q
+    return tuple(p.items())
+
+
+def normalize_query(query):
+    """Rozloží hľadanie na časti. Vracia nový dict (môžeš ho upravovať)."""
+    return dict(_normalize_cached(clean_text(query)))
+
+
+def classify_query(parsed):
+    """'sealed' (ETB, boxy...) alebo 'card' (jednotlivé karty)"""
+    if parsed.get("product_type"):
+        return "sealed"
+    if parsed.get("set_name") and not parsed.get("pokemon") and not parsed.get("card_number"):
+        return "sealed"
+    return "card"
+
+
+# =========================================================
+# ZHODA NÁZVU S HĽADANÍM
+# =========================================================
+
+# Kódy setov, ako ich obchody píšu pri kartách: „Blastoise ex (MEW 200) - NM“, „Scizor ex (30C UF 108)“.
+# Platia LEN v zátvorke s číslom karty – „pre“ / „mew“ v bežnom texte sa tak nikdy nepomýli.
+# Overené na gengar.cz (október 2026). Nový set = doplň jeho kód sem.
+SET_CODES = {
+    "svi": "scarlet violet base", "pal": "paldea evolved", "obf": "obsidian flames", "mew": "pokemon 151",
+    "par": "paradox rift", "paf": "paldean fates", "tef": "temporal forces", "twm": "twilight masquerade",
+    "sfa": "shrouded fable", "scr": "stellar crown", "ssp": "surging sparks", "pre": "prismatic evolutions",
+    "jtg": "journey together", "dri": "destined rivals", "blk": "black bolt", "wht": "white flare",
+    "meg": "mega evolution", "pfl": "phantasmal flames", "asc": "ascended heroes", "por": "perfect order",
+    "cri": "chaos rising", "pbl": "pitch black", "30c": "30th celebration",
+}
+# „(MEW 200)“, „(SIT TG01)“, „(30C UF 108)“, „(SWSH 016)“ – karta s kódom setu (veľké písmená)
+CODE_CARD_RE = re.compile(r"\([A-Z0-9]{2,5}(?:\s+[A-Z]{1,3})?\s+[A-Z]{0,3}\d{1,3}[a-z]?\)")
+_CODES_BY_SET = {}
+for _code, _canonical in SET_CODES.items():
+    _CODES_BY_SET.setdefault(_canonical, []).append(
+        re.compile(r"\(\s*" + re.escape(_code) + r"(?:\s+[a-z]{1,3})?\s+[a-z]{0,3}\d{1,3}"))
+
+
+def strip_codes(title):
+    """Názov bez „(MEW 200)“ – aby kód setu MEW nebol Pokémon Mew."""
+    return CODE_CARD_RE.sub(" ", title or "")
+
+
+# oficiálny názov setu (bez diakritiky) -> regexy jeho skratiek; pripravené raz pri štarte
+_ALIASES_BY_SET = {}
+for _alias, _canonical in SET_ALIASES.items():
+    _ALIASES_BY_SET.setdefault(fold(_canonical), []).append(
+        re.compile(r"(?<![a-z0-9/])" + re.escape(fold(_alias)) + r"(?![a-z0-9/])"))
+
+
+@lru_cache(maxsize=50000)
+def set_matches_text(text, set_name):
+    """Je v texte daný set? Bez diakritiky, skratky len ako celé slová, aj množné číslo."""
+    s, n = fold(clean_text(text)), fold(clean_text(set_name))
+    if not s or not n:
+        return False
+    parts = SET_PARTS.get(n)
+    if parts and any(set_matches_text(text, p) for p in parts):
+        return True
+    nw, sw = fold_words(n), fold_words(s)
+    if nw and nw <= sw:
+        return True
+    if any(rx.search(s) for rx in _ALIASES_BY_SET.get(n, ())):
+        return True
+    if any(rx.search(s) for rx in _CODES_BY_SET.get(n, ())):
+        return True
+    stem_n = {_stem(w) for w in nw}
+    return bool(stem_n) and stem_n <= {_stem(w) for w in sw}
+
+
+def quick_anchors(parsed, loose_set=False):
+    """Rýchly predfilter pre katalógy: skupiny reťazcov (bez diakritiky). Názov produktu musí
+    obsahovať aspoň jeden reťazec z KAŽDEJ skupiny, inak sa drahé porovnanie ani nespúšťa.
+    Je to len hrubé sito – presné pravidlá (card/sealed_matches_query) idú potom."""
+    groups = []
+    pokemon = parsed.get("pokemon")
+    if pokemon:
+        groups.append((fold(pokemon).replace("-", ""), fold(pokemon)))
+    set_name = fold(parsed.get("set_name") or "")
+    if set_name and not (loose_set and parsed.get("card_number")):   # loose_set: set nemusí byť v názve
+        names = [set_name] + [fold(p) for p in SET_PARTS.get(set_name, ())]
+        alts = {n.split()[0] for n in names if n.split()}
+        alts |= {fold(a) for a, c in SET_ALIASES.items() if fold(c) in names}
+        alts |= {"(" + k for k, c in SET_CODES.items() if c in names}
+        groups.append(tuple(alts))
+    number = parsed.get("card_number")
+    if number and "/" in number:
+        groups.append((number.split("/")[1],))
+    return groups
+
+
+def anchors_hit(folded_title, groups):
+    return all(any(a in folded_title for a in g) for g in groups)
+
+
+def _all_words(parsed):
+    """Všetky slová hľadania (aj všeobecné), keď nič konkrétnejšie nie je."""
+    return {w for w in fold_words(parsed.get("original", "")) - {"pokemon", "tcg", "the", "and", "of", "en"}
+            if len(w) >= 3 or w.isdigit()}
+
+
+def _wanted_words(parsed):
+    return {w for w in fold_words(parsed.get("original", "")) - GENERIC_WORDS
+            if len(w) >= 3 or w.isdigit()}
+
+
+# „10x ETB“, „case“ = veľkoobchodné balenie. ALE „6x booster“, „36x booster“ je len popis obsahu
+# (bundle / box) – predtým sa takéto produkty vyhadzovali z výsledkov.
+_CONTENT_AFTER = r"(?!\s*-?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|boost\w*|karet|kariet|cards?\b))"
+_BULK_RE = re.compile(r"\bcase\b|(?<![\w/.,])\d{1,2}\s*x(?![a-z0-9])(?!\s*\d)" + _CONTENT_AFTER +
+                      r"|\bx\s*\d{1,2}\b" + _CONTENT_AFTER, re.I)
+_WANT_BULK_RE = re.compile(r"\bcase\b|(?:bundle|blister|etb|tin|trainer\s+box)\s+display|\b\d{1,2}\s*x\b", re.I)
+
+
+def card_number_in(text, number):
+    """Je v texte presne toto číslo karty? 4/102 = 004/102, ale 4/102 != 104/102."""
+    try:
+        a, b = (int(x) for x in number.split("/"))
+    except (ValueError, AttributeError):
+        return False
+    return any(int(m.group(1)) == a and int(m.group(2)) == b for m in _CARDNUM_RE.finditer(text or ""))
+
+
+def card_matches_query(title, extra_text, parsed, loose_set=False):
+    """Hľadanie karty. loose_set = obchod nepíše set do názvu, stačí číslo karty."""
+    title = clean_text(title)
+    searchable = clean_text(title + " " + (extra_text or ""))
+    pokemon, set_name = parsed.get("pokemon"), parsed.get("set_name")
+    number, suffix = parsed.get("card_number"), parsed.get("suffix")
+
+    if pokemon and not has_word(strip_codes(title), pokemon):
+        return False, "pokemon_not_in_title"
+    if number and not card_number_in(searchable, number):
+        return False, "card_number_not_found"
+    if set_name and not (loose_set and number) and not set_matches_text(searchable, set_name):
+        return False, "set_not_found"
+    if suffix and not has_word(strip_codes(title), suffix):
+        return False, "suffix_not_in_title"
+    # „rare candy“: bez Pokémona, setu a čísla musia byť hľadané slová v názve
+    if not (pokemon or set_name or number):
+        want = _wanted_words(parsed) or _all_words(parsed)
+        if not want or want - fold_words(title):
+            return False, "words_not_in_title"
+    return True, "matched"
+
+
+# Ako obchody píšu typ produktu v názve
+_PTYPE_TITLE_RE = {
+    "elite trainer box": re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b|boosterbox|(?-i:\bBB\b)", re.I),   # BB = Posbírej to
+    "booster bundle": re.compile(r"\bbundle\b", re.I),   # niektoré obchody píšu len „Bundle“
+    "collection box": re.compile(r"collection\s+box|kolekci\w*\s+box", re.I),
+    "premium collection": re.compile(r"premium\s+collection|pr[ée]miov\w*\s+kolekci", re.I),
+    "blister": re.compile(r"blister", re.I),
+    "tin": re.compile(r"\btins?\b|plechovk\w*", re.I),
+    "collection": re.compile(r"collection|kolekci\w*|kolekce", re.I),
+    "booster": re.compile(r"booster|bal[íi][čc]ek|bal[íi][čc]ky", re.I),   # „151 Balíček“
+}
+# „Display“ booster bundlov / blistrov / ETB nie je booster box, a pod.
+_PTYPE_NOT_RE = {
+    "booster box": re.compile(r"bundle|blister|\btins?\b|elite\s+trainer|\betb\b|sleeved|"
+                              r"build\s*(?:&|and)?\s*battle|collection", re.I),
+    "booster bundle": re.compile(r"elite\s+trainer|\betb\b|booster\s*box", re.I),
+    "booster": re.compile(r"\d+\s*(?:karet|kariet|kart|cards)\b", re.I),   # „Balíček pro sběratele - 100 karet“
+}
+_MYSTERY_RE = re.compile(r"mystery|blind\s*box|tajn[ýyá]\w*|p[řr]ekvapen\w*", re.I)
+
+
+def sealed_matches_query(title, extra_text, parsed):
+    """Hľadanie ETB, boxov, bundlov..."""
+    title = clean_text(title)
+    extra_text = extra_text or ""
+    set_name, ptype = parsed.get("set_name"), parsed.get("product_type")
+    original = parsed.get("original", "") or ""
+
+    if set_name and not set_matches_text(title, set_name):
+        return False, "set_not_in_title"
+    # typ produktu len z NÁZVU (text dlaždice môže obsahovať iné produkty, menu...)
+    if ptype:
+        rx = _PTYPE_TITLE_RE.get(ptype)
+        if rx is not None:
+            if not rx.search(title):
+                return False, "product_type_not_found"
+        elif ptype not in title.lower():
+            return False, "product_type_not_found"
+        bad = _PTYPE_NOT_RE.get(ptype)
+        if bad is not None and bad.search(title):
+            return False, "other_product_type"
+    # mystery box / balíček má neznámy obsah – medzi ETB / boxy / boostery nepatrí (len pri hľadaní „mystery“)
+    if ptype and _MYSTERY_RE.search(title) and not _MYSTERY_RE.search(original):
+        return False, "mystery"
+    if ptype == "elite trainer box" and re.search(r"\b(case|10x|12x|6x)\b", title, re.I):
+        return False, "bulk_product"
+    # set, ktorý nepoznáme: ostatné hľadané slová musia byť v názve
+    if not set_name and _wanted_words(parsed) - fold_words(title + " " + extra_text):
+        return False, "words_not_found"
+    if parsed.get("pokemon") and not has_word(strip_codes(title), parsed["pokemon"]):
+        return False, "pokemon_not_in_title"
+    if not _WANT_BULK_RE.search(original):
+        if _BULK_RE.search(title):
+            return False, "bulk_product"
+        if ptype == "booster bundle" and re.search(r"\bdisplay\b", title, re.I):
+            return False, "bulk_product"
+    return True, "matched"
+
+
+# =========================================================
+# CENA
+# =========================================================
+
+_NUM = (r"(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?(?!\d)"   # 1.099,00
+        r"|\d{1,3}(?:,\d{3})+\.\d{1,2}(?!\d)"            # 1,099.00
+        r"|\d{1,3}(?:[ ]\d{3})+(?:[.,]\d{1,2})?"         # 1 099,00
+        r"|\d{1,8}(?:[.,]\d{1,2})?)")
+_CZK = r"(?:,-|,–|\.-|-)?\s*(?:Kč|Kc|CZK)(?![a-z])"          # 1 299,- Kč
+_EX_VAT = re.compile(r"(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|" + _CZK + r"))\s*(?:bez\s+DPH|excl\.?\s*VAT)", re.I)
+# Sumy, ktoré nie sú cenou produktu: „Ušetríte 10 €“, „doprava od 3,90 €“, „(0,15 € / ks)“
+_NOISE_RE = re.compile(
+    r"(?:u[šs]etr[íi]te|u[šs]et[řr][íi]te|[úu]spora|you\s+save|\bsave\b|doprava(?:\s+zdarma)?(?:\s+od)?"
+    r"|po[šs]tovn[ée](?:\s+od)?|zdarma\s+od|nad)\s*:?\s*-?\s*(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|" + _CZK + r"))"
+    r"|" + _NUM + r"\s*(?:€|" + _CZK + r")\s*/\s*(?:ks|kus|pack|booster|bal\w*)", re.I)
+_EUR_RES = [re.compile(r"€\s*" + _NUM), re.compile(_NUM + r"\s*€")]
+_CZK_RES = [re.compile(_NUM + r"\s*" + _CZK, re.I), re.compile(r"CZK\s*" + _NUM, re.I)]
+
+
+def to_float(value):
+    value = str(value).replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):   # 1.099 = tisíc
+        value = value.replace(".", "")
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    else:
+        value = value.replace(",", ".")
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+# Čísla, ktoré nie sú cena a mohli by sa „zlepiť“ s cenou vedľa nich:
+# „PSA 10 536 Kč“ -> 10 536 Kč, „Mew ex 88 530 Kč“ -> 88 530 Kč, „Kód: 12345“...
+_NOT_PRICE_RE = re.compile(
+    r"\b(?:psa|cgc|bgs|sgc|tag|ace|grade[d]?)\s*\d{1,2}(?:[.,]5)?\b"
+    r"|\b\d{1,4}\s*/\s*\d{1,4}\b|#\s?\d+"
+    r"|\b(?:k[óo]d|code|ean|sku|katalogov\w*\s+[čc][íi]slo|[čc]\.)\s*:?\s*[\w-]*\d[\w-]*"
+    r"|\b\d+\s*(?:ks|kus\w*|pcs|x)\b|\(\s*\d+\s*\)", re.I)
+
+
+def _strip_title(text, title):
+    """Z textu dlaždice odstráni názov produktu (čísla v názve nie sú cena)."""
+    title = clean_text(title)
+    if title and len(title) >= 4:
+        text = re.sub(re.escape(title), " ", text, flags=re.I)
+    return text
+
+
+def parse_price_raw(text, title=""):
+    """(suma, 'EUR' | 'CZK') alebo (None, ''). Ceny 'bez DPH' a úspory sa ignorujú.
+    title = názov produktu; odstráni sa z textu, aby sa číslo z názvu nezlepilo s cenou."""
+    text = _strip_title(clean_text(text), title)
+    text = _NOISE_RE.sub(" ", _EX_VAT.sub(" ", text))
+    text = _NOT_PRICE_RE.sub(" | ", text)   # oddeľovač, nie medzera – nič sa nespojí
+    if not text.strip(" |"):
+        return None, ""
+    # Kde je € – pred číslom („€210“, Beardex) alebo za ním („49,90 €“)? Rozhoduje zápis v tejto
+    # dlaždici: „135 €210“ = 210 € (€ je prilepené k 210), „49,90 € 59,90 €“ = 49,90 €.
+    prefix = len(re.findall(r"€\d", text))
+    suffix = len(re.findall(r"\d\s?€(?!\s?\d)", text))
+    eur_res = _EUR_RES if prefix > suffix else _EUR_RES[::-1] if suffix > prefix else None
+    if eur_res:
+        for rx in eur_res:
+            m = rx.search(text)
+            if m:
+                v = to_float(m.group(1))
+                return (v, "EUR") if v else (None, "")
+    # nerozhodné: prvá cena v texte. „0 Kč“ (Gengar: nevydaný produkt) = bez ceny, nehľadá sa ďalšie číslo
+    for group in ((_EUR_RES, "EUR"), (_CZK_RES, "CZK")):
+        best = None
+        for rx in group[0]:
+            m = rx.search(text)
+            if m and (best is None or m.start() < best.start()):
+                best = m
+        if best is not None:
+            v = to_float(best.group(1))
+            return (v, group[1]) if v else (None, "")
+    return None, ""
+
+
+# Rozumné hranice ceny v € – čo je mimo, je takmer isto zle prečítané
+_GRADED_RE = re.compile(r"\b(?:psa|cgc|bgs|sgc|graded|ohodnocen\w*|gradovan\w*)\b", re.I)
+_SEALED_TYPE_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|"
+                             r"blister|display|deck|\bbox\b|chest|bal[íi][čc]|(?-i:\bBB\b)", re.I)
+
+
+def price_plausible(title, eur):
+    """False = cena je nezmyselná pre tento typ produktu (chyba čítania)."""
+    if not eur or eur < 0.1:
+        return False
+    if is_combo(title) or _BULK_RE.search(title or ""):
+        return eur <= 20000
+    if _SEALED_TYPE_RE.search(title or ""):
+        return eur <= 6000
+    if _GRADED_RE.search(title or ""):
+        return eur <= 15000
+    return eur <= 3000   # jednotlivá karta bez gradingu
+
+
+def parse_price(text, title=""):
+    """Cena v EUR (Kč sa prepočíta aktuálnym kurzom)."""
+    value, cur = parse_price_raw(text, title)
+    if value is None:
+        return None
+    return czk_to_eur(value) if cur == "CZK" else value
+
+
+# =========================================================
+# JAZYK PRODUKTU
+# =========================================================
+
+# celé slová (bez ohľadu na veľkosť) a skratky (len VEĽKÝMI, aby „de“ nebola nemčina)
+_LANG_DEFS = [
+    ("JP", r"japon\w*|japan\w*|japonsk\w*", r"JP|JPN|JAP"),
+    ("KR", r"k[óo]rej\w*|korean\w*", r"KR|KOR"),
+    ("TW", r"traditional\s+chinese|t-?chinese|tradičn\w*\s+[čc][íi]n\w*|taiwan\w*", r"TW|T-?CN"),
+    ("CN", r"[čc][ií]nsk\w*|[čc][ií]n[šs]t\w*|chinese|simplified\s+chinese|s-?chinese", r"CN|CHN|S-?CN"),
+    ("ID", r"indon[ée]z\w*|indonesian\w*", r"IDN|INDO"),
+    ("TH", r"thajsk\w*|thai", r"TH|THA"),
+    ("DE", r"nem[ec]ck\w*|n[ěe]meck\w*|german\w*|deutsch\w*", r"DE|GER|DEU"),
+    ("FR", r"franc[úu]zsk\w*|francouzsk\w*|french|fran[çc]ais\w*", r"FR|FRA"),
+    ("IT", r"talian\w*|italsk\w*|italian\w*|italiano", r"IT|ITA"),
+    ("ES", r"[šs]paniel\w*|[šs]pan[ěe]l\w*|spanish|espa[ñn]ol\w*", r"ES|ESP|SPA"),
+    ("PT", r"portugal\w*|portugues\w*", r"PT|POR"),
+    ("NL", r"holandsk\w*|nizozemsk\w*|dutch|nederlands\w*", r"NL|NLD"),
+    ("PL", r"po[ľl]sk\w*|polish|polski", r"PL|POL"),
+    ("EN", r"anglick\w*|english|angli[čc]tin\w*", r"EN|ENG|UK"),
+]
+_LANG_PATTERNS = [
+    (code, re.compile(r"(?<!\w)(?:" + w + r")(?!\w)", re.I),
+     re.compile(r"(?<![A-Za-z0-9])(?:" + c + r")(?![A-Za-z0-9])"))
+    for code, w, c in _LANG_DEFS
+]
+ASIAN_LANGS = {"JP", "KR", "CN", "TW", "ID", "TH"}
+FOREIGN_QUERY_RE = re.compile(r"japon|japan|jpn|k[óo]rej|korean|[čc][ií]nsk|chinese|indon|thai|thajsk", re.I)
+
+
+@lru_cache(maxsize=20000)
+def detect_language(title):
+    """'JP', 'EN', 'DE'... alebo '' ak nie je uvedený."""
+    title = title or ""
+    for code, words_re, codes_re in _LANG_PATTERNS:
+        if words_re.search(title) or codes_re.search(title):
+            return code
     return ""
 
 
-def extract_image(a, base):
-    el, img = a, a.find("img")
-    for _ in range(3):
-        if img is not None or el is None:
-            break
-        el = el.parent
-        img = el.find("img") if el is not None else None
-    return img_url(img, base) if img is not None else ""
+def query_language(q):
+    lang = detect_language(q)
+    return lang if lang and lang != "EN" else ""
 
 
-def _has_other_product(el, own_href):
-    """Obsahuje prvok odkaz na INÝ produkt? (potom to už nie je dlaždica jedného produktu)"""
-    own = (own_href or "").lower().rstrip("/").split("?")[0]
-    for x in el.find_all("a", href=True):
-        h = x["href"].lower().rstrip("/").split("?")[0]
-        if own and (h == own or own.endswith(h) or h.endswith(own)):
-            continue
-        if L.is_tcg_product(extract_title(x)):
-            return True
-    return False
+# =========================================================
+# FILTER MERCHU
+# Slová sa hľadajú ako začiatok slova („plyš“ chytí plyšák, plyšová...).
+#  1. príslušenstvo        – vždy preč
+#  2. MERCH_HARD (oblečenie, hrnčeky, plyšáky...) – vždy preč
+#  3. MERCH_SOFT (figúrky, odznaky...) – preč, iba ak to nie je TCG kolekcia
+# =========================================================
+
+ACCESSORY_PATTERNS = [
+    r"sleeves?", r"obal\w*", r"album\w*", r"binder\w*", r"toploader\w*",
+    r"playmat\w*", r"podlo[žz]k\w*", r"deck\s*box\w*", r"deckbox\w*",
+    r"puzdr\w*", r"pouzdr\w*", r"stojan\w*", r"portfoli\w*", r"one\s*touch",
+    r"card\s+holder\w*", r"magnetic\s+holder\w*", r"penny\s+sleeves?", r"r[áa]m[čc]ek\w*",
+    r"akryl\w*", r"acrylic", r"ochrann\w*\s+box\w*", r"protector\w*",
+    r"magnetick\w*\s+box\w*", r"box\s+na\s+ulo[žz]\w*",
+    # kocky, žetóny, držiaky, krabičky a všetko „na karty“
+    r"kock[ayu]\w*", r"kocky", r"kostk\w*", r"dice", r"d\d{1,2}",
+    r"dr[žz]i?[áa]k\w*", r"dr[žz]iak\w*", r"holder\w*", r"stands?",
+    r"token\w*", r"[žz]et[óo]n\w*", r"damage\s+counter\w*", r"counters", r"marker\w*", r"ukazovate[ľl]\w*",
+    r"krabi[čc]k\w*\s+na\s+\w+", r"(?:na|pro|for)\s+(?:karty|kartičky|kartičk\w*|cards?)",
+    r"storage\w*", r"organiz\w*", r"divider\w*", r"rozde[ľl]ova[čc]\w*", r"p[řr]ed[ěe]l\w*",
+    r"card\s*saver\w*", r"semi\s*rigid\w*", r"graded\s+(?:card\s+)?(?:case|slab)\s+(?:holder|protector)",
+    r"slab\s+(?:case|holder|stand)\w*", r"pr[áa]zdn\w*\s+slab\w*",
+    # prázdne krabice, kódy, nepravé karty – nie sú to produkty s kartami
+    r"pr[áa]zdn\w*", r"empty", r"bez\s+(?:booster\w*|bal[íi][čc]\w*|kar[ite]\w*|obsahu)",
+    r"(?:only\s+)?box\s+only", r"len\s+(?:krabic\w*|box)", r"jen\s+(?:krabic\w*|box)",
+    r"code\s*cards?", r"online\s+(?:code|k[óo]d\w*)", r"ptcgl\s+code\w*",
+    r"proxy\w*", r"replik\w*", r"fake", r"custom\s+cards?", r"fan\s*-?made",
+    # súčiastky z balení predávané samostatne: „ETB - Plastová Mince“ (29 Kč), „sada energií“
+    r"(?:plastov|kovov|metal|acryl|akryl)\w*\s+(?:minc\w*|coin\w*)", r"minc[ea]", r"mincí", r"coin\b(?!\s*(?:set|collection|box|tin|gift))",
+    r"sada\s+energi\w*", r"energy\s+(?:set|pack)\b", r"bal[íi][čc]ek\s+energi\w*",
+    # hry, súťaže, losovania, live otváranie – cena nie je cena produktu (napr. „ETB – hra“ za 60 €)
+    r"zahra[ťt]\w*", r"zahraj\w*", r"pr[íi][ďd]\s+si", r"hra[ťt]", r"hra\s+o", r"hra\s+na", r"\(hra\)", r"[-–—]\s*hra", r"(?:pok[eé]mon\s+)?minihr\w*", r"s[úu]ťa[žz]\w*", r"sout[ěe][žz]\w*",
+    r"losovan\w*", r"losov[áa]n\w*", r"tombol\w*", r"raffle\w*", r"giveaway\w*", r"lottery", r"loter\w*",
+    r"(?:box|pack|live)\s+break\w*", r"live\s+(?:opening|otv\w*|stream\w*)", r"otv[áa]ran\w*",
+    r"vstupn[ée]\w*", r"turnaj\w*", r"tournament\w*", r"ticket\w*", r"l[íi]stok\w*",
+]
+
+MERCH_HARD_PATTERNS = [
+    # oblečenie
+    r"tri[čc]k\w*", r"trik[oa]", r"trik[aů]", r"t-?shirt\w*", r"\w*shirt\w*", r"tee",
+    r"mikin\w*", r"hoodie\w*", r"hoody", r"sweat\w*", r"pono[žz]k\w*", r"socks?",
+    r"[čc]iap\w*", r"[čc]epi[cč]\w*", r"k?[šs]iltovk\w*", r"caps?", r"beanie\w*", r"hats?",
+    r"py[žz]am\w*", r"pyjam\w*", r"pajam\w*", r"kost[ýy]m\w*", r"costume\w*",
+    r"rukavic\w*", r"[šs]atk\w*", r"[šs][áa]l", r"[šs][áa]ly", r"scarf\w*",
+    r"tepl[áa]k\w*", r"leg[íi]n\w*", r"[šs]ortk\w*", r"bund[ay]", r"jacket\w*",
+    r"papu[čc]\w*", r"slippers?", r"oble[čc]en\w*", r"textil\w*", r"bunda",
+    # plyšáky, hračky
+    r"ply[šs]\w*", r"plush\w*", r"peluche\w*", r"hra[čc]k\w*", r"toys?", r"lego",
+    r"mega\s+construx", r"stavebnic\w*", r"puzzle\w*", r"pokladni[čc]k\w*",
+    r"gashapon\w*", r"tamagotchi", r"funko\w*", r"pop!", r"vinyl\w*",
+    # kuchyňa, domácnosť
+    r"hrn[čc]\w*", r"hrn[íi][čc]\w*", r"hrnk\w*", r"hrnek", r"termo\w*", r"mugs?",
+    r"[šs][áa]lk\w*", r"[šs][áa]lek", r"poh[áa]r\w*", r"cups?", r"tumbler\w*",
+    r"f[ľl]a[šs]\w*", r"lahv\w*", r"lahev", r"bottle\w*", r"lamp", r"lamp[ayu]", r"lampi[čc]k\w*",
+    r"svietidl\w*", r"sv[ií]tidl\w*", r"deka", r"deky", r"blanket\w*", r"vank[úu][šs]\w*",
+    r"pol[šs]t[áa][řr]\w*", r"uter[áa]k\w*", r"ru[čc]n[íi]k\w*", r"osu[šs]k\w*", r"towel\w*",
+    r"oblie[čc]k\w*", r"povle[čc]\w*", r"tanier\w*", r"tal[íi][řr]\w*", r"misk[ayu]",
+    r"lunch\s*box\w*", r"desiatov\w*", r"svačin\w*", r"box\s+na\s+jedlo",
+    # škola, doplnky, elektronika
+    r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?", r"kabelk\w*",
+    r"pera[čc]n[íi]k\w*", r"penál\w*", r"z[áa]pisn[íi]k\w*", r"zo[šs]it\w*", r"se[šs]it\w*",
+    r"fixk\w*", r"pastel\w*", r"pero", r"pera",
+    r"k[ľl][úu][čc]enk\w*", r"kl[íi][čc]enk\w*", r"keychain\w*", r"keyring\w*",
+    r"pr[íi]ves\w*", r"n[áa]ram\w*", r"n[áa]hrdeln[íi]k\w*", r"[šs]perk\w*",
+    r"pe[ňn]a[žz]enk\w*", r"wallet\w*", r"phone\s+case", r"mobile\s+case", r"kryt\s+na",
+    r"hodink\w*", r"hodiny", r"watch", r"sl[úu]chadl\w*", r"sluch[áa]tk\w*",
+    r"headphones?", r"earphones?", r"reproduktor\w*", r"powerbank\w*",
+    r"plag[áa]t\w*", r"poster\w*", r"sticker\w*", r"n[áa]lepk\w*", r"samolep\w*", r"tetov\w*",
+    r"knih\w*", r"kniha", r"books?", r"komiks\w*", r"manga", r"omal\w*", r"encyklop\w*",
+    r"nintendo", r"videohr\w*", r"switch",
+    # jedlo
+    r"[čc]okol[áa]d\w*", r"cukrovink\w*", r"bonbon\w*", r"candy", r"l[íi]zank\w*",
+    r"[žz]uva[čc]k\w*", r"ramune", r"limon[áa]d\w*",
+]
+
+MERCH_SOFT_PATTERNS = [
+    r"krabi[čc]k\w*", r"coin\w*", r"minc\w*", r"card\s+box\w*",
+    r"fig[úu]r\w*", r"figur\w*", r"figure\w*", r"statue\w*", r"so[šs]k\w*",
+    r"odznak\w*", r"badge\w*", r"pins?", r"bro[žz]\w*", r"mystery", r"blind\s*box\w*",
+]
 
 
-def find_block(a):
-    """Dlaždica produktu okolo odkazu (najbližší rodič s cenou), bez prečiarknutej ceny.
-    Nikdy nevystúpi tak vysoko, aby obsahovala iný produkt – inak by sa zobrala jeho cena."""
-    cur, best = a, None
-    own = urllib.parse.urlsplit(a.get("href") or "").path
-    for level in range(1, 7):
-        cur = cur.parent
-        if not cur:
-            break
-        if _has_other_product(cur, own):
-            break
-        text = L.clean_text(cur.get_text(" ", strip=True))
-        if text and any(c in text for c in ("€", "Kč", "CZK")) and len(text) < 1800:
-            best = cur
-            if level >= 2:
-                break
-    el = best or a.parent
-    if el is None:
-        return None
-    try:
-        if el.select(_STRIKE_SELECTOR):
-            c = copy.copy(el)
-            for old in c.select(_STRIKE_SELECTOR):
-                old.decompose()
-            if L.parse_price(c.get_text(" ", strip=True)) is not None:
-                return c
-    except Exception:
-        pass
-    return el
+def _words_re(patterns):
+    return re.compile(r"(?<!\w)(?:" + "|".join(patterns) + r")(?!\w)", re.I)
 
 
-def _hidden(tag):
-    if tag.has_attr("hidden") or str(tag.get("aria-hidden", "")).lower() == "true":
-        return True
-    if _HIDDEN_CLASSES & set(tag.get("class") or []):
-        return True
-    style = str(tag.get("style", "")).replace(" ", "").lower()
-    return "display:none" in style or "visibility:hidden" in style
+ACCESSORY_RE = _words_re(ACCESSORY_PATTERNS)
+MERCH_HARD_RE = _words_re(MERCH_HARD_PATTERNS)
+MERCH_SOFT_RE = _words_re(MERCH_SOFT_PATTERNS)
+
+# Hľadanie PRÍSLUŠENSTVA („pikachu sleeves“, „binder“, „toploader“): vtedy sa príslušenstvo
+# nevyhadzuje, ale naopak hľadá. Bez takého slova v hľadaní ostáva filter ako predtým.
+ACCESSORY_QUERY_RE = _words_re([
+    r"sleeves?", r"obal\w*", r"album\w*", r"binder\w*", r"toploader\w*", r"playmat\w*",
+    r"podlo[žz]k\w*", r"deck\s*box\w*", r"deckbox\w*", r"portfoli\w*", r"one\s*touch",
+    r"penny\s+sleeves?", r"card\s*saver\w*", r"semi\s*rigid\w*", r"puzdr\w*", r"pouzdr\w*",
+])
+_ACC_STEM = {"obaly": "obal", "obalu": "obal", "albumy": "album", "albumu": "album"}
 
 
-def visible_text(el):
-    if el is None:
+def is_accessory_query(q):
+    return bool(ACCESSORY_QUERY_RE.search(q or ""))
+
+
+@lru_cache(maxsize=20000)
+def is_accessory(title):
+    """Príslušenstvo na karty (sleeves, album...), nie oblečenie / hračky / prázdne krabice."""
+    t = clean_text(title)
+    return bool(ACCESSORY_QUERY_RE.search(t)) and not MERCH_HARD_RE.search(t) \
+        and not re.search(r"pr[áa]zdn|empty|proxy|fake|replik", t, re.I)
+
+
+def accessory_matches_query(title, parsed):
+    """Všetky hľadané slová (aj „sleeves“) musia byť v názve; jednotné / množné číslo je jedno."""
+    stem = lambda w: _ACC_STEM.get(w, _stem(w))
+    want = {stem(w) for w in _all_words(parsed)}
+    have = {stem(w) for w in fold_words(title)}
+    if not want or want - have:
+        return False, "words_not_in_title"
+    return True, "matched"
+
+# Znaky TCG produktu (karta / sealed)
+TCG_MARKER_RE = re.compile(
+    r"booster|elite\s+trainer|\betb\b|collection|kolekci|blister|\btins?\b|\btcg\b"
+    r"|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|display|battle\s+academy|league\s+battle\s+deck"
+    r"|\b\d{1,3}\s*/\s*\d{1,3}\b|\bcards\b|miscellaneous"
+    r"|(?-i:\([A-Z0-9]{2,5}(?:\s+[A-Z]{1,3})?\s+[A-Z]{0,3}\d{1,3}[a-z]?\))", re.I)   # „(MEW 200)“
+
+# Znaky jednotlivej karty
+CARD_MARKER_RE = re.compile(
+    r"\b\d{1,3}\s*/\s*\d{1,3}\b|#\s?\d{1,3}\b|\b(?:sv|swsh|sm|xy|me|bw|svp|sve)\s?-?\d"
+    r"|\b(?:ex|gx|v|vmax|vstar|lv\.?\s?x|break|prime|legend|tag\s+team)\b"
+    r"|holo|reverse|full\s*art|rare|promo|illustration|secret|trainer\s+gallery|alt\w*\s+art"
+    r"|\bsir\b|\bir\b|\bsr\b|\bur\b|\bar\b|\bchr\b|\bshiny\b|\bkart[ay]\b|\bcard\b"
+    r"|\bpsa\b|\bcgc\b|\bbgs\b|graded|\bnm\b|near\s+mint|mint", re.I)
+
+# Skutočné TCG produkty, ktoré obsahujú „merch“ slovo (Rare Candy, Poster Collection...)
+_TCG_SAFE_RE = re.compile(
+    r"rare\s+candy|puzzle\s+of\s+time|poster\s+collection|binder\s+collection"
+    r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?"
+    r"|trick\s+or\s+trade|grey\s+felt\s+hat", re.I)
+_SWITCH_RE = re.compile(r"(?<!\w)(?:energy\s+)?switch(?:\s+cart)?(?!\w)", re.I)
+_CONSOLE_RE = re.compile(r"nintendo\s+switch|konzol\w*|console|oled|joy-?con|videohr\w*|video\s*game", re.I)
+
+TCG_SET_NAMES = set(KNOWN_SETS) | {
+    "scarlet violet", "scarlet & violet", "crown zenith", "silver tempest", "lost origin",
+    "pokemon go", "pokémon go", "astral radiance", "brilliant stars", "fusion strike",
+    "celebrations", "evolving skies", "chilling reign", "battle styles", "shining fates",
+    "vivid voltage", "champion's path", "champions path", "darkness ablaze", "rebel clash",
+    "sword shield", "sword & shield", "cosmic eclipse", "hidden fates", "unified minds",
+    "unbroken bonds", "team up", "lost thunder", "dragon majesty", "celestial storm",
+    "forbidden light", "ultra prism", "crimson invasion", "shining legends", "burning shadows",
+    "guardians rising", "sun moon", "sun & moon", "evolutions", "steam siege", "fates collide",
+    "generations", "breakpoint", "breakthrough", "ancient origins", "roaring skies",
+    "primal clash", "phantom forces", "furious fists", "flashfire", "base set", "jungle",
+    "fossil", "team rocket", "neo genesis", "gym heroes", "151", "shiny treasure",
+    "vstar universe", "terastal", "night wanderer", "stellar miracle", "battle partners",
+    "heat wave arena", "glory of team rocket",
+}
+_TCG_SET_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in sorted(TCG_SET_NAMES, key=len, reverse=True)) + r")\b", re.I)
+
+
+def _merch_clean(text):
+    if not text:
         return ""
-    parts = []
-    for s in el.find_all(string=True):
-        p, hidden = s.parent, False
-        while p is not None and p is not el:
-            if getattr(p, "name", None) in ("script", "style", "template", "noscript") or _hidden(p):
-                hidden = True
-                break
-            p = p.parent
-        if not hidden:
-            parts.append(str(s))
-    return L.clean_text(" ".join(parts))
+    console = _CONSOLE_RE.search(text)
+    text = _TCG_SAFE_RE.sub(" ", text)
+    # karta Switch / Energy Switch (nie herná konzola)
+    if not console and _SWITCH_RE.search(text) and CARD_MARKER_RE.search(text):
+        text = _SWITCH_RE.sub(" ", text)
+    return text
 
 
-_CART_BTN = 'button[name="add"], button[type="submit"], .add-to-cart, .btn-cart, .btn-add-to-cart'
+@lru_cache(maxsize=20000)
+def merch_reason(title, extra_text=""):
+    """'' = karta / TCG produkt; inak dôvod vyradenia."""
+    if CODE_CARD_RE.search(title or ""):   # „Backtrack Badge (PBL 074) - NM“ je karta, nie odznak
+        m = re.search(r"proxy\w*|replik\w*|fake|custom|fan\s*-?made", title, re.I)
+        return ("accessory:" + m.group(0).lower()) if m else ""
+    text = clean_text(_merch_clean(title) + " " + _merch_clean(extra_text))
+    m = ACCESSORY_RE.search(text)
+    if m:
+        return "accessory:" + m.group(0).lower()
+    m = MERCH_HARD_RE.search(text)
+    if m:
+        return "merch:" + m.group(0).lower()
+    m = MERCH_SOFT_RE.search(text)
+    if m and not TCG_MARKER_RE.search(text):
+        return "merch:" + m.group(0).lower()
+    return ""
 
 
-def detect_stock_el(el):
-    """Sklad z dlaždice: tlačidlo košíka, potom viditeľný text."""
-    if el is None:
+def is_merch(title, extra_text=""):
+    return bool(merch_reason(title, extra_text))
+
+
+@lru_cache(maxsize=20000)
+def looks_like_tcg(title):
+    """Názov vyzerá ako karta alebo TCG produkt."""
+    text = clean_text(title)
+    return bool(TCG_MARKER_RE.search(text) or CARD_MARKER_RE.search(text) or _TCG_SET_RE.search(text))
+
+
+def is_tcg_product(title):
+    return looks_like_tcg(title) and not is_merch(title)
+
+
+def is_listed_product(title):
+    """Čo si katalóg uloží: karty / sealed produkty a aj príslušenstvo (sleeves, albumy...).
+    Do bežných výsledkov sa príslušenstvo dostane len pri hľadaní príslušenstva."""
+    return is_tcg_product(title) or is_accessory(title)
+
+
+# =========================================================
+# SKLAD
+# =========================================================
+
+STOCK_OUT_RE = re.compile(
+    r"vypredan\w*|vyprod[aá]n\w*|nie\s+je\s+skladom|nie\s+je\s+na\s+sklade"
+    r"|nedostupn\w*|nen[íi]\s+skladem|nen[íi]\s+dostupn\w*|sold\s*out"
+    r"|out\s+of\s+stock|ausverkauft", re.I)
+STOCK_PRE_RE = re.compile(r"predobjedn\w*|p[řr]edobjedn\w*|pre-?order\w*|vorbestell\w*", re.I)
+STOCK_ORDER_RE = re.compile(r"na\s+objedn[áa]vku|do\s+\d+\s+dn[íi]|na\s+dotaz|u\s+dodavatele", re.I)
+STOCK_IN_RE = re.compile(
+    r"skladom|skladem|na\s+sklad[eě]|in\s+stock|dostupn[ée]|k\s+odberu"
+    r"|k\s+dispozici|ihne[dď]|expedujeme|odes[ií]l[aá]me", re.I)
+COMING_RE = re.compile(r"o[čc]ak[áa]vame|o[čc]ek[áa]v[áa]me|pripravujeme|coming\s+soon", re.I)
+
+
+def detect_stock(text):
+    """'in' | 'out' | 'preorder' | 'order' | '' (nevieme)"""
+    text = clean_text(text)
+    if not text:
         return ""
-    for btn in el.select(_CART_BTN):
-        if btn.has_attr("disabled") or "disabled" in (btn.get("class") or []):
-            return "preorder" if L.STOCK_PRE_RE.search(btn.get_text(" ", strip=True)) else "out"
-    stock = L.detect_stock(visible_text(el))
-    if stock:
-        return stock
-    for btn in el.select(_CART_BTN):
-        label = visible_text(btn).lower()
-        if L.STOCK_PRE_RE.search(label):
-            return "preorder"
-        if re.search(r"do\s+ko[šs][íi]ka|add\s+to\s+cart|koupit|k[úu]pi[ťt]", label):
-            return "in"
-    if L.COMING_RE.search(el.get_text(" ", strip=True)):
+    if STOCK_OUT_RE.search(text):
+        return "out"
+    if STOCK_PRE_RE.search(text):
         return "preorder"
+    if STOCK_ORDER_RE.search(text):
+        return "order"
+    if STOCK_IN_RE.search(text):
+        return "in"
     return ""
 
 
-def _new_debug(shop, query):
-    return {"shop": shop["name"], "query": query, "url": "", "status": "starting",
-            "http_status": None, "results": 0, "links_scanned": 0, "merch_filtered": 0,
-            "match_filtered": 0, "accepted": 0, "elapsed_ms": 0, "cache": "", "error": "",
-            "sample_decisions": []}
-
-
-def _log(debug, **entry):
-    if len(debug["sample_decisions"]) < 20:
-        debug["sample_decisions"].append(entry)
-
-
-def _matches(shop, title, extra, parsed, kind):
-    if L.is_accessory_query(parsed.get("original")):
-        return L.accessory_matches_query(title, parsed)
-    if kind == "card":
-        return L.card_matches_query(title, extra, parsed, loose_set=shop.get("loose_set", False))
-    return L.sealed_matches_query(title, extra, parsed)
-
-
 # =========================================================
-# OBCHOD S VYHĽADÁVANÍM
+# SPÁJANIE ROVNAKÝCH PRODUKTOV Z RÔZNYCH OBCHODOV
 # =========================================================
 
-MAX_SEARCH_PAGES = 5        # koľko strán výsledkov vyhľadávania obchodu prejdeme
-SEARCH_PAGES_BUDGET = 12    # sekúnd na všetky strany spolu
-_page_cache = TTLCache(600, 120)   # stiahnuté stránky vyhľadávania (10 min)
+GROUP_TYPES = [
+    ("etb", re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)),
+    ("booster box", re.compile(r"booster\s*(?:box|display)|boosterbox|(?-i:\bBB\b)", re.I)),
+    ("booster bundle", re.compile(r"booster\s*bundle", re.I)),
+    ("sleeved booster", re.compile(r"sleeved\s+booster", re.I)),
+    ("3-pack blister", re.compile(r"3\s*-?\s*pack|three\s+pack|3\s*booster\s+blister", re.I)),
+    ("checklane blister", re.compile(r"checklane|1\s*-?\s*pack\s+blister|single\s+blister", re.I)),
+    ("blister", re.compile(r"blister", re.I)),
+    ("mini tin", re.compile(r"mini\s+tin", re.I)),
+    ("tin", re.compile(r"\btins?\b", re.I)),
+    ("build battle", re.compile(r"build\s*(?:&|and)?\s*battle", re.I)),
+    ("booster pack", re.compile(r"booster\s+pack|\bbooster\b|bal[íi][čc]ek", re.I)),
+    ("collection", re.compile(r"collection|kolekci", re.I)),
+]
+_VARIANT_RES = [
+    ("pc", re.compile(r"pok[eé]mon\s+center", re.I)),
+    ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
+    ("rev", re.compile(r"reverse", re.I)),
+    ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
+    ("used", re.compile(r"(?:[-–—|,(\[]\s*)(?:exc|excellent|lp|pl|mp|hp|played|poor|dmg|damaged)\s*[)\]]?\s*$", re.I)),
+    # poškodené balenie sa nespája s novým (iná cena, iný produkt)
+    ("dmg", re.compile(r"po[šs]kod\w*|po[šs]koz\w*|damaged|dent\w*|bez\s+f[óo]li\w*", re.I)),
+]
+_COMBO_TYPES = [
+    re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    re.compile(r"booster\s*(?:box|display)", re.I),
+    re.compile(r"booster\s*bundle", re.I),
+    re.compile(r"blister", re.I),
+    re.compile(r"\btins?\b", re.I),
+    re.compile(r"collection|kolekci", re.I),
+]
+# Pri blistroch a tinoch rozhoduje aj Pokémon/motív – rôzne motívy sa nespájajú
+_DETAIL_TYPES = {"3-pack blister", "checklane blister", "blister", "mini tin", "tin", "build battle"}
+_DETAIL_SKIP = GENERIC_WORDS | {
+    "checklane", "premium", "pack", "blister", "mini", "tin", "tins", "scarlet", "violet", "sword",
+    "shield", "mega", "evolution", "series", "edition", "with", "build", "battle", "kit", "stadium",
+    "japonsky", "japanese", "korejsky", "korean", "cinsky", "chinese", "nemecky", "german"}
 
 
-def fetch_page(url, timeout=SEARCH_TIMEOUT):
-    """(html alebo None, info) – rovnaká stránka sa 10 min nesťahuje znova."""
-    hit = _page_cache.get(url)
-    if hit is not None:
-        return hit, {"url": url, "http_status": 200, "status": "http_ok", "error": "", "elapsed_ms": 0, "cache": True}
-    resp, info = fetch(url, timeout)
-    if not resp:
-        return None, info
-    html = resp.text
-    _page_cache.set(url, html)
-    return html, info
-
-
-def scrape_search(shop, query, timeout=SEARCH_TIMEOUT, fetch_q=None):
-    """fetch_q = text pre vyhľadávanie obchodu (kratší); query = čo naozaj hľadáme (filter)."""
-    start = time.monotonic()
-    debug = _new_debug(shop, query)
-    results = []
-    fetch_q = fetch_q or query
-    # Shopify: JSON so skladom sa sťahuje súčasne s vyhľadávaním
-    shopify_fut = JSON_POOL.submit(_shopify_suggest_raw, shop, fetch_q) if shop.get("shopify") else None
-    try:
-        url = shop["search_url"].format(q=urllib.parse.quote(fetch_q))
-        debug["url"] = url
-        html, info = fetch_page(url, timeout)
-        debug["http_status"] = info["http_status"]
-        debug["fetch_ms"] = info.get("elapsed_ms")
-        if not html:
-            debug.update(status=info["status"], error=info["error"])
-            return results, debug
-
-        soup = BeautifulSoup(html, HTML_PARSER)
-        links = soup.select(shop["link_selector"])
-        # ďalšie strany výsledkov (odkaz „ďalšia strana“ priamo z obchodu – funguje pre každú platformu)
-        page_url, n, visited, host = url, 1, {url}, host_of(shop["base_url"])
-        while (n < MAX_SEARCH_PAGES and len(links) >= 8 * n
-               and time.monotonic() - start < SEARCH_PAGES_BUDGET):
-            nxt = _next_page(soup, page_url, n, host)
-            if not nxt or nxt in visited:
-                break
-            visited.add(nxt)
-            html2, _ = fetch_page(nxt, timeout)
-            if not html2:
-                break
-            soup = BeautifulSoup(html2, HTML_PARSER)
-            more = soup.select(shop["link_selector"])
-            if not more:
-                break
-            links += more
-            page_url, n = nxt, n + 1
-        debug["pages"] = n
-        debug["links_scanned"] = len(links)
-        parsed = L.normalize_query(query)
-        kind = L.classify_query(parsed)
-        acc_query = L.is_accessory_query(query)
-        seen = set()
-
-        for a in links:
-            href = clean_link(abs_url(shop["base_url"], a.get("href")))
-            if not href or href.lower().rstrip("/") in seen:
-                continue
-            seen.add(href.lower().rstrip("/"))
-            title = extract_title(a)
-            if not title:
-                continue
-            why = "" if (acc_query and L.is_accessory(title)) else \
-                (L.merch_reason(title) or ("" if L.looks_like_tcg(title) else "not_tcg"))
-            if why:
-                debug["merch_filtered"] += 1
-                _log(debug, title=title, decision="filtered", reason=why)
-                continue
-            block = find_block(a)
-            block_text = L.clean_text(block.get_text(" ", strip=True)) if block is not None else ""
-            ok, reason = _matches(shop, title, block_text, parsed, kind)
-            if not ok:
-                debug["match_filtered"] += 1
-                _log(debug, title=title, decision="filtered", reason=reason)
-                continue
-            amount, cur = L.parse_price_raw(block_text, title)
-            if amount is None and a.parent:
-                amount, cur = L.parse_price_raw(a.parent.get_text(" ", strip=True), title)
-            if not amount or amount <= 0:
-                _log(debug, title=title, decision="filtered", reason="no_price")
-                continue
-            price_czk = amount if cur == "CZK" else None
-            price = L.czk_to_eur(amount) if price_czk else amount
-            if not L.price_plausible(title, price):
-                _log(debug, title=title, decision="filtered", reason=f"price_implausible:{amount} {cur}")
-                continue
-            results.append(L.make_result(shop, title, price, href,
-                                         extract_image(a, shop["base_url"]), detect_stock_el(block),
-                                         price_czk=price_czk))
-            _log(debug, title=title, price_eur=round(price, 2), decision="accepted")
-
-        if shopify_fut and results:
-            try:
-                _shopify_enrich(shop, results, shopify_fut.result(timeout=4))
-            except Exception:
-                pass
-        results.sort(key=lambda r: r["price_eur"])
-        debug.update(results=len(results), accepted=len(results),
-                     status="ok" if results else "no_results", fetched_at=time.time())
-    except Exception as e:
-        debug.update(status="parser_error", error=str(e)[:200])
-    finally:
-        debug["elapsed_ms"] = round((time.monotonic() - start) * 1000)
-    return results, debug
-
-
-# ---------- Shopify (CardyX): sklad a obrázky z JSON ----------
-
-def _shopify_img(url, width):
-    if url and ("/cdn/shop/" in url or "cdn.shopify.com" in url) and "width=" not in url:
-        url += ("&" if "?" in url else "?") + f"width={width}"
-    return url
-
-
-def _shopify_suggest_raw(shop, query, timeout=4):
-    url = (shop["base_url"].rstrip("/") + "/search/suggest.json?q=" + urllib.parse.quote(query)
-           + "&resources[type]=product&resources[limit]=10"
-           + "&resources[options][unavailable_products]=last")
-    resp, _ = fetch(url, timeout)
-    if not resp:
-        return None
-    try:
-        return resp.json()["resources"]["results"]["products"] or []
-    except Exception:
-        return None
-
-
-def _shopify_product_image(p, base, width):
-    img = p.get("image") or ""
-    if not img and isinstance(p.get("featured_image"), dict):
-        img = p["featured_image"].get("url", "")
-    return _shopify_img(abs_url(base, img), width) if img else ""
-
-
-def _shopify_enrich(shop, results, products):
-    info = {}
-    for p in products or []:
-        path = urllib.parse.urlsplit(p.get("url") or "").path.rstrip("/").lower()
-        if path:
-            info[path] = (p.get("available"), _shopify_product_image(p, shop["base_url"], 400))
-    for r in results:
-        hit = info.get(urllib.parse.urlsplit(r["link"]).path.rstrip("/").lower())
-        if not hit:
-            continue
-        available, img = hit
-        if not r["stock"] and available is not None:
-            r["stock"] = "in" if available else "out"
-        if not r["image"] and img:
-            r["image"] = img
-    # mimo prvých 10: /products/<handle>.js, najviac 8 naraz
-    rest = [r for r in results if not r["stock"] and "/products/" in r["link"]][:8]
-    if rest:
-        futs = [JSON_POOL.submit(_shopify_product_js, r) for r in rest]
-        wait(futs, timeout=5)   # nikdy nečaká donekonečna; čo nestihne, ostane bez skladu
-
-
-def _shopify_product_js(r):
-    try:
-        u = urllib.parse.urlsplit(r["link"])
-        resp, _ = fetch(f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}.js", timeout=3)
-        if not resp:
-            return
-        d = resp.json()
-        if d.get("available") is not None:
-            r["stock"] = "in" if d["available"] else "out"
-        img = d.get("featured_image") or ""
-        if img and not r["image"]:
-            r["image"] = "https:" + img if img.startswith("//") else img
-    except Exception:
-        pass
-
-
-# =========================================================
-# KATALÓGOVÉ OBCHODY
-# Raz za hodinu sa prejdú kategórie (aj ďalšie strany), produkty sa uložia
-# do databázy a pri hľadaní sa filtruje lokálne = okamžité hľadanie.
-# =========================================================
-
-_cat_mem = {}            # obchod -> (monotonic, položky, čas aktualizácie)
-_crawl_sem = threading.Semaphore(1)
-_cat_lock = threading.Lock()
-_crawling = set()
-
-
-def _save_catalog(shop_name, items):
-    now = datetime.now(timezone.utc).isoformat()
-    conn = db()
-    try:
-        conn.execute("DELETE FROM catalog_items WHERE shop = ?", (shop_name,))
-        conn.executemany(
-            "INSERT OR REPLACE INTO catalog_items (shop, link, title, price_eur, image, stock, price_czk) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(shop_name, i["link"], i["title"], i["price_eur"], i["image"], i["stock"], i.get("price_czk"))
-             for i in items])
-        conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", ("catalog:" + shop_name, now))
-        conn.commit()
-    finally:
-        conn.close()
-    with _cat_lock:
-        _cat_mem.pop(shop_name, None)
-    return now
-
-
-def load_catalog(shop_name):
-    with _cat_lock:
-        hit = _cat_mem.get(shop_name)
-        if hit and time.monotonic() - hit[0] < 60:
-            return hit[1], hit[2]
-    conn = db()
-    try:
-        rows = conn.execute("SELECT link, title, price_eur, image, stock, price_czk FROM catalog_items "
-                            "WHERE shop = ?", (shop_name,)).fetchall()
-        meta = conn.execute("SELECT v FROM meta WHERE k = ?", ("catalog:" + shop_name,)).fetchone()
-    except Exception:
-        rows, meta = [], None
-    finally:
-        conn.close()
-    items = [{"link": r[0], "title": r[1], "price_eur": r[2], "image": r[3] or "", "stock": r[4] or "",
-              "price_czk": r[5], "_f": L.fold(r[1] or "")} for r in rows]   # _f = názov bez diakritiky (predfilter)
-    updated = meta[0] if meta else ""
-    with _cat_lock:
-        _cat_mem[shop_name] = (time.monotonic(), items, updated)
-    return items, updated
-
-
-def _is_stale(updated, factor=1.0):
-    try:
-        t = datetime.fromisoformat(updated)
-    except (TypeError, ValueError):
+@lru_cache(maxsize=20000)
+def is_combo(title):
+    """Viac produktov v jednom balení („Bundle + ETB“, „2x ETB“, „sada“...)."""
+    t = clean_text(title)
+    if sum(1 for rx in _COMBO_TYPES if rx.search(t)) >= 2:
         return True
-    return datetime.now(timezone.utc) - t > timedelta(minutes=CATALOG_REFRESH_MIN * factor)
+    return bool(re.search(
+        r"(?<![\w/.,])(?:[2-9]|1[0-9])\s*(?:x|ks|kusy|pcs)(?![a-z])" + _CONTENT_AFTER +
+        r"|\bx\s*(?:[2-9]|1[0-9])\b" + _CONTENT_AFTER +
+        r"|\b(?:bundle\s+deal|komplet\w*|set\s+of|sada)\b", t, re.I))
 
 
-def _other_links(block, href, page_url):
-    own, other = href.lower().rstrip("/"), set()
-    for a in block.find_all("a", href=True):
-        h = clean_link(abs_url(page_url, a["href"]))
-        if h and h.lower().rstrip("/") != own:
-            other.add(h.lower().rstrip("/"))
-    return len(other)
+@lru_cache(maxsize=20000)
+def group_key(title, lang=""):
+    """Kľúč na spojenie rovnakého produktu z rôznych obchodov.
+    None = nevieme s istotou, zobrazí sa samostatne."""
+    t = clean_text(title)
+    if not t or is_combo(t):
+        return None
+    p = normalize_query(strip_codes(t))
+    lang = lang or "EN"
+    variants = ",".join(v for v, rx in _VARIANT_RES if rx.search(t))
+    ptype = next((name for name, rx in GROUP_TYPES if rx.search(t)), "")
+    pokemon = (p.get("pokemon") or "").lower()
+    set_name = p.get("set_name") or ""
+    number = p.get("card_number") or ""
 
-
-def _parse_listing(shop, html, page_url, debug=None):
-    soup = BeautifulSoup(html, HTML_PARSER)
-    host = host_of(shop["base_url"])
-    by_href = {}
-    for a in soup.find_all("a", href=True):
-        href = clean_link(abs_url(page_url, a["href"]))
-        p = urllib.parse.urlparse(href) if href else None
-        if p and p.netloc.lower() == host and p.path not in ("", "/"):
-            by_href.setdefault(href.lower().rstrip("/"), (href, []))[1].append(a)
-
-    items = []
-    for href, anchors in by_href.values():
-        named = [(len(t), t, a) for a in anchors for t in [extract_title(a)]
-                 if 6 <= len(t) <= 200 and L.is_listed_product(t)]
-        if not named:
-            continue
-        _, title, a = min(named, key=lambda x: x[0])
-        block = find_block(a)
-        if block is None or _other_links(block, href, page_url) > 3:
-            continue   # menu, päta, zoznam – nie dlaždica produktu
-        amount, cur = L.parse_price_raw(block.get_text(" ", strip=True), title)
-        if not amount or amount <= 0:
-            continue
-        price_czk = amount if cur == "CZK" else None
-        price = L.czk_to_eur(amount) if price_czk else amount
-        if not L.price_plausible(title, price):
-            if debug is not None:
-                debug.append({"title": title, "rejected": f"nezmyselná cena {amount} {cur}",
-                              "text": L.clean_text(block.get_text(" ", strip=True))[:300]})
-            continue
-        if debug is not None:
-            debug.append({"title": title, "price": amount, "currency": cur, "price_eur": round(price, 2),
-                          "text": L.clean_text(block.get_text(" ", strip=True))[:300]})
-        image = extract_image(a, page_url)
-        if image and shop.get("image_replace"):
-            image = image.replace(*shop["image_replace"])
-        items.append({"link": href, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
-                      "image": image, "stock": detect_stock_el(block)})
-    return items, soup
-
-
-def _next_page(soup, page_url, n, host):
-    el = soup.select_one('link[rel~="next"], a[rel~="next"]')
-    if el is not None and el.get("href"):
-        u = abs_url(page_url, el["href"])
-        if host_of(u) == host:
-            return u
-    pat = re.compile(r"(?:[?&](?:page|strana|stranka|p|pg)=|/strana-|/page[/-]?)" + str(n + 1) + r"(?!\d)", re.I)
-    for a in soup.find_all("a", href=True):
-        if pat.search(a["href"]):
-            u = abs_url(page_url, a["href"])
-            if host_of(u) == host:
-                return u
+    if ptype and set_name and ptype != "collection":
+        key = f"s|{set_name}|{ptype}|{pokemon}|{variants}|{lang}"
+        if ptype in _DETAIL_TYPES:
+            drop = _DETAIL_SKIP | fold_words(set_name)
+            detail = sorted(w for w in fold_words(t)
+                            if w not in drop and len(w) >= 3 and not w.isdigit()
+                            and not re.fullmatch(r"(?:sv|me|swsh|sm|xy)\d+\w*", w))
+            key += "|" + "-".join(detail)
+        return key
+    if number and pokemon:
+        return f"c|{pokemon}|{number}|{variants}|{lang}"
+    if pokemon and set_name and p.get("suffix") and not ptype:
+        return f"c|{pokemon}|{p['suffix']}|{set_name}|{variants}|{lang}"
     return None
 
 
-def debug_listing(shop, url=None):
-    """Pre admina: ako sa prečítala jedna strana katalógu (názov, cena, text dlaždice)."""
-    url = url if url and host_of(url) == host_of(shop["base_url"]) else shop["catalog"][0]
-    resp, info = fetch(url, timeout=15)
-    if not resp:
-        return {"url": url, "error": info["error"] or info["status"]}
-    rows = []
-    _parse_listing(shop, resp.text, url, debug=rows)
-    return {"url": url, "kurz_czk": L.KURZ["CZK"], "items": rows}
-
-
-def crawl_shop(shop):
-    """Prejde katalóg obchodu a uloží ho. Vráti prehľad (pre admin)."""
-    if shop.get("feed"):
-        return crawl_feed(shop)
-    if shop.get("shopify_catalog"):
-        return crawl_shopify(shop)
-    start = time.monotonic()
-    host = host_of(shop["base_url"])
-    items, pages, errors = {}, 0, []
-    first_load = not load_catalog(shop["name"])[0]
-
-    for url in shop["catalog"]:
-        n, visited = 1, set()
-        while url and n <= shop.get("max_pages", 10) and url not in visited:
-            visited.add(url)
-            resp, info = fetch(url, timeout=15)
-            if not resp:
-                errors.append({"url": url, "error": info["error"] or info["status"]})
-                break
-            found, soup = _parse_listing(shop, resp.text, url)
-            pages += 1
-            new = 0
-            for it in found:
-                if it["link"] not in items:
-                    items[it["link"]] = it
-                    new += 1
-            if new == 0 and n > 1:
-                break
-            url = _next_page(soup, url, n, host)
-            n += 1
-            if url:
-                time.sleep(PAGE_DELAY)
-        if first_load and items:
-            _save_catalog(shop["name"], list(items.values()))   # hľadateľné hneď po 1. kategórii
-
-    result = list(items.values())
-    updated = ""
-    if result:   # pri chybe ostane starý katalóg
-        updated = _save_catalog(shop["name"], result)
-        save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
-    return {"shop": shop["name"], "items": len(result), "pages": pages, "errors": errors,
-            "updated": updated, "elapsed_ms": round((time.monotonic() - start) * 1000),
-            "sample": result[:10]}
-
-
-def _shopify_items(shop, products, pokemon_only=False):
-    base = shop["base_url"].rstrip("/")
-    items = []
-    for p in products or []:
-        title = L.clean_text(p.get("title"))
-        if not title or not p.get("handle"):
-            continue
-        if pokemon_only:
-            meta = L.fold(" ".join([title, str(p.get("product_type") or ""), " ".join(p.get("tags") or [])
-                                    if isinstance(p.get("tags"), list) else str(p.get("tags") or ""),
-                                    str(p.get("vendor") or "")]))
-            if "pokemon" not in meta:
-                continue
-        if not L.is_listed_product(title):
-            continue
-        variants = p.get("variants") or []
-        avail = [v for v in variants if v.get("available")]
-        prices = [L.to_float(v.get("price")) for v in (avail or variants)]
-        prices = [x for x in prices if x]
-        if not prices:
-            continue
-        price = min(prices)
-        if not L.price_plausible(title, price):
-            continue
-        imgs = p.get("images") or []
-        img = imgs[0].get("src", "") if imgs and isinstance(imgs[0], dict) else ""
-        items.append({"link": f"{base}/products/{p['handle']}", "title": title, "price_eur": round(price, 2),
-                      "price_czk": None, "image": _shopify_img(img, 400) if img else "",
-                      "stock": "in" if avail else "out"})
-    return items
-
-
-def crawl_shopify(shop):
-    """Celý katalóg Shopify obchodu cez verejný JSON (/collections/<x>/products.json).
-    Ak kolekcia neexistuje, skúsi /products.json a nechá len Pokémon produkty."""
-    start = time.monotonic()
-    items, errors, pages = {}, [], 0
-    sources = [(c.rstrip("/") + "/products.json", False) for c in shop["shopify_catalog"]]
-    for src, pokemon_only in sources + [(shop["base_url"].rstrip("/") + "/products.json", True)]:
-        if items and pokemon_only:
-            break   # kolekcie fungovali, celý obchod netreba
-        for page in range(1, 41):
-            resp, info = fetch(f"{src}?limit=250&page={page}", timeout=20)
-            if not resp:
-                errors.append({"url": src, "page": page, "error": info["error"] or info["status"]})
-                break
-            try:
-                products = resp.json().get("products") or []
-            except Exception as e:
-                errors.append({"url": src, "page": page, "error": "nie je JSON: " + str(e)[:80]})
-                break
-            pages += 1
-            if not products:
-                break
-            for it in _shopify_items(shop, products, pokemon_only):
-                items[it["link"]] = it
-            if len(products) < 250:
-                break
-            time.sleep(0.5)
-    result = list(items.values())
-    updated = ""
-    if result:
-        updated = _save_catalog(shop["name"], result)
-        save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
-    return {"shop": shop["name"], "source": "shopify_json", "items": len(result), "pages": pages,
-            "errors": errors, "updated": updated,
-            "elapsed_ms": round((time.monotonic() - start) * 1000), "sample": result[:10]}
-
-
-def _tag(tag):
-    """Názov XML značky bez menného priestoru, veľkými písmenami ({ns}item -> ITEM)."""
-    return tag.rsplit("}", 1)[-1].upper()
-
-
-def _feed_stock(d):
-    av = (d.get("AVAILABILITY") or "").lower().replace("_", " ")
-    if "out of stock" in av or "discontinued" in av:
-        return "out"
-    if "preorder" in av:
-        return "preorder"
-    if "backorder" in av:
-        return "order"
-    if "in stock" in av:
-        return "in"
-    dd = (d.get("DELIVERY_DATE") or "").strip()
-    if dd == "0":
-        return "in"
-    return "order" if dd.isdigit() else ("preorder" if dd else "")
-
-
-def crawl_feed(shop):
-    """XML feed (Heureka / Google Merchant) po kúskoch, aj veľký."""
-    start = time.monotonic()
-    host = host_of(shop["base_url"])
-    items, errors, scanned = {}, [], 0
-    try:
-        resp = http().get(shop["feed"], timeout=(5, 90), stream=True)
-        if resp.status_code != 200:
-            raise RuntimeError(f"HTTP {resp.status_code}")
-        resp.raw.decode_content = True
-        for _, el in ET.iterparse(resp.raw, events=("end",)):
-            if _tag(el.tag) not in ("SHOPITEM", "ITEM", "ENTRY"):
-                continue
-            scanned += 1
-            d = {}
-            for ch in el:
-                d.setdefault(_tag(ch.tag), (ch.text or "").strip())
-            el.clear()
-            title = L.clean_text(d.get("PRODUCTNAME") or d.get("PRODUCT") or d.get("TITLE"))
-            link = clean_link(L.clean_text(d.get("URL") or d.get("LINK")))
-            if not title or not link or host_of(link) != host or not L.is_listed_product(title):
-                continue
-            raw = d.get("PRICE_VAT") or d.get("SALE_PRICE") or d.get("PRICE") or ""
-            m = re.search(r"\d[\d\s.,]*", raw)
-            price = L.to_float(m.group(0).strip()) if m else None
-            if not price or price <= 0:
-                continue
-            price_czk = None
-            if "CZK" in raw.upper() or "KČ" in raw.upper() or shop.get("currency") == "CZK":
-                price_czk, price = price, L.czk_to_eur(price)
-            if not L.price_plausible(title, price):
-                continue
-            items[link] = {"link": link, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
-                           "image": d.get("IMGURL") or d.get("IMAGE_LINK") or "",
-                           "stock": _feed_stock(d)}
-            if resp.raw.tell() > 150 * 1024 * 1024:
-                errors.append({"url": shop["feed"], "error": "feed je príliš veľký, načítaná len časť"})
-                break
-    except Exception as e:
-        errors.append({"url": shop.get("feed"), "error": str(e)[:200]})
-    result = list(items.values())
-    updated = ""
-    if result:
-        updated = _save_catalog(shop["name"], result)
-        save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
-    return {"shop": shop["name"], "source": "feed", "items": len(result), "scanned": scanned,
-            "errors": errors, "updated": updated,
-            "elapsed_ms": round((time.monotonic() - start) * 1000), "sample": result[:10]}
-
-
-def crawl_in_background(shop):
-    with _cat_lock:
-        if shop["name"] in _crawling:
-            return
-        _crawling.add(shop["name"])
-
-    def run():
-        try:
-            with _crawl_sem:   # katalógy sa sťahujú po jednom – slabý server inak nestíha hľadanie
-                crawl_shop(shop)
-        except Exception as e:
-            print(f"[CardRadar] Katalóg {shop['name']}: {e}", flush=True)
-        finally:
-            with _cat_lock:
-                _crawling.discard(shop["name"])
-
-    threading.Thread(target=run, daemon=True, name="catalog-" + shop["name"]).start()
-
-
-def is_crawling(shop_name):
-    return shop_name in _crawling
-
-
-_cat_query_cache = None   # vytvorí sa nižšie (TTLCache je definovaná vyššie)
-MAX_SHOP_RESULTS = 400    # najviac ponúk z jedného katalógového obchodu na jedno hľadanie
-
-
-def catalog_scrape(shop, query):
-    start = time.monotonic()
-    debug = _new_debug(shop, query)
-    debug["url"] = "catalog"
-    items, updated = load_catalog(shop["name"])
-    ckey = f"{shop['name']}|{L.clean_text(query).lower()}|{updated}"
-    hit = _cat_query_cache.get(ckey) if items else None
-    if hit is not None:   # rovnaké hľadanie v posledných 2 min – bez prechádzania tisícok položiek
-        res, dbg = hit
-        dbg["cache"] = "hit"
-        return res, dbg
-    if not items or _is_stale(updated, factor=3):
-        crawl_in_background(shop)
-    if not items:
-        debug.update(status="catalog_loading", error="Katalóg sa práve načítava, skús o minútu.")
-        return [], debug
-    try:
-        debug["fetched_at"] = datetime.fromisoformat(updated).timestamp()
-    except Exception:
-        pass
-    parsed = L.normalize_query(query)
-    kind = L.classify_query(parsed)
-    results = []
-    matched = []
-    acc_query = L.is_accessory_query(query)
-    anchors = [] if acc_query else L.quick_anchors(parsed, shop.get("loose_set", False))
-    for it in items:
-        if anchors and not L.anchors_hit(it.get("_f") or L.fold(it["title"]), anchors):
-            debug["match_filtered"] += 1
-            continue
-        if not (L.is_accessory(it["title"]) if acc_query else L.is_tcg_product(it["title"])):
-            debug["merch_filtered"] += 1
-            continue
-        if not _matches(shop, it["title"], "", parsed, kind)[0]:
-            debug["match_filtered"] += 1
-            continue
-        if not L.price_plausible(it["title"], it["price_eur"]):   # staršie zle prečítané položky
-            continue
-        matched.append(it)
-    # pri veľmi všeobecnom hľadaní („scarlet violet“) sú to tisíce položiek – ďalej ide len MAX_SHOP_RESULTS
-    matched.sort(key=lambda it: it["price_eur"] or 0)
-    debug["total_matches"] = len(matched)
-    for it in matched[:MAX_SHOP_RESULTS]:
-        results.append(L.make_result(shop, it["title"], it["price_eur"], it["link"], it["image"], it["stock"],
-                                     price_czk=it.get("price_czk")))
-    results.sort(key=lambda r: r["price_eur"])
-    debug.update(links_scanned=len(items), accepted=len(results), results=len(results),
-                 status="ok" if results else "no_results",
-                 elapsed_ms=round((time.monotonic() - start) * 1000))
-    _cat_query_cache.set(ckey, (results, debug))
-    return results, debug
-
-
-_cat_query_cache = TTLCache(120, 400)
-
-
 # =========================================================
-# HĽADANIE VO VŠETKÝCH OBCHODOCH
-# Jedna cache: do 10 min čerstvé, do 6 h sa ukáže hneď a obnoví na pozadí.
-# Rovnaké súbežné hľadanie sa sťahuje len raz.
+# POČET BOOSTEROV (cena za booster)
 # =========================================================
 
-_cache, _cache_lock = {}, threading.Lock()
-_inflight, _busy = {}, set()
+_PACKS_EXPLICIT_RE = re.compile(
+    r"(?<![\w/.,#-])(\d{1,2})\s*(?:-|x)?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|packungen|boost\w*)", re.I)
+_PACKS_PAREN_RE = re.compile(r"booster\s*(?:box|display)\D{0,10}\((\d{1,2})\)", re.I)
 
 
-def _cache_put(key, results, debug):
-    with _cache_lock:
-        if key not in _cache and len(_cache) >= 800:
-            _cache.pop(min(_cache, key=lambda k: _cache[k][0]), None)
-        _cache[key] = (time.monotonic(), copy.deepcopy(results), copy.deepcopy(debug))
-
-
-def clear_caches():
-    with _cache_lock:
-        _cache.clear()
-    image_cache.clear()
-    suggestion_cache.clear()
-    with _sug_lock:
-        SUGGESTIONS.clear()
-
-
-def _scrape_and_store(shop, query, key, timeout):
-    res, dbg = scrape_search(shop, query, timeout, fetch_q=shop_query(query))
-    if dbg["status"] in OK_STATUSES:
-        _cache_put(key, res, dbg)
-    return res, dbg
-
-
-def _refresh(shop, query, key):
-    try:
-        _scrape_and_store(shop, query, key, SEARCH_TIMEOUT)
-    except Exception:
-        pass
-    finally:
-        with _cache_lock:
-            _busy.discard(key)
-
-
-def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT, wait_inflight=False):
-    """Hľadanie v jednom obchode -> (výsledky, debug).
-    wait_inflight=False: ak to isté práve hľadá iné vlákno, nečaká (vráti 'pending') –
-    stránka si výsledok o chvíľu dotiahne z cache. Čakajúce vlákna predtým zapĺňali pool."""
-    res = dbg = None
-    if is_catalog(shop):
-        res, dbg = catalog_scrape(shop, query)
-        if dbg["status"] == "catalog_loading" and shop.get("search_url"):
-            res = dbg = None   # katalóg ešte nie je (alebo nefunguje) – hľadáme cez vyhľadávanie obchodu
-    if res is not None:
-        pass
-    elif not use_cache:
-        res, dbg = scrape_search(shop, query, timeout, fetch_q=shop_query(query))
-    else:
-        key = shop["name"].lower() + "|" + L.clean_text(query).lower()
-        res = dbg = None
-        with _cache_lock:
-            ent = _cache.get(key)
-        if ent and time.monotonic() - ent[0] < CACHE_STALE:
-            age = time.monotonic() - ent[0]
-            if age >= CACHE_FRESH:
-                with _cache_lock:
-                    start = key not in _busy
-                    _busy.add(key)
-                if start:
-                    REFRESH_POOL.submit(_refresh, shop, query, key)
-            res, dbg = copy.deepcopy(ent[1]), copy.deepcopy(ent[2])
-            dbg["cache"] = "stale" if age >= CACHE_FRESH else "hit"
-        else:
-            with _cache_lock:
-                event = _inflight.get(key)
-                owner = event is None
-                if owner:
-                    event = _inflight[key] = threading.Event()
-            if not owner and not wait_inflight:   # to isté práve hľadá iné vlákno
-                res, dbg = [], dict(_new_debug(shop, query), status="pending")
-            elif not owner:
-                event.wait(timeout + 3)
-                with _cache_lock:
-                    ent = _cache.get(key)
-                if ent:
-                    res, dbg = copy.deepcopy(ent[1]), copy.deepcopy(ent[2])
-                    dbg["cache"] = "hit"
-            if res is None:
-                try:
-                    res, dbg = _scrape_and_store(shop, query, key, timeout)
-                finally:
-                    if owner:
-                        with _cache_lock:
-                            _inflight.pop(key, None)
-                        event.set()
-    for r in res or []:
-        L.reprice(r)   # Kč -> € vždy aktuálnym kurzom, aj pri starších výsledkoch z cache
-        add_shipping(shop, r)
-        r["out"] = go_link(r["link"])
-    fill_images_from_cache(res)
-    add_suggestions(res)
-    return res, dbg
-
-
-def search_all(query, wait_all=False):
-    """Hľadá vo všetkých zapnutých obchodoch naraz.
-    wait_all=False (web): po SEARCH_BUDGET sekundách vráti, čo je hotové, pomalé obchody
-    sú 'pending' a dobehnú do cache – stránka si ich o chvíľu potichu dotiahne.
-    wait_all=True (admin test): čaká na všetky."""
-    ensure_czk()
-    shops = active_shops()
-
-    def run(shop):
-        start = time.monotonic()
-        try:
-            res, dbg = shop_search(shop, query, wait_inflight=wait_all)
-        except Exception as e:
-            res, dbg = [], dict(_new_debug(shop, query), status="runner_error", error=str(e)[:200])
-        dbg["elapsed_ms"] = round((time.monotonic() - start) * 1000)
-        return res, dbg
-
-    # obchody s vyhľadávaním idú cez internet súbežne vo vláknach;
-    # katalógy sú v našej databáze, tie sa prejdú hneď tu (nečakajú na voľné vlákno)
-    started = time.monotonic()
-    futs = {s["name"]: SHOP_POOL.submit(run, s) for s in shops if not is_local(s)}
-    local = {s["name"]: run(s) for s in shops if is_local(s)}
-    budget = SEARCH_TIMEOUT + 6 if wait_all else SEARCH_BUDGET
-    wait(list(futs.values()), timeout=max(0.3, budget - (time.monotonic() - started)))
-    results, diagnostics = [], []
-    for shop in shops:
-        fut = futs.get(shop["name"])
-        if fut is None:
-            res, dbg = local[shop["name"]]
-        elif fut.done():
-            res, dbg = fut.result()
-        else:
-            res, dbg = [], dict(_new_debug(shop, query), status="pending",
-                                elapsed_ms=round(SEARCH_BUDGET * 1000))
-        results.extend(res)
-        diagnostics.append(dbg)
-
-    unique = {}
-    for r in results:
-        unique[(r["shop"].lower(), r["link"].lower().rstrip("/"))] = r
-    results = sorted(unique.values(), key=lambda r: r.get("price_eur") or 999999)
-    return results, diagnostics
-
-
-def pool_stats():
-    """Pre /health: koľko úloh čaká vo vláknach (veľké číslo = niečo sa zasekáva)."""
-    def q(pool):
-        try:
-            return pool._work_queue.qsize()
-        except Exception:
-            return None
-    return {"shop_queue": q(SHOP_POOL), "refresh_queue": q(REFRESH_POOL), "json_queue": q(JSON_POOL),
-            "image_queue": q(IMAGE_POOL), "db_queue": q(BG_POOL)}
-
-
-def shops_status(diagnostics):
-    return [{
-        "name": d.get("shop", ""), "status": d.get("status", ""),
-        "ok": d.get("status") in OK_STATUSES, "results": d.get("results", 0),
-        "elapsed_ms": d.get("elapsed_ms", 0), "cache": d.get("cache", ""),
-        "fetched_at": round(d["fetched_at"]) if d.get("fetched_at") else None,
-    } for d in diagnostics]
-
-
-# =========================================================
-# OBRÁZKY
-# =========================================================
-
-image_cache = TTLCache(6 * 3600, 2000)
-_OG_IMAGE_RE = re.compile(r'<meta[^>]+(?:property|name)=["\'](?:og:image(?::url)?|twitter:image)["\'][^>]*>', re.I)
-_CONTENT_RE = re.compile(r'content=["\']([^"\']+)["\']', re.I)
-
-
-def fill_images_from_cache(results):
-    for r in results or []:
-        if not r.get("image") and r.get("link"):
-            r["image"] = image_cache.get(r["link"]) or ""
-
-
-def fetch_product_image(link):
-    """Obrázok z produktovej stránky (og:image, inak prvý obrázok produktu)."""
-    cached = image_cache.get(link)
-    if cached is not None:
-        return cached
-    url = ""
-    resp, _ = fetch(link, timeout=4)
-    if resp:
-        m = _OG_IMAGE_RE.search(resp.text)
-        c = _CONTENT_RE.search(m.group(0)) if m else None
-        if c and not c.group(1).startswith("data:image/"):
-            url = abs_url(link, c.group(1))
-        if not url:
-            try:
-                soup = BeautifulSoup(resp.text, HTML_PARSER)
-                marks = ("product", "produkt", "gallery", "main-image", "woocommerce")
-                imgs = sorted(soup.find_all("img"), key=lambda i: 0 if any(
-                    k in " ".join([i.get("alt", ""), " ".join(i.get("class", [])), i.get("id", "")]).lower()
-                    for k in marks) else 1)
-                url = next((u for u in (img_url(i, link) for i in imgs) if u), "")
-            except Exception:
-                pass
-    image_cache.set(link, url)
-    if url:
-        BG_POOL.submit(_store_image, link, url)
-        with _sug_lock:
-            for s in SUGGESTIONS.values():
-                if s.get("link") == link and not s.get("image"):
-                    s["image"] = url
-    return url
-
-
-def images_for(links, budget=6):
-    """{odkaz: obrázok} pre najviac 12 odkazov, čaká najviac `budget` sekúnd."""
-    links = list(dict.fromkeys(L.clean_text(l) for l in links[:12]
-                               if isinstance(l, str) and is_allowed_link(L.clean_text(l))))
-    out, pending = {}, {}
-    for link in links:
-        c = image_cache.get(link)
-        if c is not None:
-            out[link] = c
-        else:
-            pending[IMAGE_POOL.submit(fetch_product_image, link)] = link
-    try:
-        for fut in as_completed(pending, timeout=budget):
-            out[pending[fut]] = fut.result() or ""
-    except Exception:
-        pass   # zvyšok dobehne na pozadí do cache
-    return out
-
-
-def _store_image(link, url):
-    conn = db()
-    try:
-        conn.execute("UPDATE price_daily SET image = ? WHERE link = ? AND (image IS NULL OR image = '')",
-                     (url, link))
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        conn.close()
-
-
-# =========================================================
-# NAŠEPKÁVAČ
-# Pamätá si produkty z posledných hľadaní; keď je málo návrhov,
-# opýta sa rýchleho vyhľadávania Shopify obchodu (CardyX).
-# =========================================================
-
-SUGGESTIONS = {}
-_sug_lock = threading.Lock()
-suggestion_cache = TTLCache(300, 300)
-
-
-def make_suggestion(title):
-    title = L.clean_text(title)
-    if not title or not L.is_tcg_product(title):
+@lru_cache(maxsize=20000)
+def estimate_packs(title, lang=""):
+    """Odhad počtu boosterov v produkte; None = nevieme."""
+    t = clean_text(title).lower()
+    if not t or is_combo(t):
         return None
-    p = L.normalize_query(title)
-    # aj typ produktu („pitch black elite trainer box“), inak by ťuknutie na ETB hľadalo celý set
-    query = L.clean_text(" ".join(x for x in (p["pokemon"], p["suffix"], p["card_number"], p["set_name"],
-                                              p["product_type"]) if x))
-    query = (query or title)[:120]
-    is_card = not p["product_type"]
-    return {"title": title, "query": query, "type": "card" if is_card else "product",
-            "image": "", "price_eur": None, "link": ""}
-
-
-def _suggestions_from(results):
-    out = {}
-    for r in results or []:
-        s = make_suggestion(r.get("title", ""))
-        if not s:
-            continue
-        s.update(image=r.get("image") or "", link=r.get("link") or "", price_eur=r.get("price_eur"))
-        key = s["query"].lower()
-        old = out.get(key)
-        score = bool(s["image"]) + (s["price_eur"] is not None)
-        if old is None or score > bool(old["image"]) + (old["price_eur"] is not None):
-            out[key] = s
-    return list(out.values())
-
-
-def add_suggestions(results):
-    items = _suggestions_from(results)
-    if not items:
-        return
-    with _sug_lock:
-        for s in items:
-            SUGGESTIONS.pop(s["query"].lower(), None)
-            SUGGESTIONS[s["query"].lower()] = s
-        while len(SUGGESTIONS) > 500:
-            SUGGESTIONS.pop(next(iter(SUGGESTIONS)))
-
-
-def _sug_score(item, q):
-    title = item["title"].lower()
-    score = 100 if title.startswith(q) else 0
-    score += 60 if any(w.startswith(q) for w in title.split()) else 0
-    score += 40 if q in title else 0
-    score += 15 if item.get("price_eur") is not None else 0
-    score += 10 if item.get("image") else 0
-    score += 80 if item.get("_set") else 0   # celý set / séria má byť v návrhoch navrchu
-    return score + max(0, 20 - len(title) // 10)
-
-
-def _remote_suggestions(q):
-    shop = next((s for s in active_shops() if s.get("shopify")), None)
-    if not shop:
-        return []
-    products = _shopify_suggest_raw(shop, q, timeout=2.5)
-    if products is None:
-        return []   # obchod neodpovedá – našepkávač nesmie čakať na celé hľadanie
-    foreign_ok = L.FOREIGN_QUERY_RE.search(q) is not None
-    out = []
-    for p in products:
-        title = L.clean_text(p.get("title", ""))
-        if not title or not L.is_tcg_product(title):
-            continue
-        if L.detect_language(title) in L.ASIAN_LANGS and not foreign_ok:
-            continue
-        raw = p.get("price", p.get("price_min"))
-        price = L.to_float(raw) if raw not in (None, "") else None
-        link = abs_url(shop["base_url"], p.get("url", "")).split("?")[0]
-        out.append({"title": title, "shop": shop["name"], "link": link,
-                    "price_eur": round(price, 2) if price else None,
-                    "image": _shopify_product_image(p, shop["base_url"], 160)})
-    add_suggestions(out)
-    return out
-
-
-# názvy setov a sérií pre našepkávač („sca“ -> Scarlet & Violet, „sur“ -> Surging Sparks)
-_SET_TITLES = {L.fold(n): n for n in
-               [" ".join(w[:1].upper() + w[1:] for w in n.split()) for n in sorted(L.TCG_SET_NAMES) if not n.isdigit()] +
-               [s["name"] for s in L.NOVE_SETY]}   # NOVE_SETY posledné = ich presný zápis má prednosť
-_SET_TITLES["scarlet & violet"] = _SET_TITLES["scarlet violet"] = "Scarlet & Violet"
-_SET_TITLES["sword & shield"] = _SET_TITLES["sword shield"] = "Sword & Shield"
-
-
-def _set_suggestions(q):
-    fq = L.fold(q)
-    out, seen = [], set()
-    for folded, title in _SET_TITLES.items():
-        words = folded.replace("&", " ").split()
-        if folded.startswith(fq) or any(w.startswith(fq) for w in words) or (len(fq) >= 4 and fq in folded):
-            query = L.clean_text(folded.replace("&", " ").replace("pokemon ", ""))
-            if query not in seen:
-                seen.add(query)
-                out.append({"title": title, "query": query, "type": "product", "_set": True,
-                            "image": "", "price_eur": None, "link": ""})
-    return out[:4]
-
-
-def _catalog_suggestions(q, limit=30):
-    """Produkty z katalógov (naša databáza, okamžite) – obsahujú hľadaný text."""
-    fq, found = L.fold(q), []
-    for shop in active_shops():
-        if not is_catalog(shop):
-            continue
-        for it in load_catalog(shop["name"])[0]:
-            if fq in L.fold(it["title"]) and L.is_tcg_product(it["title"]):
-                found.append({"title": it["title"], "link": it["link"], "image": it["image"],
-                              "price_eur": it["price_eur"]})
-                if len(found) >= limit:
-                    return found
-    return found
-
-
-def suggestions(q):
-    q = L.clean_text(q)
-    key = q.lower()
-    cached = suggestion_cache.get(key)
-    if cached is not None:
-        return cached
-    with _sug_lock:
-        cands = [dict(s) for s in SUGGESTIONS.values()
-                 if key in s["title"].lower() or key in s["query"].lower()]
-    cands = _set_suggestions(q) + cands
-    if len(cands) < 6:
-        known = {c["query"].lower() for c in cands}
-        cands += [s for s in _suggestions_from(_catalog_suggestions(q)) if s["query"].lower() not in known]
-    if len(cands) < 4:
-        known = {c["query"].lower() for c in cands}
-        cands += [s for s in _suggestions_from(_remote_suggestions(q)) if s["query"].lower() not in known]
-    if not cands:
-        p = L.normalize_query(q)
-        if p["normalized"].lower() != key and (p["product_type"] or p["pokemon"]):
-            cands.append({"title": p["normalized"], "query": p["normalized"],
-                          "type": "product" if p["product_type"] else "card",
-                          "image": "", "price_eur": None, "link": ""})
-    cands.sort(key=lambda s: _sug_score(s, key), reverse=True)
-    out, seen = [], set()
-    for s in cands:
-        if s["query"].lower() not in seen:
-            seen.add(s["query"].lower())
-            if not s.get("image") and s.get("link"):
-                s["image"] = image_cache.get(s["link"]) or ""
-            out.append(s)
-            if len(out) >= 8:
-                break
-    suggestion_cache.set(key, out)
-    return out
+    m = _PACKS_EXPLICIT_RE.search(t) or _PACKS_PAREN_RE.search(t)
+    if m and 1 <= int(m.group(1)) <= 36:
+        return int(m.group(1))
+    if lang in ASIAN_LANGS:
+        return None   # ázijské boxy majú rôzny počet (10, 20, 30...)
+    if re.search(r"booster\s*(?:box|display)|boosterbox", t) or re.search(r"\bBB\b", title or ""):
+        return 18 if re.search(r"\bhalf\b|polovičn", t) else 36
+    if re.search(r"elite\s+trainer\s+box|\betb\b", t):
+        return 11 if re.search(r"pok[eé]mon center", t) else 9
+    if re.search(r"booster\s*bundle", t):
+        return 6
+    if (re.search(r"sleeved\s+booster|booster\s+pack|\bbooster\b$", t)
+            and not re.search(r"collection|box|tin|blister|bundle|display", t)):
+        return 1
+    return None
 
 
 # =========================================================
-# HISTÓRIA CIEN A ŠTATISTIKA HĽADANÍ
+# STAV KARTY (použité karty: Gengar „- NM“, „- EXC“, „- LP“, „- PL“...)
+# Stav sa hľadá len na konci názvu alebo v zátvorke, aby „EX“ (Charizard EX) nebolo stavom.
 # =========================================================
 
-def _save_history_now(results, log_query):
-    conn = db()
-    try:
-        day = today_str()
-        conn.executemany("""
-            INSERT INTO price_daily (link, day, shop, title, price_eur, stock, image)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(link, day) DO UPDATE SET
-                price_eur = excluded.price_eur, stock = excluded.stock, title = excluded.title,
-                image = COALESCE(NULLIF(excluded.image, ''), price_daily.image)
-        """, [(r["link"], day, r.get("shop", ""), r.get("title", ""), r["price_eur"],
-               r.get("stock", ""), r.get("image", "")) for r in results
-              if r.get("link") and r.get("price_eur")])
-        if log_query:
-            conn.execute("""INSERT INTO search_log (day, query, n) VALUES (?, ?, 1)
-                            ON CONFLICT(day, query) DO UPDATE SET n = n + 1""", (day, log_query))
-        if time.time() % 50 < 1:
-            _prune(conn)
-        conn.commit()
-    except Exception as e:
-        print(f"[CardRadar] Zápis histórie zlyhal: {e}", flush=True)
-    finally:
-        conn.close()
+_CONDITIONS = [   # (vzor, kód, text na webe, skupina: "nm" = ako nová, "used" = použitá)
+    (r"nm\s*/\s*m|near\s*mint|nm|mint|m", "NM", "NM – ako nová", "nm"),
+    (r"exc|excellent|ex\+|výborn[ýá]|vyborn[ya]", "EXC", "EXC – mierne použitá", "used"),
+    (r"lp|light(?:ly)?\s*played|slightly\s*played|sp", "LP", "LP – mierne použitá", "used"),
+    (r"pl|played|mp|moderately\s*played|gd|good|použit[áa]|pouzit[aá]|hran[áa]", "PL", "PL – použitá", "used"),
+    (r"hp|heavily\s*played|poor|dmg|damaged|poškoden[áa]|po[šs]kozen[áa]", "HP", "HP – silno použitá", "used"),
+]
+_COND_RES = [(re.compile(r"(?:[-–—|,]\s*|\(\s*|\[\s*)(?:" + rx + r")\s*[)\]]?\s*$", re.I), code, label, grp)
+             for rx, code, label, grp in _CONDITIONS]
 
 
-def save_history(results, log_query=None):
-    """Zápis na pozadí (odpoveď naň nečaká). log_query = započítať do „Najhľadanejšie“."""
-    if results:
-        BG_POOL.submit(_save_history_now, copy.deepcopy(results),
-                       L.clean_text(log_query).lower()[:80] if log_query else None)
+@lru_cache(maxsize=20000)
+def card_condition(title):
+    """(kód, text, skupina) stavu karty z konca názvu, alebo ("", "", "") – stav neuvedený (nová)."""
+    t = clean_text(title)
+    if _GRADED_RE.search(t):   # PSA / CGC – stav určuje známka, nie NM/LP
+        return "", "", ""
+    for rx, code, label, grp in _COND_RES:
+        if rx.search(t):
+            return code, label, grp
+    return "", "", ""
 
 
-def add_trends(results, days=30):
-    """Ku každému výsledku najstaršia cena za posledných `days` dní (šípka ↓↑ na webe)."""
-    links = [r["link"] for r in results if r.get("link")]
-    if not links:
-        return
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-    oldest = {}
-    conn = db()
-    try:
-        for i in range(0, len(links), 400):
-            chunk = links[i:i + 400]
-            rows = conn.execute(
-                f"SELECT link, day, price_eur FROM price_daily WHERE link IN ({','.join('?' * len(chunk))}) "
-                "AND day >= ? AND day < ? ORDER BY day ASC", (*chunk, since, today_str())).fetchall()
-            for link, day, price in rows:
-                oldest.setdefault(link, (day, price))
-    except Exception:
-        return
-    finally:
-        conn.close()
-    for r in results:
-        old = oldest.get(r.get("link"))
-        if not old or not old[1]:
-            continue
-        # CZ obchody: pohyb kurzu nie je zmena ceny (cena v Kč je rovnaká)
-        if r.get("price_czk") and abs(r["price_eur"] - old[1]) < max(0.5, old[1] * 0.02):
-            continue
-        r["trend"] = {"since": old[0], "price_eur": round(old[1], 2)}
+def make_result(shop, title, price, link, image="", stock="", price_czk=None):
+    """Jedna ponuka vo výsledkoch hľadania (rovnaký tvar pre všetky typy obchodov).
+    price_czk = pôvodná cena v Kč (CZ obchody) – € sa z nej vždy počíta aktuálnym kurzom."""
+    lang = detect_language(title)
+    packs = estimate_packs(title, lang)
+    cond_code, cond_label, cond_group = card_condition(title)
+    r = {
+        "title": title, "shop": shop["name"], "country": shop["country"],
+        "condition": cond_label or "Nové", "cond": cond_code, "cond_group": cond_group or "new",
+        "language": lang, "price_eur": round(price, 2),
+        "price_czk": round(price_czk) if price_czk else None,
+        "link": link, "image": image or "", "stock": stock or "",
+        "packs": packs, "price_per_pack": None,
+        "group": group_key(title, lang),
+        "kind": product_kind(title),          # 'card' | 'sealed' (záložky Karty / Produkty)
+        "shipping_eur": None, "total_eur": None,   # doplní obchody.add_shipping, ak obchod má poštovné
+    }
+    return reprice(r)
 
 
-def price_history(link):
-    conn = db()
-    try:
-        rows = conn.execute("SELECT day, price_eur, stock, title, shop FROM price_daily "
-                            "WHERE link = ? ORDER BY day ASC", (link,)).fetchall()
-    finally:
-        conn.close()
-    return {"link": link, "title": rows[-1][3] if rows else "", "shop": rows[-1][4] if rows else "",
-            "points": [{"day": d, "price_eur": round(p, 2), "stock": s or ""} for d, p, s, _, _ in rows if p]}
+def product_kind(title):
+    """'sealed' = balík (ETB, box, bundle, blister, tin, kolekcia...), inak 'card'."""
+    return "sealed" if _SEALED_TYPE_RE.search(title or "") else "card"
 
 
-def latest_prices(links):
-    """Posledná známa cena a sklad (pre obľúbené)."""
-    links = [L.clean_text(l) for l in links[:100] if isinstance(l, str) and is_allowed_link(L.clean_text(l))]
-    if not links:
-        return {}
-    conn = db()
-    try:
-        rows = conn.execute(f"""
-            SELECT p.link, p.day, p.price_eur, p.stock FROM price_daily p
-            JOIN (SELECT link, MAX(day) AS d FROM price_daily
-                  WHERE link IN ({','.join('?' * len(links))}) GROUP BY link) m
-              ON p.link = m.link AND p.day = m.d""", links).fetchall()
-    finally:
-        conn.close()
-    return {link: {"day": day, "price_eur": round(price, 2) if price else None, "stock": stock or ""}
-            for link, day, price, stock in rows}
+def shipping_eur(shop, price_eur):
+    """Poštovné v € podľa SHOPS[...]["shipping"]; None = nevieme.
+    Tvar: {"price": 3.9, "free_from": 60, "currency": "EUR"}  (currency "CZK" pre české obchody)"""
+    cfg = (shop or {}).get("shipping")
+    if not cfg or cfg.get("price") is None or not price_eur:
+        return None
+    rate = KURZ["CZK"] if str(cfg.get("currency", "EUR")).upper() == "CZK" else 1.0
+    free_from = cfg.get("free_from")
+    if free_from is not None and price_eur >= free_from / rate:
+        return 0.0
+    return round(cfg["price"] / rate, 2)
 
 
-def popular_queries(days=14, limit=8):
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = db()
-    try:
-        rows = conn.execute("SELECT query, SUM(n) AS c FROM search_log WHERE day >= ? "
-                            "GROUP BY query ORDER BY c DESC LIMIT 20", (since,)).fetchall()
-    finally:
-        conn.close()
-    return [q for q, _ in rows if len(q) >= 3][:limit]
-
-
-# =========================================================
-# ROZPOZNANIE NOVÉHO OBCHODU (/admin/obchody)
-# =========================================================
-
-def detect_shop(url, q="pikachu"):
-    url = url.strip()
-    if "://" not in url:
-        url = "https://" + url
-    p = urllib.parse.urlparse(url)
-    if p.scheme not in ("http", "https") or not p.netloc:
-        return {"error": "Neplatná adresa."}
-    base = f"{p.scheme}://{p.netloc}/"
-    resp, info = fetch(base, timeout=10)
-    if not resp:
-        return {"error": f"Stránka neodpovedá ({info['error'] or info['status']})."}
-    platform = next((n for n, pr in PLATFORM_PRESETS.items() if pr["marker"].search(resp.text)), None)
-    if not platform:
-        return {"error": "Platformu sa nepodarilo rozpoznať. Takýto obchod pôjde len cez XML feed "
-                         "alebo ako katalóg v SHOPS."}
-    host = p.netloc.lower()
-    preset = PLATFORM_PRESETS[platform]
-    norm = L.normalize_query(q)["normalized"] or q
-    tried = []
-    for path in preset["search"]:
-        shop = {"name": host.replace("www.", ""), "country": "CZ" if host.endswith(".cz") else "SK",
-                "base_url": base, "search_url": base.rstrip("/") + path, "link_selector": preset["selector"]}
-        if platform == "shopify":
-            shop["shopify"] = True
-        res, d = scrape_search(shop, norm, 10)
-        tried.append({"url": shop["search_url"], "status": d["status"],
-                      "links": d["links_scanned"], "results": len(res)})
-        if res:
-            return {"platform": platform, "config": shop, "sample": res[:8], "tried": tried}
-    return {"platform": platform, "tried": tried,
-            "error": "Platforma rozpoznaná, ale vyhľadávanie nevrátilo produkty."}
-
-
-# =========================================================
-# ÚLOHY NA POZADÍ (spúšťa app.py raz pri štarte)
-# =========================================================
-
-_czk_state = {"checked": 0.0, "running": False}
-_czk_lock = threading.Lock()
-CZK_MAX_AGE = 6 * 3600   # kurz sa skúša obnoviť najneskôr po 6 hodinách
-
-
-def _load_czk():
-    """Posledný známy kurz z databázy (zdieľaný všetkými procesmi, prežije reštart)."""
-    try:
-        data = json.loads(meta_get("czk_rate") or "null")
-    except Exception:
-        data = None
-    if data and 15 < float(data.get("rate", 0)) < 40:
-        L.KURZ["CZK"] = float(data["rate"])
-        L.KURZ_INFO.update(date=data.get("date", ""), source="ECB")
-
-
-def update_czk():
-    """Kurz CZK z Európskej centrálnej banky. Vráti True, ak sa podaril."""
-    resp, info = fetch("https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml", timeout=10)
-    text = resp.text if resp else ""
-    m = re.search(r"currency=['\"]CZK['\"]\s+rate=['\"]([\d.]+)", text)
-    day = re.search(r"time=['\"](\d{4}-\d{2}-\d{2})['\"]", text)
-    if not m or not 15 < float(m.group(1)) < 40:
-        print(f"[CardRadar] Kurz CZK sa nepodarilo načítať: {info.get('error') or 'neznámy formát'}", flush=True)
-        _load_czk()   # aspoň kurz, ktorý medzitým uložil iný proces
-        return False
-    rate = float(m.group(1))
-    L.KURZ["CZK"] = rate
-    L.KURZ_INFO.update(date=day.group(1) if day else today_str(), source="ECB")
-    try:
-        meta_set("czk_rate", json.dumps({"rate": rate, "date": L.KURZ_INFO["date"]}))
-    except Exception:
-        pass
-    return True
-
-
-def ensure_czk():
-    """Ak je kurz starší ako CZK_MAX_AGE, obnoví ho na pozadí (hľadanie nečaká)."""
-    if time.monotonic() - _czk_state["checked"] < CZK_MAX_AGE and _czk_state["checked"]:
-        return
-    with _czk_lock:
-        if _czk_state["running"]:
-            return
-        _czk_state["running"] = True
-
-    def run():
-        try:
-            if update_czk():
-                _czk_state["checked"] = time.monotonic()
-            else:   # pri chybe skús znova o 15 min
-                _czk_state["checked"] = time.monotonic() - CZK_MAX_AGE + 900
-        except Exception:
-            pass
-        finally:
-            _czk_state["running"] = False
-
-    threading.Thread(target=run, daemon=True, name="czk-refresh").start()
-
-
-def _catalog_loop():
-    time.sleep(3)
-    while True:
-        for shop in SHOPS:
-            if shop.get("enabled", True) and is_catalog(shop):
-                try:
-                    if _is_stale(load_catalog(shop["name"])[1]):
-                        crawl_in_background(shop)
-                except Exception:
-                    pass
-        time.sleep(300)
-
-
-def _czk_loop():
-    while True:
-        try:
-            ensure_czk()
-        except Exception:
-            pass
-        time.sleep(1800)
-
-
-_lock_files = {}
-
-
-def only_one_process(name):
-    """True len v jednom procese servera (zámok súboru), aby sa úlohy nespúšťali viackrát."""
-    if fcntl is None:
-        return True
-    try:
-        f = open(os.path.join(BASE_DIR, f".{name}.lock"), "w")
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _lock_files[name] = f
-        return True
-    except OSError:
-        return False
-
-
-def start_background():
-    threading.Thread(target=_czk_loop, daemon=True, name="czk").start()   # každý proces potrebuje kurz
-    if only_one_process("catalog"):
-        threading.Thread(target=_catalog_loop, daemon=True, name="catalog").start()
+def reprice(r):
+    """Prepočíta € z Kč aktuálnym kurzom (aj pri výsledkoch z cache a katalógu)."""
+    if r.get("price_czk"):
+        r["price_eur"] = round(czk_to_eur(r["price_czk"]), 2)
+    packs = r.get("packs")
+    r["price_per_pack"] = round(r["price_eur"] / packs, 2) if packs and packs > 1 and r.get("price_eur") else None
+    return r
