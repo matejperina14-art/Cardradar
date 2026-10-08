@@ -8,10 +8,14 @@ Všetko, čo súvisí s obchodmi a dátami:
   - obrázky, našepkávač, databáza (história cien, katalógy)
 
 PRIDANIE OBCHODU:
-  - Shoptet / Shopify / Upgates / WooCommerce s vyhľadávaním: najľahšie cez
-    /admin/obchody?key=ADMIN_KEY (otestuješ a zapneš, bez úpravy kódu)
-  - obchod bez použiteľného vyhľadávania: nový záznam s "catalog" do SHOPS nižšie
+  - obchod s XML feedom (Heureka / Google Merchant) – NAJLEPŠIE: /admin/obchody → „Pridať XML feed“
+    (otestuješ feed, nastavíš partnerský odkaz a cenu za klik, bez úpravy kódu)
+  - Shoptet / Shopify / Upgates / WooCommerce s vyhľadávaním: /admin/obchody → „Otestovať obchod“
+  - obchod bez feedu a bez vyhľadávania: nový záznam s "catalog" do SHOPS nižšie
+  - feed / partnerský odkaz / cena za klik pre obchod zo SHOPS: tiež cez /admin/obchody
+    (uloží sa ako „nastavenie obchodu“ do databázy a má prednosť pred SHOPS)
 """
+import hashlib
 
 import copy
 import json
@@ -48,6 +52,7 @@ SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "2.8"))   # potom sa vrát
 CACHE_FRESH = 600           # 10 min: výsledok je čerstvý
 CACHE_STALE = 6 * 3600      # do 6 h: ukáže sa hneď a na pozadí sa obnoví
 CATALOG_REFRESH_MIN = float(os.environ.get("CATALOG_REFRESH_MIN", "60"))
+CRAWL_PARALLEL = int(os.environ.get("CRAWL_PARALLEL", "2"))   # koľko obchodov sa prechádza naraz (každý iný web)
 PAGE_DELAY = 1.0            # pauza medzi stranami katalógu (šetrne k obchodu)
 HISTORY_KEEP_DAYS = 90
 OK_STATUSES = ("ok", "no_results")
@@ -69,6 +74,11 @@ OK_STATUSES = ("ok", "no_results")
 #                  Bez "shipping" sa poštovné nezobrazuje (radšej nič ako zlé číslo).
 #   affiliate    = partnerský odkaz, {url} = adresa produktu (zakódovaná), napr.
 #                  "https://partner.example/click?id=123&url={url}"
+#   partner      = True: obchod s nami spolupracuje (feed / zmluva) – na webe odznak „Partner“
+#   cpc_eur      = dohodnutá cena za 1 unikátny klik do obchodu (pre mesačnú faktúru v /admin/partneri)
+#   currency     = mena cien vo feede ("EUR" / "CZK"); bez nej: CZ obchod = CZK, inak EUR
+#   pokemon_only = True: feed obsahuje len Pokémon (inak sa berú len položky s „Pokémon“
+#                  v názve, kategórii alebo značke)
 # =========================================================
 
 SHOPS = [
@@ -438,7 +448,12 @@ def init_db():
             CREATE TABLE IF NOT EXISTS clicks (
                 day TEXT NOT NULL, shop TEXT NOT NULL, n INTEGER DEFAULT 1,
                 PRIMARY KEY (day, shop));
+            CREATE TABLE IF NOT EXISTS click_seen (
+                day TEXT NOT NULL, k TEXT NOT NULL, PRIMARY KEY (day, k));
         """)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(clicks)")}
+        if "u" not in cols:   # u = unikátne kliky (1 návštevník + 1 produkt za deň), podklad pre fakturáciu
+            conn.execute("ALTER TABLE clicks ADD COLUMN u INTEGER DEFAULT 0")
         # staršie databázy nemali stĺpec image / price_czk
         cols = {r[1] for r in conn.execute("PRAGMA table_info(price_daily)")}
         if "image" not in cols:
@@ -520,7 +535,9 @@ def meta_set(k, v):
 # Všetky procesy servera si zmenu prevezmú do 30 sekúnd.
 # =========================================================
 
-_extra = {"v": None, "t": 0.0, "shops": [], "hosts": set()}
+_extra = {"v": None, "t": 0.0, "shops": [], "hosts": set(), "over": {}}
+# polia, ktoré sa dajú zmeniť pre obchod zo SHOPS cez /admin/obchody
+OVERRIDE_KEYS = ("feed", "affiliate", "cpc_eur", "partner", "currency", "pokemon_only", "shipping", "enabled")
 _extra_lock = threading.Lock()
 
 
@@ -533,8 +550,39 @@ def extra_shops():
 
 def save_extra_shops(shops):
     meta_set("extra_shops", json.dumps(shops, ensure_ascii=False))
+    _bump_shops()
+
+
+def shop_overrides():
+    try:
+        return json.loads(meta_get("shop_overrides") or "{}")
+    except Exception:
+        return {}
+
+
+def save_shop_override(name, values):
+    """Nastavenie obchodu zo SHOPS (feed, partnerský odkaz, cena za klik...). Prázdna hodnota = zmazať."""
+    over = shop_overrides()
+    cur = over.get(name, {})
+    for k, v in values.items():
+        if k in OVERRIDE_KEYS:
+            if v in (None, ""):
+                cur.pop(k, None)
+            else:
+                cur[k] = v
+    if cur:
+        over[name] = cur
+    else:
+        over.pop(name, None)
+    meta_set("shop_overrides", json.dumps(over, ensure_ascii=False))
+    _bump_shops()
+
+
+def _bump_shops():
     meta_set("extra_shops_v", str(time.time()))
     _extra["t"] = 0   # tento proces hneď
+    with _cat_lock:
+        _cat_mem.clear()
 
 
 def _sync_extra():
@@ -549,19 +597,28 @@ def _sync_extra():
         if v == _extra["v"]:
             return
         _extra["v"] = v
-        builtin = {host_of(s["base_url"]).replace("www.", "") for s in SHOPS}
-        _extra["shops"] = [dict(s, enabled=True, _extra=True) for s in extra_shops()
-                           if host_of(s.get("base_url")).replace("www.", "") not in builtin]
-        _extra["hosts"] = {host_of(s["base_url"]) for s in _extra["shops"]}
+        builtin = {bare_host(s["base_url"]) for s in SHOPS}
+        _extra["shops"] = [dict({"enabled": True}, **s, _extra=True) for s in extra_shops()
+                           if bare_host(s.get("base_url")) not in builtin]
+        _extra["hosts"] = {bare_host(s["base_url"]) for s in _extra["shops"]}
+        _extra["over"] = shop_overrides()
 
 
 def all_shops():
     _sync_extra()
-    return SHOPS + _extra["shops"]
+    over = _extra["over"]
+    base = [dict(s, **over[s["name"]], _override=True) if s["name"] in over else s for s in SHOPS]
+    return base + _extra["shops"]
 
 
 def active_shops():
     return [s for s in all_shops() if s.get("enabled", True)]
+
+
+def bare_host(url):
+    """Doména bez www. – eshop.sk a www.eshop.sk je ten istý obchod (feedy často píšu bez www)."""
+    h = host_of(url)
+    return h[4:] if h.startswith("www.") else h
 
 
 def is_allowed_link(url):
@@ -569,13 +626,13 @@ def is_allowed_link(url):
         p = urllib.parse.urlparse(url)
     except Exception:
         return False
-    hosts = {host_of(s["base_url"]) for s in all_shops()}
-    return p.scheme in ("http", "https") and p.netloc.lower() in hosts
+    hosts = {bare_host(s["base_url"]) for s in all_shops()}
+    return p.scheme in ("http", "https") and bare_host(url) in hosts
 
 
 def shop_by_link(url):
-    host = host_of(url).replace("www.", "")
-    return next((s for s in all_shops() if host_of(s["base_url"]).replace("www.", "") == host), None)
+    host = bare_host(url)
+    return next((s for s in all_shops() if bare_host(s["base_url"]) == host), None)
 
 
 def add_shipping(shop, r):
@@ -608,11 +665,22 @@ def out_url(link, medium="referral"):
         return link
 
 
-def _count_click_now(shop_name):
+_BOT_UA_RE = re.compile(r"bot|crawl|spider|slurp|preview|facebookexternalhit|whatsapp|telegram|"
+                        r"curl|wget|python|headless|lighthouse|monitor", re.I)
+
+
+def _count_click_now(shop_name, key):
+    day = today_str()
     conn = db()
     try:
-        conn.execute("""INSERT INTO clicks (day, shop, n) VALUES (?, ?, 1)
-                        ON CONFLICT(day, shop) DO UPDATE SET n = n + 1""", (today_str(), shop_name))
+        # unikátny = rovnaký návštevník a produkt sa za deň počíta raz (kľúč je len skrátený odtlačok, nie IP)
+        new = conn.execute("INSERT OR IGNORE INTO click_seen (day, k) VALUES (?, ?)", (day, key)).rowcount
+        conn.execute("""INSERT INTO clicks (day, shop, n, u) VALUES (?, ?, 1, ?)
+                        ON CONFLICT(day, shop) DO UPDATE SET n = n + 1, u = u + excluded.u""",
+                     (day, shop_name, 1 if new else 0))
+        if time.time() % 20 < 1:
+            conn.execute("DELETE FROM click_seen WHERE day < ?",
+                         ((datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d"),))
         conn.commit()
     except Exception:
         pass
@@ -620,21 +688,26 @@ def _count_click_now(shop_name):
         conn.close()
 
 
-def count_click(link):
+def count_click(link, visitor="", user_agent=""):
+    """Započíta odchod do obchodu. Roboty (náhľady liniek, crawlery) sa nepočítajú."""
     shop = shop_by_link(link)
-    if shop:
-        BG_POOL.submit(_count_click_now, shop["name"])
+    if not shop or _BOT_UA_RE.search(user_agent or "") or not user_agent:
+        return
+    key = hashlib.sha256(f"{today_str()}|{visitor}|{clean_link(link)}".encode()).hexdigest()[:20]
+    BG_POOL.submit(_count_click_now, shop["name"], key)
 
 
-def click_stats(days=30):
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+def click_stats(days=30, since=None, until=None):
+    """Kliky po obchodoch. since/until = 'YYYY-MM-DD' (until bez neho); inak posledných `days` dní."""
+    since = since or (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    until = until or "9999-12-31"
     conn = db()
     try:
-        rows = conn.execute("SELECT shop, SUM(n) FROM clicks WHERE day >= ? GROUP BY shop ORDER BY 2 DESC",
-                            (since,)).fetchall()
+        rows = conn.execute("SELECT shop, SUM(n), SUM(u) FROM clicks WHERE day >= ? AND day < ? "
+                            "GROUP BY shop ORDER BY 3 DESC, 2 DESC", (since, until)).fetchall()
     finally:
         conn.close()
-    return [{"shop": s, "clicks": n} for s, n in rows]
+    return [{"shop": s, "clicks": n, "unique": u or 0} for s, n, u in rows]
 
 
 # =========================================================
@@ -725,7 +798,10 @@ def _has_other_product(el, own_href):
         h = x["href"].lower().rstrip("/").split("?")[0]
         if own and (h == own or own.endswith(h) or h.endswith(own)):
             continue
-        if L.is_tcg_product(extract_title(x)):
+        t = extract_title(x)
+        # iný produkt = odkaz s názvom (aj bez znaku karty, napr. „Eevee“), nie tlačidlo / menu / číslo strany
+        if L.is_tcg_product(t) or (len(t) >= 3 and re.search(r"[A-Za-zÀ-ž]{3}", t) and not _NAV_RE.search(t)
+                                   and not re.search(r"ko[šs][íi]k|kúpiť|koupit|detail|viac|více|cart", t, re.I)):
             return True
     return False
 
@@ -1024,7 +1100,7 @@ def _shopify_product_js(r):
 # =========================================================
 
 _cat_mem = {}            # obchod -> (monotonic, položky, čas aktualizácie)
-_crawl_sem = threading.Semaphore(1)
+_crawl_sem = threading.Semaphore(max(1, CRAWL_PARALLEL))
 _cat_lock = threading.Lock()
 _crawling = set()
 
@@ -1051,7 +1127,16 @@ def _save_catalog(shop_name, items):
 def load_catalog(shop_name):
     with _cat_lock:
         hit = _cat_mem.get(shop_name)
-        if hit and time.monotonic() - hit[0] < 60:
+    if hit and time.monotonic() - hit[0] < 30:
+        return hit[1], hit[2]
+    if hit:   # stačí pozrieť čas aktualizácie (1 riadok); celý katalóg sa načíta len po zmene
+        try:
+            now_updated = meta_get("catalog:" + shop_name) or ""
+        except Exception:
+            now_updated = hit[2]
+        if now_updated == hit[2]:
+            with _cat_lock:
+                _cat_mem[shop_name] = (time.monotonic(), hit[1], hit[2])
             return hit[1], hit[2]
     conn = db()
     try:
@@ -1099,11 +1184,20 @@ def _parse_listing(shop, html, page_url, debug=None):
 
     items = []
     for href, anchors in by_href.values():
-        named = [(len(t), t, a) for a in anchors for t in [extract_title(a)]
-                 if 6 <= len(t) <= 200 and L.is_listed_product(t)]
+        titles = [(t, a) for a in anchors for t in [extract_title(a)] if 3 <= len(t) <= 200]
+        named = [(len(t), t, a) for t, a in titles if L.is_listed_product(t)]
+        loose = False
+        if not named:
+            # kategória je celá Pokémon: „Eevee“, „Professor's Research“ nemajú v názve znak karty.
+            # Berieme ich, len ak je to naozaj dlaždica produktu (obrázok + cena) a nie merch.
+            named = [(len(t), t, a) for t, a in titles
+                     if re.search(r"[A-Za-zÀ-ž]{3}", t) and not L.is_merch(t) and not _NAV_RE.search(t)]
+            loose = True
         if not named:
             continue
         _, title, a = min(named, key=lambda x: x[0])
+        if loose and not extract_image(a, page_url):
+            continue
         block = find_block(a)
         if block is None or _other_links(block, href, page_url) > 3:
             continue   # menu, päta, zoznam – nie dlaždica produktu
@@ -1126,6 +1220,10 @@ def _parse_listing(shop, html, page_url, debug=None):
         items.append({"link": href, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
                       "image": image, "stock": detect_stock_el(block)})
     return items, soup
+
+
+_NAV_RE = re.compile(r"^(?:kontakt|ko[šs][íi]k|doprava|platba|obchodn|reklam|blog|novinky|akcie|v[šs]etk|"
+                     r"zobrazi|ďal[šs]|dal[šs]|predch|next|prev|domov|home|prihl|registr|hľada|hledat)", re.I)
 
 
 def _next_page(soup, page_url, n, host):
@@ -1191,14 +1289,30 @@ def crawl_shop(shop):
         if first_load and items:
             _save_catalog(shop["name"], list(items.values()))   # hľadateľné hneď po 1. kategórii
 
-    result = list(items.values())
+    fresh = list(items.values())
+    result = _merge_on_error(shop, fresh, errors)
     updated = ""
     if result:   # pri chybe ostane starý katalóg
         updated = _save_catalog(shop["name"], result)
-        save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
+        save_history([dict(r, shop=shop["name"]) for r in fresh], log_query=None)
     return {"shop": shop["name"], "items": len(result), "pages": pages, "errors": errors,
             "updated": updated, "elapsed_ms": round((time.monotonic() - start) * 1000),
             "sample": result[:10]}
+
+
+def _merge_on_error(shop, fresh, errors):
+    """Ak niektorá kategória / strana zlyhala, doplní produkty zo starého katalógu (inak by zmizli
+    z výsledkov až do ďalšieho prechodu). Bez chýb = len čerstvé produkty (vypredané a zmazané zmiznú)."""
+    if not errors or not fresh:
+        return fresh
+    seen = {i["link"] for i in fresh}
+    old = [{k: v for k, v in i.items() if k != "_f"} for i in load_catalog(shop["name"])[0] if i["link"] not in seen]
+    return fresh + old
+
+
+def _loose_ok(title, has_image):
+    """Položka z Pokémon kategórie / kolekcie bez znakov karty v názve."""
+    return has_image and bool(re.search(r"[A-Za-zÀ-ž]{3}", title)) and not L.is_merch(title)
 
 
 def _shopify_items(shop, products, pokemon_only=False):
@@ -1214,7 +1328,8 @@ def _shopify_items(shop, products, pokemon_only=False):
                                     str(p.get("vendor") or "")]))
             if "pokemon" not in meta:
                 continue
-        if not L.is_listed_product(title):
+        imgs = p.get("images") or []
+        if not L.is_listed_product(title) and (pokemon_only or not _loose_ok(title, bool(imgs))):
             continue
         variants = p.get("variants") or []
         avail = [v for v in variants if v.get("available")]
@@ -1225,7 +1340,6 @@ def _shopify_items(shop, products, pokemon_only=False):
         price = min(prices)
         if not L.price_plausible(title, price):
             continue
-        imgs = p.get("images") or []
         img = imgs[0].get("src", "") if imgs and isinstance(imgs[0], dict) else ""
         items.append({"link": f"{base}/products/{p['handle']}", "title": title, "price_eur": round(price, 2),
                       "price_czk": None, "image": _shopify_img(img, 400) if img else "",
@@ -1260,85 +1374,174 @@ def crawl_shopify(shop):
             if len(products) < 250:
                 break
             time.sleep(0.5)
-    result = list(items.values())
+    fresh = list(items.values())
+    result = fresh   # zlyhaná kolekcia sa nahradí /products.json, zlučovanie so starým tu netreba
     updated = ""
     if result:
         updated = _save_catalog(shop["name"], result)
-        save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
+        save_history([dict(r, shop=shop["name"]) for r in fresh], log_query=None)
     return {"shop": shop["name"], "source": "shopify_json", "items": len(result), "pages": pages,
             "errors": errors, "updated": updated,
             "elapsed_ms": round((time.monotonic() - start) * 1000), "sample": result[:10]}
 
 
 def _tag(tag):
-    """Názov XML značky bez menného priestoru, veľkými písmenami ({ns}item -> ITEM)."""
-    return tag.rsplit("}", 1)[-1].upper()
+    """Názov XML značky bez menného priestoru, veľkými písmenami ({ns}item -> ITEM, g:price -> PRICE)."""
+    return tag.rsplit("}", 1)[-1].split(":")[-1].upper()
 
 
 def _feed_stock(d):
-    av = (d.get("AVAILABILITY") or "").lower().replace("_", " ")
-    if "out of stock" in av or "discontinued" in av:
+    av = (d.get("AVAILABILITY") or d.get("STOCK_STATUS") or "").lower().replace("_", " ")
+    if "out of stock" in av or "discontinued" in av or "vyprodan" in av or "vypredan" in av:
         return "out"
-    if "preorder" in av:
+    if "preorder" in av or "pre order" in av:
         return "preorder"
     if "backorder" in av:
         return "order"
-    if "in stock" in av:
+    if "in stock" in av or "skladem" in av or "skladom" in av:
         return "in"
+    qty = L.to_float(d.get("STOCK_QUANTITY") or d.get("QUANTITY") or d.get("AMOUNT") or "")
+    if qty is not None:
+        return "in" if qty > 0 else "out"
     dd = (d.get("DELIVERY_DATE") or "").strip()
     if dd == "0":
         return "in"
     return "order" if dd.isdigit() else ("preorder" if dd else "")
 
 
+def _feed_currency(shop, raw_price, d):
+    cur = (d.get("CURRENCY") or "").upper()
+    txt = (raw_price or "").upper()
+    if "CZK" in txt or "KČ" in txt or cur == "CZK":
+        return "CZK"
+    if "EUR" in txt or "€" in txt or cur == "EUR":
+        return "EUR"
+    return (shop.get("currency") or ("CZK" if shop.get("country") == "CZ" else "EUR")).upper()
+
+
+_FEED_ITEM_TAGS = ("SHOPITEM", "ITEM", "ENTRY", "PRODUCT", "OFFER")
+_FEED_TEXT_KEYS = ("CATEGORYTEXT", "PRODUCT_TYPE", "GOOGLE_PRODUCT_CATEGORY", "MANUFACTURER", "BRAND",
+                   "CATEGORY", "DESCRIPTION")
+
+
+def parse_feed(shop, stream, limit=None, max_bytes=150 * 1024 * 1024):
+    """Prečíta XML feed (Heureka, Google Merchant, Zboží, väčšina e-shopov). Vráti (položky, info).
+    limit = koľko Pokémon položiek stačí (test feedu v admine)."""
+    items, info = {}, {"scanned": 0, "pokemon": 0, "skipped": {}, "hosts": set()}
+    base_host = bare_host(shop.get("base_url") or "")
+
+    def skip(why):
+        info["skipped"][why] = info["skipped"].get(why, 0) + 1
+
+    for _, el in ET.iterparse(stream, events=("end",)):
+        if _tag(el.tag) not in _FEED_ITEM_TAGS or not len(el):
+            continue
+        d = {}
+        for ch in el:
+            k = _tag(ch.tag)
+            if len(ch) and k in ("PRICE", "SHIPPING"):   # Google: <g:shipping><g:price>
+                continue
+            d.setdefault(k, (ch.text or "").strip())
+        el.clear()
+        title = L.clean_text(d.get("PRODUCTNAME") or d.get("PRODUCT") or d.get("TITLE") or d.get("NAME"))
+        link = clean_link(L.clean_text(d.get("URL") or d.get("LINK") or d.get("PRODUCT_URL")))
+        if not title or not link.startswith(("http://", "https://")):
+            continue   # nie je to produkt (napr. <item> v hlavičke)
+        info["scanned"] += 1
+        info["hosts"].add(bare_host(link))
+        if base_host and bare_host(link) != base_host:
+            skip("iná doména")
+            continue
+        meta = L.fold(" ".join([title] + [d.get(k, "") for k in _FEED_TEXT_KEYS[:-1]]))
+        if not shop.get("pokemon_only") and "pokemon" not in meta:
+            skip("nie je Pokémon")
+            continue
+        info["pokemon"] += 1
+        if L.is_merch(title) and not L.is_accessory(title):
+            skip("merch")
+            continue
+        raw = d.get("PRICE_VAT") or d.get("SALE_PRICE") or d.get("PRICE") or ""
+        m = re.search(r"\d[\d\s.,]*", raw)
+        price = L.to_float(m.group(0).strip()) if m else None
+        if not price or price <= 0:
+            skip("bez ceny")
+            continue
+        price_czk = None
+        if _feed_currency(shop, raw, d) == "CZK":
+            price_czk, price = price, L.czk_to_eur(price)
+        if not L.price_plausible(title, price):
+            skip("nezmyselná cena")
+            continue
+        items[link] = {"link": link, "title": title, "price_eur": round(price, 2),
+                       "price_czk": round(price_czk) if price_czk else None,
+                       "image": d.get("IMGURL") or d.get("IMAGE_LINK") or d.get("IMAGE") or "",
+                       "stock": _feed_stock(d)}
+        if limit and len(items) >= limit:
+            break
+        if hasattr(stream, "tell") and stream.tell() > max_bytes:
+            info["truncated"] = True
+            break
+    info["hosts"] = sorted(info["hosts"])[:5]
+    return list(items.values()), info
+
+
+def open_feed(url, timeout=90):
+    resp = http().get(url, timeout=(5, timeout), stream=True,
+                      headers={"Accept": "application/xml,text/xml,*/*;q=0.8"})
+    if resp.status_code != 200:
+        resp.close()
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    resp.raw.decode_content = True   # gzip feedy
+    return resp
+
+
+def test_feed(shop, limit=12):
+    """Pre /admin/obchody: prečíta začiatok feedu a ukáže, čo by sa načítalo (nič neukladá)."""
+    t0 = time.monotonic()
+    try:
+        resp = open_feed(shop["feed"], timeout=30)
+        try:
+            items, info = parse_feed(shop, resp.raw, limit=limit)
+        finally:
+            resp.close()
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    out = [L.make_result(shop, i["title"], i["price_eur"], i["link"], i["image"], i["stock"],
+                         price_czk=i["price_czk"]) for i in items]
+    return {"ok": bool(out), "items": out, "info": info, "ms": round((time.monotonic() - t0) * 1000)}
+
+
 def crawl_feed(shop):
     """XML feed (Heureka / Google Merchant) po kúskoch, aj veľký."""
     start = time.monotonic()
-    host = host_of(shop["base_url"])
-    items, errors, scanned = {}, [], 0
+    errors, info, result = [], {}, []
     try:
-        resp = http().get(shop["feed"], timeout=(5, 90), stream=True)
-        if resp.status_code != 200:
-            raise RuntimeError(f"HTTP {resp.status_code}")
-        resp.raw.decode_content = True
-        for _, el in ET.iterparse(resp.raw, events=("end",)):
-            if _tag(el.tag) not in ("SHOPITEM", "ITEM", "ENTRY"):
-                continue
-            scanned += 1
-            d = {}
-            for ch in el:
-                d.setdefault(_tag(ch.tag), (ch.text or "").strip())
-            el.clear()
-            title = L.clean_text(d.get("PRODUCTNAME") or d.get("PRODUCT") or d.get("TITLE"))
-            link = clean_link(L.clean_text(d.get("URL") or d.get("LINK")))
-            if not title or not link or host_of(link) != host or not L.is_listed_product(title):
-                continue
-            raw = d.get("PRICE_VAT") or d.get("SALE_PRICE") or d.get("PRICE") or ""
-            m = re.search(r"\d[\d\s.,]*", raw)
-            price = L.to_float(m.group(0).strip()) if m else None
-            if not price or price <= 0:
-                continue
-            price_czk = None
-            if "CZK" in raw.upper() or "KČ" in raw.upper() or shop.get("currency") == "CZK":
-                price_czk, price = price, L.czk_to_eur(price)
-            if not L.price_plausible(title, price):
-                continue
-            items[link] = {"link": link, "title": title, "price_eur": round(price, 2), "price_czk": price_czk,
-                           "image": d.get("IMGURL") or d.get("IMAGE_LINK") or "",
-                           "stock": _feed_stock(d)}
-            if resp.raw.tell() > 150 * 1024 * 1024:
-                errors.append({"url": shop["feed"], "error": "feed je príliš veľký, načítaná len časť"})
-                break
+        resp = open_feed(shop["feed"])
+        try:
+            result, info = parse_feed(shop, resp.raw)
+        finally:
+            resp.close()
+        if info.get("truncated"):
+            errors.append({"url": shop["feed"], "error": "feed je príliš veľký, načítaná len časť"})
     except Exception as e:
         errors.append({"url": shop.get("feed"), "error": str(e)[:200]})
-    result = list(items.values())
     updated = ""
     if result:
         updated = _save_catalog(shop["name"], result)
         save_history([dict(r, shop=shop["name"]) for r in result], log_query=None)
-    return {"shop": shop["name"], "source": "feed", "items": len(result), "scanned": scanned,
-            "errors": errors, "updated": updated,
+    meta_set("feedinfo:" + shop["name"], json.dumps({
+        "t": datetime.now(timezone.utc).isoformat(), "items": len(result), "errors": errors,
+        "scanned": info.get("scanned", 0), "skipped": info.get("skipped", {})}, ensure_ascii=False))
+    return {"shop": shop["name"], "source": "feed", "items": len(result), "scanned": info.get("scanned", 0),
+            "skipped": info.get("skipped", {}), "errors": errors, "updated": updated,
             "elapsed_ms": round((time.monotonic() - start) * 1000), "sample": result[:10]}
+
+
+def feed_info(shop_name):
+    try:
+        return json.loads(meta_get("feedinfo:" + shop_name) or "null")
+    except Exception:
+        return None
 
 
 def crawl_in_background(shop):
@@ -1398,7 +1601,9 @@ def catalog_scrape(shop, query):
         if anchors and not L.anchors_hit(it.get("_f") or L.fold(it["title"]), anchors):
             debug["match_filtered"] += 1
             continue
-        if not (L.is_accessory(it["title"]) if acc_query else L.is_listed_product(it["title"])):
+        # katalóg je už pri sťahovaní vyčistený (len Pokémon kategórie / feed) – tu stačí vyradiť merch,
+        # inak by sa nenašli karty bez znaku karty v názve („Eevee“, „Professor's Research“)
+        if not (L.is_accessory(it["title"]) if acc_query else (L.is_accessory(it["title"]) or not L.is_merch(it["title"]))):
             debug["merch_filtered"] += 1
             continue
         if not _matches(shop, it["title"], "", parsed, kind)[0]:
@@ -1522,6 +1727,7 @@ def shop_search(shop, query, use_cache=True, timeout=SEARCH_TIMEOUT, wait_inflig
         L.reprice(r)   # Kč -> € vždy aktuálnym kurzom, aj pri starších výsledkoch z cache
         add_shipping(shop, r)
         r["out"] = go_link(r["link"])
+        r["partner"] = bool(shop.get("partner"))
     fill_images_from_cache(res)
     add_suggestions(res)
     return res, dbg
@@ -1786,7 +1992,7 @@ def _catalog_suggestions(q, limit=30):
         if not is_catalog(shop):
             continue
         for it in load_catalog(shop["name"])[0]:
-            if fq in L.fold(it["title"]) and L.is_tcg_product(it["title"]):
+            if fq in (it.get("_f") or L.fold(it["title"])) and L.is_tcg_product(it["title"]):
                 found.append({"title": it["title"], "link": it["link"], "image": it["image"],
                               "price_eur": it["price_eur"]})
                 if len(found) >= limit:
@@ -2039,8 +2245,8 @@ def ensure_czk():
 def _catalog_loop():
     time.sleep(3)
     while True:
-        for shop in SHOPS:
-            if shop.get("enabled", True) and is_catalog(shop):
+        for shop in active_shops():   # aj obchody s feedom pridané cez /admin/obchody
+            if is_catalog(shop):
                 try:
                     if _is_stale(load_catalog(shop["name"])[1], factor=shop.get("refresh_factor", 1)):
                         crawl_in_background(shop)
