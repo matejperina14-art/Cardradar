@@ -219,7 +219,9 @@ def shop_query(query):
     Presný typ produktu, set a číslo karty sa potom vyfiltrujú u nás."""
     p = L.normalize_query(query)
     set_name = p.get("set_name") or ""
-    if set_name and set_name not in L.SET_PARTS and set_name not in L.SERIE:
+    if L.is_accessory_query(query):   # „pikachu sleeves“ – „sleeves“ sa nesmie stratiť
+        q = p.get("normalized") or query
+    elif set_name and set_name not in L.SET_PARTS and set_name not in L.SERIE:
         q = " ".join(x for x in (set_name, p.get("pokemon")) if x)
     elif p.get("pokemon") and not p.get("card_number"):
         q = " ".join(x for x in (p.get("pokemon"), p.get("suffix")) if x)
@@ -791,6 +793,8 @@ def _log(debug, **entry):
 
 
 def _matches(shop, title, extra, parsed, kind):
+    if L.is_accessory_query(parsed.get("original")):
+        return L.accessory_matches_query(title, parsed)
     if kind == "card":
         return L.card_matches_query(title, extra, parsed, loose_set=shop.get("loose_set", False))
     return L.sealed_matches_query(title, extra, parsed)
@@ -859,6 +863,7 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT, fetch_q=None):
         debug["links_scanned"] = len(links)
         parsed = L.normalize_query(query)
         kind = L.classify_query(parsed)
+        acc_query = L.is_accessory_query(query)
         seen = set()
 
         for a in links:
@@ -869,7 +874,8 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT, fetch_q=None):
             title = extract_title(a)
             if not title:
                 continue
-            why = L.merch_reason(title) or ("" if L.looks_like_tcg(title) else "not_tcg")
+            why = "" if (acc_query and L.is_accessory(title)) else \
+                (L.merch_reason(title) or ("" if L.looks_like_tcg(title) else "not_tcg"))
             if why:
                 debug["merch_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason=why)
@@ -1024,7 +1030,7 @@ def load_catalog(shop_name):
     finally:
         conn.close()
     items = [{"link": r[0], "title": r[1], "price_eur": r[2], "image": r[3] or "", "stock": r[4] or "",
-              "price_czk": r[5]} for r in rows]
+              "price_czk": r[5], "_f": L.fold(r[1] or "")} for r in rows]   # _f = názov bez diakritiky (predfilter)
     updated = meta[0] if meta else ""
     with _cat_lock:
         _cat_mem[shop_name] = (time.monotonic(), items, updated)
@@ -1061,7 +1067,7 @@ def _parse_listing(shop, html, page_url, debug=None):
     items = []
     for href, anchors in by_href.values():
         named = [(len(t), t, a) for a in anchors for t in [extract_title(a)]
-                 if 6 <= len(t) <= 200 and L.is_tcg_product(t)]
+                 if 6 <= len(t) <= 200 and L.is_listed_product(t)]
         if not named:
             continue
         _, title, a = min(named, key=lambda x: x[0])
@@ -1173,7 +1179,7 @@ def _shopify_items(shop, products, pokemon_only=False):
                                     str(p.get("vendor") or "")]))
             if "pokemon" not in meta:
                 continue
-        if not L.is_tcg_product(title):
+        if not L.is_listed_product(title):
             continue
         variants = p.get("variants") or []
         avail = [v for v in variants if v.get("available")]
@@ -1270,7 +1276,7 @@ def crawl_feed(shop):
             el.clear()
             title = L.clean_text(d.get("PRODUCTNAME") or d.get("PRODUCT") or d.get("TITLE"))
             link = clean_link(L.clean_text(d.get("URL") or d.get("LINK")))
-            if not title or not link or host_of(link) != host or not L.is_tcg_product(title):
+            if not title or not link or host_of(link) != host or not L.is_listed_product(title):
                 continue
             raw = d.get("PRICE_VAT") or d.get("SALE_PRICE") or d.get("PRICE") or ""
             m = re.search(r"\d[\d\s.,]*", raw)
@@ -1351,8 +1357,13 @@ def catalog_scrape(shop, query):
     kind = L.classify_query(parsed)
     results = []
     matched = []
+    acc_query = L.is_accessory_query(query)
+    anchors = [] if acc_query else L.quick_anchors(parsed, shop.get("loose_set", False))
     for it in items:
-        if not L.is_tcg_product(it["title"]):
+        if anchors and not L.anchors_hit(it.get("_f") or L.fold(it["title"]), anchors):
+            debug["match_filtered"] += 1
+            continue
+        if not (L.is_accessory(it["title"]) if acc_query else L.is_tcg_product(it["title"])):
             debug["merch_filtered"] += 1
             continue
         if not _matches(shop, it["title"], "", parsed, kind)[0]:
