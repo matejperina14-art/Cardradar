@@ -374,7 +374,7 @@ def admin_obchod():
     q = L.clean_text(request.args.get("q", "")) or "pikachu"
     norm = L.normalize_query(q)["normalized"] or q
     name = L.clean_text(request.args.get("name", "all")).lower()
-    shops = [s for s in O.active_shops() if name == "all" or s["name"].lower() == name]
+    shops = [s for s in O.active_shops() if name == "all" or L.fold(s["name"]) == L.fold(name)]
     if not shops:
         return jsonify({"error": "Neznámy obchod.", "shops": [s["name"] for s in O.active_shops()]}), 400
 
