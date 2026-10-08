@@ -580,7 +580,7 @@ def admin_katalog():
     shops = [s for s in O.SHOPS if O.is_catalog(s)]
     name = L.clean_text(request.args.get("name", "")).lower()
     if name:
-        shop = next((s for s in shops if s["name"].lower() == name), None)
+        shop = next((s for s in shops if L.fold(s["name"]) == L.fold(name)), None)   # „posbirej to“ = „Posbírej to“
         if not shop:
             return jsonify({"error": "Neznámy obchod.", "shops": [s["name"] for s in shops]}), 400
         if request.args.get("refresh"):
