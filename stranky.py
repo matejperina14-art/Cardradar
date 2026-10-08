@@ -276,6 +276,9 @@ aby sme ukázali obľúbené hľadania.</li>
 <li><b>IP adresa:</b> drží sa v pamäti servera asi minútu, na ochranu pred zneužitím
 (obmedzenie počtu požiadaviek). Do databázy sa neukladá, krátkodobo sa môže objaviť
 v technických záznamoch servera.</li>
+<li><b>Prekliky do obchodov:</b> počítame ich po obchodoch a dňoch. Aby sa jeden preklik
+nezapočítal viackrát, uložíme na 2 dni len jednosmerný odtlačok (hash), z ktorého sa IP adresa
+ani produkt nedajú spätne zistiť.</li>
 <li><b>Obľúbené produkty</b> sa ukladajú iba v tvojom prehliadači, nie na serveri.</li>
 </ul>
 <h2>Ako dlho</h2>
@@ -295,30 +298,49 @@ kontakt vyššie. Sťažnosť môžeš podať na Úrad na ochranu osobných úda
 """
 
 SHOPS_HTML = """
-<p>CardRadar je bezplatný porovnávač cien Pokémon TCG kariet, ETB a booster boxov zo slovenských
-a českých obchodov. Zberateľ zadá kartu alebo set a na jednom mieste vidí, kde je produkt skladom
-a za koľko. Kliknutím ide <b>priamo na stránku produktu vo vašom e-shope</b>. CardRadar nič nepredáva.</p>
-<h2>Čo o vašich produktoch zobrazujeme</h2>
+<p>CardRadar je porovnávač cien Pokémon TCG kariet, ETB a booster boxov zo slovenských a českých
+obchodov. Zberateľ zadá kartu alebo set a na jednom mieste vidí, kde je produkt skladom a za koľko.
+Kliknutím ide <b>priamo na stránku produktu vo vašom e-shope</b>. CardRadar nič nepredáva a nikomu
+neberie objednávky – každý predaj je váš.</p>
+<h2>Prečo byť na CardRadare</h2>
 <ul>
-<li>názov produktu, aktuálnu cenu a dostupnosť (skladom, predobjednávka, vypredané),</li>
-<li>obrázok produktu, vždy načítaný z vášho webu,</li>
-<li>názov vášho obchodu a odkaz na konkrétny produkt.</li>
+<li>Návštevníci, ktorí už vedia, čo chcú kúpiť – hľadajú konkrétny set, ETB alebo kartu.</li>
+<li>Všetky odkazy majú <code>utm_source=cardradar</code>, takže návštevy aj objednávky vidíte
+v Google Analytics alebo v štatistikách e-shopu ako samostatný zdroj.</li>
+<li>Nové produkty a predobjednávky sa u nás objavia hneď, ako sú vo vašom feede.</li>
 </ul>
-<h2>Návštevnosť, ktorú uvidíte</h2>
-<p>Všetky odkazy na váš e-shop majú parameter <code>utm_source=cardradar</code>, takže
-návštevy aj objednávky z CardRadaru uvidíte v Google Analytics alebo v štatistikách vášho
-e-shopu ako samostatný zdroj.</p>
-<h2>Ako údaje získavame</h2>
-<p>Ideálne z vášho XML feedu produktov (formát Heureka alebo Google Merchant). Je to najpresnejšie
-a váš web to nijako nezaťaží. Bez feedu čítame verejne dostupné stránky vyhľadávania alebo
-kategórií, šetrne: výsledky si pamätáme a kategórie prechádzame najviac raz za hodinu s pauzou
+<h2>Spolupráca cez XML feed</h2>
+<p>Stačí nám poslať adresu XML feedu, ktorý už pravdepodobne máte pre Heureku, Google Merchant
+alebo Zboží. Shoptet, Upgates, Shopify aj WooCommerce ho vedia vytvoriť niekoľkými kliknutiami.
+Feed čítame raz za hodinu, váš web to nijako nezaťaží.</p>
+<p>Z feedu používame len Pokémon produkty a tieto údaje:</p>
+<ul>
+<li><b>názov</b> (<code>PRODUCTNAME</code> / <code>g:title</code>),</li>
+<li><b>odkaz na produkt</b> (<code>URL</code> / <code>g:link</code>),</li>
+<li><b>cena s DPH</b> (<code>PRICE_VAT</code> / <code>g:price</code>, prípadne <code>g:sale_price</code>),</li>
+<li><b>dostupnosť</b> (<code>DELIVERY_DATE</code> / <code>g:availability</code>),</li>
+<li><b>obrázok</b> (<code>IMGURL</code> / <code>g:image_link</code>),</li>
+<li><b>kategória alebo značka</b> (<code>CATEGORYTEXT</code>, <code>MANUFACTURER</code>, <code>g:brand</code>) –
+podľa nej spoznáme Pokémon produkty, ak to nie je v názve.</li>
+</ul>
+<h2>Možnosti spolupráce</h2>
+<ul>
+<li><b>Základ – zadarmo:</b> zaradenie vašich produktov cez XML feed.</li>
+<li><b>Partnerský (affiliate) program:</b> ak máte program cez eHUB, Dognet, CJ alebo vlastný,
+odkazy na vaše produkty pôjdu cez neho a platíte len z uskutočnených objednávok.</li>
+<li><b>Platba za preklik:</b> dohodnutá cena za unikátny preklik do vášho e-shopu, mesačne
+s prehľadom počtu preklikov. Ako partner máte pri ponukách odznak „Partner“.</li>
+</ul>
+<p>Poradie ponúk je vždy podľa ceny – za lepšie umiestnenie sa platiť nedá, aby porovnanie
+zostalo dôveryhodné pre zákazníkov aj pre vás.</p>
+<h2>Bez feedu</h2>
+<p>Bez feedu čítame verejne dostupné stránky kategórií, šetrne: najviac raz za hodinu s pauzou
 medzi stránkami. Náš robot sa predstavuje ako <code>CardRadarBot</code>.</p>
 <h2>Opravy a odstránenie</h2>
 <p>Ak je niektorý údaj nesprávny, opravíme ho. Ak si neželáte, aby bol váš obchod na CardRadare,
 stačí napísať a odstránime ho, zvyčajne do 24 hodín.</p>
-<h2>Spolupráca</h2>
-<p>Radi sa dohodneme na XML feede, partnerskom programe alebo zvýraznení nových produktov
-a predobjednávok. Napíšte nám: {KONTAKT}</p>
+<h2>Kontakt</h2>
+<p>Pošlite nám adresu feedu alebo sa ozvite s otázkami: {KONTAKT}</p>
 """
 
 
@@ -507,12 +529,68 @@ def admin_test():
 # Otestuješ ľubovoľný e-shop a jedným ťuknutím ho zapneš / vypneš.
 # =========================================================
 
+def _num(v):
+    v = L.to_float(str(v or "").replace("€", "").strip()) if str(v or "").strip() else None
+    return v if v is not None and v >= 0 else None
+
+
+def _shop_form_values(form):
+    """Hodnoty z formulára pre feed / partnera (prázdne = nenastavené)."""
+    vals = {
+        "feed": (form.get("feed") or "").strip(),
+        "affiliate": (form.get("affiliate") or "").strip(),
+        "cpc_eur": _num(form.get("cpc_eur")),
+        "partner": True if form.get("partner") else None,
+        "pokemon_only": True if form.get("pokemon_only") else None,
+        "currency": (form.get("currency") or "").strip().upper() or None,
+    }
+    if vals["affiliate"] and "{url}" not in vals["affiliate"]:
+        vals["affiliate"] = ""   # bez {url} by všetky kliky išli na úvodnú stránku obchodu
+    return vals
+
+
+def _feed_fields(e, cur=None, new=False):
+    cur = cur or {}
+    sel = lambda c: " selected" if (cur.get("currency") or "") == c else ""
+    return (("<label>Názov obchodu<br><input name=name required style='width:100%'></label>"
+             "<label>Krajina <select name=country><option>SK</option><option>CZ</option></select></label>"
+             if new else "")
+            + f"<label>Adresa XML feedu<br><input name=feed value='{e(cur.get('feed', ''))}' "
+              f"placeholder='https://www.obchod.sk/heureka.xml' style='width:100%'></label>"
+            + f"<label>Partnerský odkaz (nepovinné, musí obsahovať {{url}})<br><input name=affiliate "
+              f"value='{e(cur.get('affiliate', ''))}' placeholder='https://ehub.cz/system/scripts/click.php?a_aid=…&amp;desturl={{url}}' "
+              f"style='width:100%'></label>"
+            + f"<label>Cena za unikátny klik € (nepovinné) <input name=cpc_eur value='{e(str(cur.get('cpc_eur') or ''))}' "
+              f"style='width:90px' inputmode=decimal></label> "
+            + f"<label>Mena feedu <select name=currency><option value=''>podľa krajiny</option>"
+              f"<option{sel('EUR')}>EUR</option><option{sel('CZK')}>CZK</option></select></label><br>"
+            + f"<label><input type=checkbox name=partner{' checked' if cur.get('partner') else ''}> Partner "
+              f"(odznak na webe)</label> "
+            + f"<label><input type=checkbox name=pokemon_only{' checked' if cur.get('pokemon_only') else ''}> "
+              f"Feed obsahuje len Pokémon</label>")
+
+
+def _feed_test_html(e, r):
+    if not r.get("ok"):
+        inf = r.get("info") or {}
+        extra = f" Preskočené: {e(json.dumps(inf.get('skipped', {}), ensure_ascii=False))}." if inf else ""
+        return f"<p class=err>Feed nevrátil žiadne Pokémon produkty. {e(r.get('error', ''))}{extra}</p>"
+    inf = r["info"]
+    rows = "".join(f"<li>{e(x['title'])} – <b>{x['price_eur']:.2f} €</b>"
+                   f"{' (' + str(x['price_czk']) + ' Kč)' if x.get('price_czk') else ''} "
+                   f"<small>{e(x['stock'] or 'sklad ?')} · {e(x['link'])}</small></li>" for x in r["items"])
+    return (f"<p class=ok>Feed funguje ({r['ms']} ms). Ukážka prvých {len(r['items'])} Pokémon produktov:</p>"
+            f"<ul>{rows}</ul><p><small>Prečítaných položiek: {inf['scanned']}, domény: "
+            f"{e(', '.join(inf['hosts']))}. Preskočené: {e(json.dumps(inf['skipped'], ensure_ascii=False))}</small></p>")
+
+
 def admin_obchody():
     e = html.escape
     if not is_admin():
         return page("Nepovolené", "<h1>Nepovolené</h1><p>Pridaj ?key=ADMIN_KEY</p>", status=403)
     base = "/admin/obchody"
     saved = O.extra_shops()
+    msg = ""
 
     if request.method == "POST":
         act = request.form.get("act")
@@ -527,23 +605,92 @@ def admin_obchody():
                 c = {k: c[k] for k in ("name", "country", "base_url", "search_url", "link_selector", "shopify")
                      if k in c}
                 O.save_extra_shops([s for s in saved if s["name"] != c["name"]] + [c])
-        elif act == "remove":
+            return redirect(base, code=303)
+        if act == "remove":
             O.save_extra_shops([s for s in saved if s["name"] != request.form.get("name")])
-        return redirect(base, code=303)
+            return redirect(base, code=303)
+        if act in ("feed_test", "feed_add"):
+            name = (request.form.get("name") or "").strip()[:40]
+            vals = _shop_form_values(request.form)
+            shop = {"name": name or "test", "country": request.form.get("country", "SK"), "base_url": "",
+                    **{k: v for k, v in vals.items() if v not in (None, "")}}
+            if not vals["feed"].startswith(("http://", "https://")):
+                msg = "<p class=err>Zadaj adresu feedu (https://…).</p>"
+            else:
+                r = O.test_feed(shop)
+                msg = _feed_test_html(e, r)
+                hosts = (r.get("info") or {}).get("hosts") or []
+                if act == "feed_add" and r.get("ok") and name:
+                    if O.shop_by_link(r["items"][0]["link"]):
+                        msg += ("<p class=err>Tento obchod už na CardRadare je – feed mu nastav v zozname "
+                                "obchodov hore (tlačidlo Nastavenia).</p>")
+                    else:
+                        shop["base_url"] = "https://" + O.host_of(r["items"][0]["link"]) + "/"
+                        O.save_extra_shops([x for x in saved if x["name"] != name] + [shop])
+                        msg += (f"<p class=ok><b>{e(name)}</b> je zapnutý. Celý feed sa načíta do pár minút "
+                                f"(stav v <a href='/admin/katalog'>/admin/katalog</a>).</p>")
+                elif act == "feed_add" and r.get("ok") and not name:
+                    msg += "<p class=err>Doplň názov obchodu.</p>"
+                if hosts and len(hosts) > 1:
+                    msg += f"<p class=w>Feed obsahuje viac domén ({e(', '.join(hosts))}) – berie sa len prvá.</p>"
+        if act == "settings":
+            name = request.form.get("name", "")
+            vals = _shop_form_values(request.form)
+            ex = next((x for x in saved if x["name"] == name), None)
+            if ex is not None:   # obchod pridaný cez admin: upraví sa priamo
+                for k, v in vals.items():
+                    if v in (None, ""):
+                        ex.pop(k, None)
+                    else:
+                        ex[k] = v
+                O.save_extra_shops(saved)
+            else:
+                O.save_shop_override(name, vals)
+            if vals["feed"]:
+                shop = next((x for x in O.all_shops() if x["name"] == name), None)
+                if shop:
+                    O.crawl_in_background(shop)
+            return redirect(base + "?saved=" + urllib.parse.quote(name), code=303)
 
-    h = "<h1>Obchody</h1><h2>Zapnuté obchody</h2><ul>"
+    h = "<h1>Obchody a partneri</h1>"
+    if request.args.get("saved"):
+        h += f"<p class=ok>Uložené: {e(request.args['saved'])}</p>"
+    h += ("<p><a href='/admin/partneri'>Kliky a fakturácia →</a> · <a href='/admin/katalog'>Stav katalógov →</a></p>"
+          "<h2>Zapnuté obchody</h2>")
     for s in O.active_shops():
-        kind = "katalóg" if O.is_catalog(s) else "vyhľadávanie"
-        h += f"<li><b>{e(s['name'])}</b> <small>{e(s['country'])} · {kind}</small>"
+        kind = "XML feed" if s.get("feed") else "katalóg" if O.is_catalog(s) else "vyhľadávanie"
+        tags = []
+        if s.get("partner"):
+            tags.append("<span class=ok>partner</span>")
+        if s.get("affiliate"):
+            tags.append("affiliate")
+        if s.get("cpc_eur"):
+            tags.append(f"{s['cpc_eur']:.2f} €/klik")
+        fi = O.feed_info(s["name"]) if s.get("feed") else None
+        if fi:
+            tags.append(f"feed: {fi['items']} produktov" + (" <span class=err>chyba</span>" if fi.get("errors") else ""))
+        h += (f"<details><summary><b>{e(s['name'])}</b> <small>{e(s['country'])} · {kind}"
+              f"{' · ' + ' · '.join(tags) if tags else ''}</small></summary>"
+              f"<form method=post><input type=hidden name=act value=settings>"
+              f"<input type=hidden name=name value='{e(s['name'])}'>{_feed_fields(e, s)}"
+              f"<div class=row><button>Uložiť nastavenia</button></div></form>")
         if s.get("_extra"):
             h += (f"<form method=post class=row><input type=hidden name=act value=remove>"
-                  f"<input type=hidden name=name value='{e(s['name'])}'><button>Vypnúť</button></form>")
-        h += "</li>"
-    h += "</ul><p><small>Obchody bez tlačidla Vypnúť sú v súbore obchody.py (zoznam SHOPS).</small></p>"
+                  f"<input type=hidden name=name value='{e(s['name'])}'><button>Vypnúť obchod</button></form>")
+        h += "</details>"
+    h += ("<p><small>Feed nastavený obchodu zo zoznamu SHOPS nahradí čítanie jeho kategórií "
+          "(presnejšie a bez záťaže pre jeho web).</small></p>")
+
+    h += (f"<h2 id=feed>Pridať obchod cez XML feed</h2>{msg}"
+          f"<form method=post action='{base}#feed'>{_feed_fields(e, request.form if request.method == 'POST' else None, new=True)}"
+          "<div class=row><button name=act value=feed_test>Otestovať feed</button>"
+          "<button name=act value=feed_add>Otestovať a zapnúť</button></div></form>"
+          "<p><small>Podporované: Heureka (SK/CZ), Google Merchant (RSS/Atom), Zboží a väčšina e-shopových "
+          "XML exportov. Berú sa len Pokémon produkty (podľa názvu, kategórie alebo značky).</small></p>")
 
     test = request.args.get("test", "").strip()
     q = request.args.get("q", "").strip() or "pikachu"
-    h += (f"<h2>Otestovať obchod</h2><form class=row>"
+    h += (f"<h2>Otestovať obchod bez feedu</h2><form class=row>"
           f"<input name=test placeholder='https://www.obchod.cz' value='{e(test)}' style='flex:1'>"
           f"<input name=q value='{e(q)}' style='width:130px'><button>Test</button></form>")
     if test:
@@ -567,7 +714,66 @@ def admin_obchody():
     h += "<h2>Návrhy na otestovanie</h2><ul>" + "".join(
         f"<li><a href='{e(base)}?test={urllib.parse.quote(u)}'>{e(n)}</a> <small>{e(u)}</small></li>"
         for n, u in O.KANDIDATI) + "</ul>"
-    return page("Obchody", h, back=False)
+    return page("Obchody", h, back=False, css=ADMIN_CSS)
+
+
+ADMIN_CSS = "label{display:inline-block;margin:6px 8px 6px 0;font-size:14px}select{font:inherit;padding:8px;border-radius:9px}"
+
+
+# =========================================================
+# ADMIN: PARTNERI A FAKTURÁCIA (/admin/partneri)
+# Unikátne kliky = 1 návštevník + 1 produkt za deň (roboty sa nepočítajú).
+# Faktúra za mesiac = unikátne kliky × cena za klik dohodnutá s obchodom.
+# =========================================================
+
+def _month_range(ym):
+    y, m = (int(x) for x in ym.split("-"))
+    start = f"{y:04d}-{m:02d}-01"
+    y2, m2 = (y + 1, 1) if m == 12 else (y, m + 1)
+    return start, f"{y2:04d}-{m2:02d}-01"
+
+
+def admin_partneri():
+    e = html.escape
+    if not is_admin():
+        return page("Nepovolené", "<h1>Nepovolené</h1><p>Pridaj ?key=ADMIN_KEY</p>", status=403)
+    now = datetime.now(timezone.utc)
+    this = now.strftime("%Y-%m")
+    prev = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    ym = request.args.get("m", this)
+    if not re.fullmatch(r"\d{4}-\d{2}", ym):
+        ym = this
+    since, until = _month_range(ym)
+    stats = {x["shop"]: x for x in O.click_stats(since=since, until=until)}
+    shops = {s["name"]: s for s in O.all_shops()}
+    rows, total = "", 0.0
+    for name in sorted(set(stats) | {n for n, s in shops.items() if s.get("partner") or s.get("cpc_eur")},
+                       key=lambda n: -(stats.get(n, {}).get("unique") or 0)):
+        st, sh = stats.get(name, {}), shops.get(name, {})
+        cpc = sh.get("cpc_eur")
+        amount = (st.get("unique") or 0) * cpc if cpc else None
+        total += amount or 0
+        rows += (f"<tr><td><b>{e(name)}</b>{' <small class=ok>partner</small>' if sh.get('partner') else ''}</td>"
+                 f"<td>{st.get('unique', 0)}</td><td>{st.get('clicks', 0)}</td>"
+                 f"<td>{f'{cpc:.2f} €' if cpc else '–'}</td><td>{_eur(amount) if amount is not None else '–'}</td>"
+                 f"<td>{'áno' if sh.get('affiliate') else '–'}</td></tr>")
+    if request.args.get("format") == "csv":
+        lines = ["obchod;unikatne_kliky;vsetky_kliky;cena_za_klik;suma"]
+        for name, st in stats.items():
+            cpc = shops.get(name, {}).get("cpc_eur") or 0
+            dec = lambda v: f"{v:.2f}".replace(".", ",")
+            lines.append(f"{name};{st['unique']};{st['clicks']};{dec(cpc)};{dec(st['unique'] * cpc)}")
+        return Response("\ufeff" + "\n".join(lines), mimetype="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=cardradar-kliky-{ym}.csv"})
+    links = " · ".join(f"<a href='?m={m}'>{lab}</a>" for m, lab in ((this, "tento mesiac"), (prev, "minulý mesiac")))
+    h = (f"<h1>Partneri a kliky</h1><p>Obdobie: <b>{e(ym)}</b> · {links} · <a href='?m={e(ym)}&format=csv'>CSV</a> · "
+         f"<a href='/admin/obchody'>Nastavenia obchodov</a></p>"
+         "<div class='wrap'><table><tr><th>Obchod</th><th>Unikátne kliky</th><th>Všetky</th><th>Cena/klik</th>"
+         f"<th>Na faktúru</th><th>Affiliate</th></tr>{rows or '<tr><td colspan=6>Zatiaľ žiadne kliky.</td></tr>'}"
+         f"<tr><th>Spolu</th><th></th><th></th><th></th><th>{_eur(total)}</th><th></th></tr></table></div>"
+         "<p><small>Unikátny klik = jeden návštevník a jeden produkt za deň; roboty a náhľady odkazov sa "
+         "nepočítajú. Províziu z affiliate sietí (eHUB, Dognet…) vidíš v ich rozhraní – tu sú len kliky.</small></p>")
+    return page("Partneri", h, back=False)
 
 
 # =========================================================
@@ -577,7 +783,7 @@ def admin_obchody():
 def admin_katalog():
     if not is_admin():
         return jsonify({"error": "Nepovolené. Pridaj ?key=ADMIN_KEY"}), 403
-    shops = [s for s in O.SHOPS if O.is_catalog(s)]
+    shops = [s for s in O.all_shops() if O.is_catalog(s)]
     name = L.clean_text(request.args.get("name", "")).lower()
     if name:
         shop = next((s for s in shops if L.fold(s["name"]) == L.fold(name)), None)   # „posbirej to“ = „Posbírej to“
@@ -585,7 +791,7 @@ def admin_katalog():
             return jsonify({"error": "Neznámy obchod.", "shops": [s["name"] for s in shops]}), 400
         if request.args.get("refresh"):
             return jsonify(O.crawl_shop(shop))
-        if request.args.get("debug") and shop.get("catalog"):
+        if request.args.get("debug") and shop.get("catalog") and not shop.get("feed"):
             return jsonify(O.debug_listing(shop, request.args.get("url")))
         items, updated = O.load_catalog(shop["name"])
         return jsonify({"shop": shop["name"], "items": len(items), "updated": updated, "sample": items[:20]})
@@ -773,14 +979,19 @@ def build_report(state):
         except Exception:
             age = 0
         (problems if age > 4 else ok).append(f"Kurz CZK {L.KURZ['CZK']} z {L.KURZ_INFO.get('date')}")
-    for s in O.SHOPS:
-        if s.get("enabled", True) and O.is_catalog(s):
+    for s in O.active_shops():
+        if O.is_catalog(s):
             items, updated = O.load_catalog(s["name"])
             if not items or O._is_stale(updated, factor=4 * s.get("refresh_factor", 1)):
                 problems.append(f"Katalóg {s['name']}: {len(items)} položiek, naposledy {updated or 'nikdy'}")
     clicks = O.click_stats(1)
     if clicks:
-        ok.append("Kliky včera/dnes: " + ", ".join(f"{c['shop']} {c['clicks']}" for c in clicks))
+        ok.append("Kliky včera/dnes (unikátne): " + ", ".join(f"{c['shop']} {c['unique']}" for c in clicks))
+    for s in O.active_shops():
+        fi = O.feed_info(s["name"]) if s.get("feed") else None
+        if fi and (fi.get("errors") or not fi.get("items")):
+            problems.append(f"Feed {s['name']}: {fi.get('items', 0)} produktov, "
+                            f"{'; '.join(x.get('error', '') for x in fi.get('errors', []))}")
     return problems, ok
 
 
