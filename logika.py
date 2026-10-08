@@ -597,6 +597,11 @@ ACCESSORY_PATTERNS = [
     r"(?:only\s+)?box\s+only", r"len\s+(?:krabic\w*|box)", r"jen\s+(?:krabic\w*|box)",
     r"code\s*cards?", r"online\s+(?:code|k[óo]d\w*)", r"ptcgl\s+code\w*",
     r"proxy\w*", r"replik\w*", r"fake", r"custom\s+cards?", r"fan\s*-?made",
+    # hry, súťaže, losovania, live otváranie – cena nie je cena produktu (napr. „ETB – hra“ za 60 €)
+    r"hra\s+o", r"hra\s+na", r"\(hra\)", r"[-–—]\s*hra", r"(?:pok[eé]mon\s+)?minihr\w*", r"s[úu]ťa[žz]\w*", r"sout[ěe][žz]\w*",
+    r"losovan\w*", r"losov[áa]n\w*", r"tombol\w*", r"raffle\w*", r"giveaway\w*", r"lottery", r"loter\w*",
+    r"(?:box|pack|live)\s+break\w*", r"live\s+(?:opening|otv\w*|stream\w*)", r"otv[áa]ran\w*",
+    r"vstupn[ée]\w*", r"turnaj\w*", r"tournament\w*", r"ticket\w*", r"l[íi]stok\w*",
 ]
 
 MERCH_HARD_PATTERNS = [
