@@ -266,6 +266,30 @@ def classify_query(parsed):
 # ZHODA NÁZVU S HĽADANÍM
 # =========================================================
 
+# Kódy setov, ako ich obchody píšu pri kartách: „Blastoise ex (MEW 200) - NM“, „Scizor ex (30C UF 108)“.
+# Platia LEN v zátvorke s číslom karty – „pre“ / „mew“ v bežnom texte sa tak nikdy nepomýli.
+# Overené na gengar.cz (október 2026). Nový set = doplň jeho kód sem.
+SET_CODES = {
+    "svi": "scarlet violet base", "pal": "paldea evolved", "obf": "obsidian flames", "mew": "pokemon 151",
+    "par": "paradox rift", "paf": "paldean fates", "tef": "temporal forces", "twm": "twilight masquerade",
+    "sfa": "shrouded fable", "scr": "stellar crown", "ssp": "surging sparks", "pre": "prismatic evolutions",
+    "jtg": "journey together", "dri": "destined rivals", "blk": "black bolt", "wht": "white flare",
+    "meg": "mega evolution", "pfl": "phantasmal flames", "asc": "ascended heroes", "por": "perfect order",
+    "cri": "chaos rising", "pbl": "pitch black", "30c": "30th celebration",
+}
+# „(MEW 200)“, „(SIT TG01)“, „(30C UF 108)“, „(SWSH 016)“ – karta s kódom setu (veľké písmená)
+CODE_CARD_RE = re.compile(r"\([A-Z0-9]{2,5}(?:\s+[A-Z]{1,3})?\s+[A-Z]{0,3}\d{1,3}[a-z]?\)")
+_CODES_BY_SET = {}
+for _code, _canonical in SET_CODES.items():
+    _CODES_BY_SET.setdefault(_canonical, []).append(
+        re.compile(r"\(\s*" + re.escape(_code) + r"(?:\s+[a-z]{1,3})?\s+[a-z]{0,3}\d{1,3}"))
+
+
+def strip_codes(title):
+    """Názov bez „(MEW 200)“ – aby kód setu MEW nebol Pokémon Mew."""
+    return CODE_CARD_RE.sub(" ", title or "")
+
+
 # oficiálny názov setu (bez diakritiky) -> regexy jeho skratiek; pripravené raz pri štarte
 _ALIASES_BY_SET = {}
 for _alias, _canonical in SET_ALIASES.items():
@@ -287,6 +311,8 @@ def set_matches_text(text, set_name):
         return True
     if any(rx.search(s) for rx in _ALIASES_BY_SET.get(n, ())):
         return True
+    if any(rx.search(s) for rx in _CODES_BY_SET.get(n, ())):
+        return True
     stem_n = {_stem(w) for w in nw}
     return bool(stem_n) and stem_n <= {_stem(w) for w in sw}
 
@@ -304,6 +330,7 @@ def quick_anchors(parsed, loose_set=False):
         names = [set_name] + [fold(p) for p in SET_PARTS.get(set_name, ())]
         alts = {n.split()[0] for n in names if n.split()}
         alts |= {fold(a) for a, c in SET_ALIASES.items() if fold(c) in names}
+        alts |= {"(" + k for k, c in SET_CODES.items() if c in names}
         groups.append(tuple(alts))
     number = parsed.get("card_number")
     if number and "/" in number:
@@ -350,13 +377,13 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
     pokemon, set_name = parsed.get("pokemon"), parsed.get("set_name")
     number, suffix = parsed.get("card_number"), parsed.get("suffix")
 
-    if pokemon and not has_word(title, pokemon):
+    if pokemon and not has_word(strip_codes(title), pokemon):
         return False, "pokemon_not_in_title"
     if number and not card_number_in(searchable, number):
         return False, "card_number_not_found"
     if set_name and not (loose_set and number) and not set_matches_text(searchable, set_name):
         return False, "set_not_found"
-    if suffix and not has_word(title, suffix):
+    if suffix and not has_word(strip_codes(title), suffix):
         return False, "suffix_not_in_title"
     # „rare candy“: bez Pokémona, setu a čísla musia byť hľadané slová v názve
     if not (pokemon or set_name or number):
@@ -383,7 +410,9 @@ _PTYPE_NOT_RE = {
     "booster box": re.compile(r"bundle|blister|\btins?\b|elite\s+trainer|\betb\b|sleeved|"
                               r"build\s*(?:&|and)?\s*battle|collection", re.I),
     "booster bundle": re.compile(r"elite\s+trainer|\betb\b|booster\s*box", re.I),
+    "booster": re.compile(r"\d+\s*(?:karet|kariet|kart|cards)\b", re.I),   # „Balíček pro sběratele - 100 karet“
 }
+_MYSTERY_RE = re.compile(r"mystery|blind\s*box|tajn[ýyá]\w*|p[řr]ekvapen\w*", re.I)
 
 
 def sealed_matches_query(title, extra_text, parsed):
@@ -406,12 +435,15 @@ def sealed_matches_query(title, extra_text, parsed):
         bad = _PTYPE_NOT_RE.get(ptype)
         if bad is not None and bad.search(title):
             return False, "other_product_type"
+    # mystery box / balíček má neznámy obsah – medzi ETB / boxy / boostery nepatrí (len pri hľadaní „mystery“)
+    if ptype and _MYSTERY_RE.search(title) and not _MYSTERY_RE.search(original):
+        return False, "mystery"
     if ptype == "elite trainer box" and re.search(r"\b(case|10x|12x|6x)\b", title, re.I):
         return False, "bulk_product"
     # set, ktorý nepoznáme: ostatné hľadané slová musia byť v názve
     if not set_name and _wanted_words(parsed) - fold_words(title + " " + extra_text):
         return False, "words_not_found"
-    if parsed.get("pokemon") and not has_word(title, parsed["pokemon"]):
+    if parsed.get("pokemon") and not has_word(strip_codes(title), parsed["pokemon"]):
         return False, "pokemon_not_in_title"
     if not _WANT_BULK_RE.search(original):
         if _BULK_RE.search(title):
@@ -490,19 +522,19 @@ def parse_price_raw(text, title=""):
     if eur_res:
         for rx in eur_res:
             m = rx.search(text)
-            if m and to_float(m.group(1)):
-                return to_float(m.group(1)), "EUR"
-    # nerozhodné: prvá cena v texte
+            if m:
+                v = to_float(m.group(1))
+                return (v, "EUR") if v else (None, "")
+    # nerozhodné: prvá cena v texte. „0 Kč“ (Gengar: nevydaný produkt) = bez ceny, nehľadá sa ďalšie číslo
     for group in ((_EUR_RES, "EUR"), (_CZK_RES, "CZK")):
         best = None
         for rx in group[0]:
-            for m in rx.finditer(text):
-                if to_float(m.group(1)):
-                    if best is None or m.start() < best.start():
-                        best = m
-                    break
+            m = rx.search(text)
+            if m and (best is None or m.start() < best.start()):
+                best = m
         if best is not None:
-            return to_float(best.group(1)), group[1]
+            v = to_float(best.group(1))
+            return (v, group[1]) if v else (None, "")
     return None, ""
 
 
@@ -606,6 +638,9 @@ ACCESSORY_PATTERNS = [
     r"(?:only\s+)?box\s+only", r"len\s+(?:krabic\w*|box)", r"jen\s+(?:krabic\w*|box)",
     r"code\s*cards?", r"online\s+(?:code|k[óo]d\w*)", r"ptcgl\s+code\w*",
     r"proxy\w*", r"replik\w*", r"fake", r"custom\s+cards?", r"fan\s*-?made",
+    # súčiastky z balení predávané samostatne: „ETB - Plastová Mince“ (29 Kč), „sada energií“
+    r"(?:plastov|kovov|metal|acryl|akryl)\w*\s+(?:minc\w*|coin\w*)", r"minc[ea]", r"mincí", r"coin\b(?!\s*(?:set|collection|box|tin|gift))",
+    r"sada\s+energi\w*", r"energy\s+(?:set|pack)\b", r"bal[íi][čc]ek\s+energi\w*",
     # hry, súťaže, losovania, live otváranie – cena nie je cena produktu (napr. „ETB – hra“ za 60 €)
     r"zahra[ťt]\w*", r"zahraj\w*", r"pr[íi][ďd]\s+si", r"hra[ťt]", r"hra\s+o", r"hra\s+na", r"\(hra\)", r"[-–—]\s*hra", r"(?:pok[eé]mon\s+)?minihr\w*", r"s[úu]ťa[žz]\w*", r"sout[ěe][žz]\w*",
     r"losovan\w*", r"losov[áa]n\w*", r"tombol\w*", r"raffle\w*", r"giveaway\w*", r"lottery", r"loter\w*",
@@ -700,8 +735,9 @@ def accessory_matches_query(title, parsed):
 # Znaky TCG produktu (karta / sealed)
 TCG_MARKER_RE = re.compile(
     r"booster|elite\s+trainer|\betb\b|collection|kolekci|blister|\btins?\b|\btcg\b"
-    r"|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|display"
-    r"|\b\d{1,3}\s*/\s*\d{1,3}\b|\bcards\b|miscellaneous", re.I)
+    r"|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|display|battle\s+academy|league\s+battle\s+deck"
+    r"|\b\d{1,3}\s*/\s*\d{1,3}\b|\bcards\b|miscellaneous"
+    r"|(?-i:\([A-Z0-9]{2,5}(?:\s+[A-Z]{1,3})?\s+[A-Z]{0,3}\d{1,3}[a-z]?\))", re.I)   # „(MEW 200)“
 
 # Znaky jednotlivej karty
 CARD_MARKER_RE = re.compile(
@@ -752,6 +788,9 @@ def _merch_clean(text):
 @lru_cache(maxsize=20000)
 def merch_reason(title, extra_text=""):
     """'' = karta / TCG produkt; inak dôvod vyradenia."""
+    if CODE_CARD_RE.search(title or ""):   # „Backtrack Badge (PBL 074) - NM“ je karta, nie odznak
+        m = re.search(r"proxy\w*|replik\w*|fake|custom|fan\s*-?made", title, re.I)
+        return ("accessory:" + m.group(0).lower()) if m else ""
     text = clean_text(_merch_clean(title) + " " + _merch_clean(extra_text))
     m = ACCESSORY_RE.search(text)
     if m:
@@ -841,6 +880,7 @@ _VARIANT_RES = [
     ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
     ("rev", re.compile(r"reverse", re.I)),
     ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
+    ("used", re.compile(r"(?:[-–—|,(\[]\s*)(?:exc|excellent|lp|pl|mp|hp|played|poor|dmg|damaged)\s*[)\]]?\s*$", re.I)),
     # poškodené balenie sa nespája s novým (iná cena, iný produkt)
     ("dmg", re.compile(r"po[šs]kod\w*|po[šs]koz\w*|damaged|dent\w*|bez\s+f[óo]li\w*", re.I)),
 ]
@@ -879,7 +919,7 @@ def group_key(title, lang=""):
     t = clean_text(title)
     if not t or is_combo(t):
         return None
-    p = normalize_query(t)
+    p = normalize_query(strip_codes(t))
     lang = lang or "EN"
     variants = ",".join(v for v, rx in _VARIANT_RES if rx.search(t))
     ptype = next((name for name, rx in GROUP_TYPES if rx.search(t)), "")
@@ -935,14 +975,44 @@ def estimate_packs(title, lang=""):
     return None
 
 
+# =========================================================
+# STAV KARTY (použité karty: Gengar „- NM“, „- EXC“, „- LP“, „- PL“...)
+# Stav sa hľadá len na konci názvu alebo v zátvorke, aby „EX“ (Charizard EX) nebolo stavom.
+# =========================================================
+
+_CONDITIONS = [   # (vzor, kód, text na webe, skupina: "nm" = ako nová, "used" = použitá)
+    (r"nm\s*/\s*m|near\s*mint|nm|mint|m", "NM", "NM – ako nová", "nm"),
+    (r"exc|excellent|ex\+|výborn[ýá]|vyborn[ya]", "EXC", "EXC – mierne použitá", "used"),
+    (r"lp|light(?:ly)?\s*played|slightly\s*played|sp", "LP", "LP – mierne použitá", "used"),
+    (r"pl|played|mp|moderately\s*played|gd|good|použit[áa]|pouzit[aá]|hran[áa]", "PL", "PL – použitá", "used"),
+    (r"hp|heavily\s*played|poor|dmg|damaged|poškoden[áa]|po[šs]kozen[áa]", "HP", "HP – silno použitá", "used"),
+]
+_COND_RES = [(re.compile(r"(?:[-–—|,]\s*|\(\s*|\[\s*)(?:" + rx + r")\s*[)\]]?\s*$", re.I), code, label, grp)
+             for rx, code, label, grp in _CONDITIONS]
+
+
+@lru_cache(maxsize=20000)
+def card_condition(title):
+    """(kód, text, skupina) stavu karty z konca názvu, alebo ("", "", "") – stav neuvedený (nová)."""
+    t = clean_text(title)
+    if _GRADED_RE.search(t):   # PSA / CGC – stav určuje známka, nie NM/LP
+        return "", "", ""
+    for rx, code, label, grp in _COND_RES:
+        if rx.search(t):
+            return code, label, grp
+    return "", "", ""
+
+
 def make_result(shop, title, price, link, image="", stock="", price_czk=None):
     """Jedna ponuka vo výsledkoch hľadania (rovnaký tvar pre všetky typy obchodov).
     price_czk = pôvodná cena v Kč (CZ obchody) – € sa z nej vždy počíta aktuálnym kurzom."""
     lang = detect_language(title)
     packs = estimate_packs(title, lang)
+    cond_code, cond_label, cond_group = card_condition(title)
     r = {
         "title": title, "shop": shop["name"], "country": shop["country"],
-        "condition": "Nové", "language": lang, "price_eur": round(price, 2),
+        "condition": cond_label or "Nové", "cond": cond_code, "cond_group": cond_group or "new",
+        "language": lang, "price_eur": round(price, 2),
         "price_czk": round(price_czk) if price_czk else None,
         "link": link, "image": image or "", "stock": stock or "",
         "packs": packs, "price_per_pack": None,
