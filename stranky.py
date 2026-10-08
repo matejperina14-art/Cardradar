@@ -416,7 +416,7 @@ def _check_query(q):
             why.append("bez obrázka")
         if not r["stock"]:
             why.append("sklad neuvedený")
-        if L.merch_reason(t):
+        if L.merch_reason(t) and r.get("kind") != "accessory":   # sleeves/albumy majú vlastnú záložku
             why.append("príslušenstvo vo výsledkoch")
         if why:
             issues.append({"shop": r["shop"], "title": t, "price": p, "why": why})
