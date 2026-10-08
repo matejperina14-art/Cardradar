@@ -170,11 +170,24 @@ SHOPS = [
     {"name": "Herný svet", "country": "SK", "enabled": False,
      "base_url": "https://www.hernysvet.sk/", "feed": "",
      "catalog": ["https://www.hernysvet.sk/tema/pokemon"], "max_pages": 15},
-    # vyhľadávacia URL zatiaľ neoverená
-    {"name": "Gengar.cz", "country": "CZ", "enabled": False,
+    # Upgates: vyhľadávanie cez adresu nefunguje (HTTP chyba), preto katalóg z kategórií (október 2026)
+    {"name": "Gengar.cz", "country": "CZ", "enabled": True,
      "base_url": "https://www.gengar.cz/",
-     "search_url": "https://www.gengar.cz/search?q={q}",
-     "link_selector": 'a[href*="/p/"]'},
+     "catalog": [
+         "https://www.gengar.cz/elite-trainer-box",
+         "https://www.gengar.cz/booster-box",
+         "https://www.gengar.cz/pokemon-booster",
+         "https://www.gengar.cz/collection",
+         "https://www.gengar.cz/pokemon-tin-plechovky",
+         "https://www.gengar.cz/30th-celebration-1",
+         "https://www.gengar.cz/japonske-boostery",
+         "https://www.gengar.cz/japonske-korejske-boostery-boxy",
+         "https://www.gengar.cz/kusove-karty",
+         "https://www.gengar.cz/pokemon-ohodnocene-karty",
+         "https://www.gengar.cz/vintage-produkty",
+         "https://www.gengar.cz/pokemon",
+     ],
+     "max_pages": 20},
 ]
 
 # Návrhy na otestovanie v /admin/obchody (nič sa nezapne samo)
@@ -185,7 +198,6 @@ KANDIDATI = [
     ("Blackfire", "https://www.blackfire.cz/"),
     ("Xzone CZ", "https://www.xzone.cz/"),
     ("Xzone SK", "https://www.xzone.sk/"),
-    ("Gengar.cz", "https://www.gengar.cz/"),
 ]
 
 PLATFORM_PRESETS = {
