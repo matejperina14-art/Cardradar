@@ -190,6 +190,7 @@ def api_search():
         "summary": {"count": len(results), "total": total, "lowest_eur": min(prices) if prices else None},
         **kurz_info(), "shops": O.shops_status(diagnostics),
         "query_lang": L.query_language(original),
+        "accessory_query": L.is_accessory_query(original),   # „sleeves“: príslušenstvo aj vo „Všetko“
     }
     if request.args.get("debug") and S.is_admin():   # /?q=...&debug=1 len pre admina
         payload["debug"] = diagnostics
