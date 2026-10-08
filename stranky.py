@@ -776,7 +776,7 @@ def build_report(state):
     for s in O.SHOPS:
         if s.get("enabled", True) and O.is_catalog(s):
             items, updated = O.load_catalog(s["name"])
-            if not items or O._is_stale(updated, factor=4):
+            if not items or O._is_stale(updated, factor=4 * s.get("refresh_factor", 1)):
                 problems.append(f"Katalóg {s['name']}: {len(items)} položiek, naposledy {updated or 'nikdy'}")
     clicks = O.click_stats(1)
     if clicks:
