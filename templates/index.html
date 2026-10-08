@@ -476,7 +476,9 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
   <div class="container">
     <div>
       <h4>CardRadar</h4>
-      <p>Nezávislý porovnávač cien Pokémon TCG produktov. Nič nepredávame, nákup prebieha vždy priamo v obchode.</p>
+      <p>Porovnávač cien Pokémon TCG produktov. Nič nepredávame, nákup prebieha vždy priamo v obchode.
+        Ponuky sú zoradené podľa ceny, poradie sa nedá kúpiť. Za niektoré prekliky alebo nákupy dostávame od obchodov odmenu –
+        <a href="/podmienky#partneri">ako zarábame</a>.</p>
       <p id="footShops">Ceny sú orientačné. Pred nákupom ich over na stránke predajcu.</p>
     </div>
     <div>
@@ -490,16 +492,17 @@ footer.site ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:co
       <h4>Informácie</h4>
       <ul>
         <li><a href="/sety">Ceny podľa setov</a></li>
+        <li><a href="/podmienky#poradie">Ako zoraďujeme ponuky</a></li>
         <li><a href="/podmienky">Podmienky používania</a></li>
         <li><a href="/ochrana-udajov">Ochrana údajov</a></li>
       </ul>
     </div>
   </div>
-  <div class="container tm">Pokémon je ochranná známka spoločností Nintendo, Creatures a GAME FREAK. CardRadar je nezávislý porovnávač cien a nie je s nimi nijako spojený. Maskot Scanix je vlastná postava CardRadaru.</div>
+  <div class="container tm">Pokémon je ochranná známka spoločností Nintendo, Creatures a GAME FREAK. CardRadar je samostatný porovnávač cien a nie je s nimi nijako spojený. Maskot Scanix je vlastná postava CardRadaru.</div>
 </footer>
 
 <script>
-/* CARD RADAR FRONTEND 9.5 */
+/* CARD RADAR FRONTEND 9.6 */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const num = v => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -1093,7 +1096,7 @@ function groupHtml(v, best){
         const fresh = ago(shopFresh[o.shop]);
         return `<li class="offer${cheap ? ' cheap' : ''}${o.stock === 'out' ? ' sold' : ''}">
           <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener">
-            <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}${o.partner ? '<span class="partner" title="Overený partner CardRadaru">Partner</span>' : ''}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
+            <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}${o.partner ? '<span class="partner" title="Obchod s CardRadarom spolupracuje (platí za prekliky alebo províziu). Poradie ponúk to neovplyvňuje.">Partner</span>' : ''}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
             <span class="o-price num">${eur(priceOf(o))}</span>
             <span class="o-go" aria-hidden="true">↗</span>
           </a></li>`;
@@ -1498,6 +1501,12 @@ function renderHome(){
   }
 }
 let homePromise = null;
+// dáta úvodnej stránky vložené serverom priamo do stránky – zobrazia sa okamžite
+if (window.__HOME__ && typeof window.__HOME__ === 'object') {
+  homeData = window.__HOME__;
+  homePromise = Promise.resolve(homeData);
+  try { renderTags(homeData.popular); } catch (e) {}
+}
 function loadHome(){
   if (!homePromise) homePromise = fetch('/api/home').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(d => { homeData = d || {}; renderTags(homeData.popular); return homeData; })
