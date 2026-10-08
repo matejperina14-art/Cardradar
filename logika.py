@@ -153,7 +153,7 @@ POKEMON_ALIASES = {
 
 # Poradie je dôležité: najprv dlhšie / presnejšie názvy, jednoslovné až na konci
 PRODUCT_PATTERNS = [
-    ("elite trainer box", r"\belite\s+trainer\s+box\b"),
+    ("elite trainer box", r"\belite\s+trainer(?:\s+box)?\b"),
     ("elite trainer box", r"\betb\b"),
     ("booster box", r"\bbooster\s*(?:box|display)\b"),
     ("booster bundle", r"\bbooster\s*bundle\b"),
@@ -395,7 +395,7 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
 
 # Ako obchody píšu typ produktu v názve
 _PTYPE_TITLE_RE = {
-    "elite trainer box": re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    "elite trainer box": re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I),
     "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b|boosterbox|(?-i:\bBB\b)", re.I),   # BB = Posbírej to
     "booster bundle": re.compile(r"\bbundle\b", re.I),   # niektoré obchody píšu len „Bundle“
     "collection box": re.compile(r"collection\s+box|kolekci\w*\s+box", re.I),
@@ -862,7 +862,7 @@ def detect_stock(text):
 # =========================================================
 
 GROUP_TYPES = [
-    ("etb", re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)),
+    ("etb", re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I)),
     ("booster box", re.compile(r"booster\s*(?:box|display)|boosterbox|(?-i:\bBB\b)", re.I)),
     ("booster bundle", re.compile(r"booster\s*bundle", re.I)),
     ("sleeved booster", re.compile(r"sleeved\s+booster", re.I)),
@@ -885,7 +885,7 @@ _VARIANT_RES = [
     ("dmg", re.compile(r"po[šs]kod\w*|po[šs]koz\w*|damaged|dent\w*|bez\s+f[óo]li\w*", re.I)),
 ]
 _COMBO_TYPES = [
-    re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
+    re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I),
     re.compile(r"booster\s*(?:box|display)", re.I),
     re.compile(r"booster\s*bundle", re.I),
     re.compile(r"blister", re.I),
@@ -965,7 +965,7 @@ def estimate_packs(title, lang=""):
         return None   # ázijské boxy majú rôzny počet (10, 20, 30...)
     if re.search(r"booster\s*(?:box|display)|boosterbox", t) or re.search(r"\bBB\b", title or ""):
         return 18 if re.search(r"\bhalf\b|polovičn", t) else 36
-    if re.search(r"elite\s+trainer\s+box|\betb\b", t):
+    if re.search(r"elite\s+trainer(?:\s+box)?|\betb\b", t):
         return 11 if re.search(r"pok[eé]mon center", t) else 9
     if re.search(r"booster\s*bundle", t):
         return 6
