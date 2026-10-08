@@ -195,10 +195,18 @@ def _extract(q, candidates):
 def _normalize(query):
     original = clean_text(query)
     out = {"original": original, "normalized": "", "pokemon": "", "set_name": "",
-           "product_name": "", "product_type": "", "card_number": "", "suffix": ""}
+           "product_name": "", "product_type": "", "card_number": "", "suffix": "",
+           "set_code": "", "code_number": ""}
     if not original:
         return out
     q = original.lower()
+
+    # kód karty „PBL 084“, „MEW 200“, „30C 128“ (ako ho píšu obchody, napr. Gengar.cz)
+    m = _code_query_match(original)
+    if m:
+        code, num = m.group(1).lower(), int(m.group(2))
+        out["set_code"], out["code_number"] = code, str(num)
+        q = q[:m.start()] + " " + q[m.end():]
 
     m = _CARDNUM_RE.search(q)
     if m:
@@ -215,6 +223,8 @@ def _normalize(query):
     set_name, q = _extract(q, _KNOWN_SETS_RE)
     if not set_name:
         set_name, q = _extract(q, _SETS_RE)
+    if not set_name and out["set_code"]:
+        set_name = SET_CODES[out["set_code"]]
     for w in set_name.split():
         q = re.sub(r"\b" + re.escape(w) + r"\b", " ", q)
     out["set_name"] = set_name
@@ -228,7 +238,10 @@ def _normalize(query):
 
     q = clean_text(re.sub(r"\bpok[eé]mon\b", " ", q, flags=re.I))
 
-    if out["product_type"] == "elite trainer box":
+    code = f'{out["set_code"].upper()} {int(out["code_number"]):03d}' if out["set_code"] else ""
+    if code:   # „pbl 084“ – set je daný kódom, do textu ho nepíšeme (ostane rozpoznateľný aj pri ďalšom čítaní)
+        parts = [out["pokemon"], out["suffix"], q, code, out["product_type"]]
+    elif out["product_type"] == "elite trainer box":
         parts = [set_name, out["pokemon"], out["suffix"], out["card_number"], "elite trainer box"]
     else:
         parts = [out["pokemon"], out["suffix"], q, out["card_number"], set_name, out["product_type"]]
@@ -255,6 +268,8 @@ def normalize_query(query):
 
 def classify_query(parsed):
     """'sealed' (ETB, boxy...) alebo 'card' (jednotlivé karty)"""
+    if parsed.get("code_number"):
+        return "card"
     if parsed.get("product_type"):
         return "sealed"
     if parsed.get("set_name") and not parsed.get("pokemon") and not parsed.get("card_number"):
@@ -277,6 +292,31 @@ SET_CODES = {
     "meg": "mega evolution", "pfl": "phantasmal flames", "asc": "ascended heroes", "por": "perfect order",
     "cri": "chaos rising", "pbl": "pitch black", "30c": "30th celebration",
 }
+# kód v hľadaní: „pbl 84“, „PBL 084“, „30c 128“. „MEW“ je aj Pokémon – ako kód platí len veľkými
+# písmenami alebo s trojmiestnym číslom („MEW 200“, „mew 007“), inak „mew 151“ = Pokémon Mew zo setu 151.
+_CODE_Q_RE = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(sorted(SET_CODES, key=len, reverse=True)) +
+                        r")\s*-?\s*(\d{1,3})(?![\d/])", re.I)
+
+
+def _code_query_match(text):
+    for m in _CODE_Q_RE.finditer(text or ""):
+        code = m.group(1).lower()
+        if code in POKEMON_ALIASES and not (m.group(1).isupper() or len(m.group(2)) == 3 and m.group(2) != "151"):
+            continue
+        return m
+    return None
+
+
+def code_number_in(text, code, number, set_name=""):
+    """Je v názve karta s týmto kódom a číslom? „(PBL 084)“ alebo „084/088 Pitch Black“."""
+    n = int(number)
+    for mm in re.finditer(r"\(\s*" + re.escape(code) + r"(?:\s+[a-z]{1,3})?\s+([a-z]{0,3})(\d{1,3})", fold(text)):
+        if int(mm.group(2)) == n and not mm.group(1):
+            return True
+    return bool(set_name) and set_matches_text(text, set_name) and any(
+        int(x.group(1)) == n for x in _CARDNUM_RE.finditer(text or ""))
+
+
 # „(MEW 200)“, „(SIT TG01)“, „(30C UF 108)“, „(SWSH 016)“ – karta s kódom setu (veľké písmená)
 CODE_CARD_RE = re.compile(r"\([A-Z0-9]{2,5}(?:\s+[A-Z]{1,3})?\s+[A-Z]{0,3}\d{1,3}[a-z]?\)")
 _CODES_BY_SET = {}
@@ -335,6 +375,8 @@ def quick_anchors(parsed, loose_set=False):
     number = parsed.get("card_number")
     if number and "/" in number:
         groups.append((number.split("/")[1],))
+    if parsed.get("code_number"):
+        groups.append((parsed["code_number"],))
     return groups
 
 
@@ -381,6 +423,9 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
         return False, "pokemon_not_in_title"
     if number and not card_number_in(searchable, number):
         return False, "card_number_not_found"
+    if parsed.get("code_number") and not code_number_in(searchable, parsed.get("set_code"),
+                                                        parsed["code_number"], set_name):
+        return False, "card_code_not_found"
     if set_name and not (loose_set and number) and not set_matches_text(searchable, set_name):
         return False, "set_not_found"
     if suffix and not has_word(strip_codes(title), suffix):
@@ -919,6 +964,8 @@ def group_key(title, lang=""):
     t = clean_text(title)
     if not t or is_combo(t):
         return None
+    if not is_tcg_product(t) and is_accessory(t):   # „ETB Sleeves Pitch Black“ sa nesmie spojiť s ETB
+        return None
     p = normalize_query(strip_codes(t))
     lang = lang or "EN"
     variants = ",".join(v for v, rx in _VARIANT_RES if rx.search(t))
@@ -957,6 +1004,8 @@ def estimate_packs(title, lang=""):
     """Odhad počtu boosterov v produkte; None = nevieme."""
     t = clean_text(title).lower()
     if not t or is_combo(t):
+        return None
+    if not is_tcg_product(title) and is_accessory(title):   # „ETB Sleeves“ nemá boostery
         return None
     m = _PACKS_EXPLICIT_RE.search(t) or _PACKS_PAREN_RE.search(t)
     if m and 1 <= int(m.group(1)) <= 36:
@@ -1017,14 +1066,16 @@ def make_result(shop, title, price, link, image="", stock="", price_czk=None):
         "link": link, "image": image or "", "stock": stock or "",
         "packs": packs, "price_per_pack": None,
         "group": group_key(title, lang),
-        "kind": product_kind(title),          # 'card' | 'sealed' (záložky Karty / Produkty)
+        "kind": product_kind(title),          # 'card' | 'sealed' | 'accessory' (záložky na webe)
         "shipping_eur": None, "total_eur": None,   # doplní obchody.add_shipping, ak obchod má poštovné
     }
     return reprice(r)
 
 
 def product_kind(title):
-    """'sealed' = balík (ETB, box, bundle, blister, tin, kolekcia...), inak 'card'."""
+    """'sealed' = balík (ETB, box, bundle, blister, tin, kolekcia...), 'accessory' = sleeves, album..., inak 'card'."""
+    if not is_tcg_product(title) and is_accessory(title):
+        return "accessory"
     return "sealed" if _SEALED_TYPE_RE.search(title or "") else "card"
 
 
