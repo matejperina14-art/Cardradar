@@ -1172,9 +1172,26 @@ def _other_links(block, href, page_url):
     return len(other)
 
 
+# štítky na dlaždici, ktoré nie sú názov produktu (TCG Zone: odkaz „Near Mint“ vedľa názvu karty)
+_JUNK_TITLE_RE = re.compile(
+    r"^(?:near\s*mint|mint|nm|nm\s*/\s*m|exc|excellent|lp|light(?:ly)?\s*played|played|mp|pl|hp|"
+    r"po[šs]koden\w*|po[šs]kozen\w*|detail|skladom|skladem|vypredan\w*|vyprodan\w*|novinka|akcia|akce|"
+    r"top|v[ýy]predaj|sale|new|predobjedn\w*|p[řr]edobjedn\w*|do\s+ko[šs][íi]ka|k[úu]pi[ťt]|koupit)\W*$", re.I)
+
+
 def _parse_listing(shop, html, page_url, debug=None):
     soup = BeautifulSoup(html, HTML_PARSER)
     host = host_of(shop["base_url"])
+    # odkazy na názov produktu podľa selektora obchodu (napr. Shoptet „div.product a.name“) majú prednosť
+    preferred = {}
+    if shop.get("link_selector"):
+        try:
+            for a in soup.select(shop["link_selector"]):
+                t = extract_title(a)
+                if t and not _JUNK_TITLE_RE.match(t):
+                    preferred.setdefault(clean_link(abs_url(page_url, a.get("href"))).lower().rstrip("/"), a)
+        except Exception:
+            pass
     by_href = {}
     for a in soup.find_all("a", href=True):
         href = clean_link(abs_url(page_url, a["href"]))
@@ -1184,7 +1201,11 @@ def _parse_listing(shop, html, page_url, debug=None):
 
     items = []
     for href, anchors in by_href.values():
-        titles = [(t, a) for a in anchors for t in [extract_title(a)] if 3 <= len(t) <= 200]
+        pa = preferred.get(href)
+        if pa is not None:
+            anchors = [pa]
+        titles = [(t, a) for a in anchors for t in [extract_title(a)]
+                  if 3 <= len(t) <= 200 and not _JUNK_TITLE_RE.match(t)]
         named = [(len(t), t, a) for t, a in titles if L.is_listed_product(t)]
         loose = False
         if not named:
