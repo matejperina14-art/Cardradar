@@ -369,14 +369,14 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
 # Ako obchody píšu typ produktu v názve
 _PTYPE_TITLE_RE = {
     "elite trainer box": re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
-    "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b", re.I),
+    "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b|boosterbox|(?-i:\bBB\b)", re.I),   # BB = Posbírej to
     "booster bundle": re.compile(r"\bbundle\b", re.I),   # niektoré obchody píšu len „Bundle“
     "collection box": re.compile(r"collection\s+box|kolekci\w*\s+box", re.I),
     "premium collection": re.compile(r"premium\s+collection|pr[ée]miov\w*\s+kolekci", re.I),
     "blister": re.compile(r"blister", re.I),
     "tin": re.compile(r"\btins?\b|plechovk\w*", re.I),
     "collection": re.compile(r"collection|kolekci\w*|kolekce", re.I),
-    "booster": re.compile(r"booster", re.I),
+    "booster": re.compile(r"booster|bal[íi][čc]ek|bal[íi][čc]ky", re.I),   # „151 Balíček“
 }
 # „Display“ booster bundlov / blistrov / ETB nie je booster box, a pod.
 _PTYPE_NOT_RE = {
@@ -509,7 +509,7 @@ def parse_price_raw(text, title=""):
 # Rozumné hranice ceny v € – čo je mimo, je takmer isto zle prečítané
 _GRADED_RE = re.compile(r"\b(?:psa|cgc|bgs|sgc|graded|ohodnocen\w*|gradovan\w*)\b", re.I)
 _SEALED_TYPE_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|"
-                             r"blister|display|deck|\bbox\b|chest|bal[íi][čc]", re.I)
+                             r"blister|display|deck|\bbox\b|chest|bal[íi][čc]|(?-i:\bBB\b)", re.I)
 
 
 def price_plausible(title, eur):
@@ -824,7 +824,7 @@ def detect_stock(text):
 
 GROUP_TYPES = [
     ("etb", re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)),
-    ("booster box", re.compile(r"booster\s*(?:box|display)", re.I)),
+    ("booster box", re.compile(r"booster\s*(?:box|display)|boosterbox|(?-i:\bBB\b)", re.I)),
     ("booster bundle", re.compile(r"booster\s*bundle", re.I)),
     ("sleeved booster", re.compile(r"sleeved\s+booster", re.I)),
     ("3-pack blister", re.compile(r"3\s*-?\s*pack|three\s+pack|3\s*booster\s+blister", re.I)),
@@ -833,7 +833,7 @@ GROUP_TYPES = [
     ("mini tin", re.compile(r"mini\s+tin", re.I)),
     ("tin", re.compile(r"\btins?\b", re.I)),
     ("build battle", re.compile(r"build\s*(?:&|and)?\s*battle", re.I)),
-    ("booster pack", re.compile(r"booster\s+pack|\bbooster\b", re.I)),
+    ("booster pack", re.compile(r"booster\s+pack|\bbooster\b|bal[íi][čc]ek", re.I)),
     ("collection", re.compile(r"collection|kolekci", re.I)),
 ]
 _VARIANT_RES = [
@@ -923,7 +923,7 @@ def estimate_packs(title, lang=""):
         return int(m.group(1))
     if lang in ASIAN_LANGS:
         return None   # ázijské boxy majú rôzny počet (10, 20, 30...)
-    if re.search(r"booster\s*(?:box|display)", t):
+    if re.search(r"booster\s*(?:box|display)|boosterbox", t) or re.search(r"\bBB\b", title or ""):
         return 18 if re.search(r"\bhalf\b|polovičn", t) else 36
     if re.search(r"elite\s+trainer\s+box|\betb\b", t):
         return 11 if re.search(r"pok[eé]mon center", t) else 9
