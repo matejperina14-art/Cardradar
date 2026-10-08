@@ -207,6 +207,8 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .k{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--k-bg);color:var(--sub)}
 .k-card{background:var(--k-card);color:var(--blue)}.k-bundle{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-box{background:var(--k-box);color:var(--orange)}.k-etb{background:var(--k-etb);color:var(--violet)}.k-other{background:var(--k-other);color:var(--teal)}
 .k-best{background:var(--holo);color:#101b44}
+.k-cond.nm{background:var(--green-bg);color:var(--green)}
+.k-cond.used{background:var(--notice-bg);color:var(--notice-ink)}
 .p-title{margin:0;font-size:15px;line-height:1.35;font-weight:650;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.7em}
 .p-price{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .p-price b{font-size:24px;font-weight:800;letter-spacing:-.01em;color:var(--ink)}
@@ -607,7 +609,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('#showAllBtn')) { focusLink = ''; updateUrl(currentQuery, false); renderView(); window.scrollTo({top: 0}); return; }
   if (e.target.id === 'clearRecent') { setRecent([]); renderRecent(); }
   if (e.target.closest('#shareBtn')) share();
-  if (e.target.closest('#resetFilters')) { cat = 'all'; shopOff.clear(); renderView(); }
+  if (e.target.closest('#resetFilters')) { cat = 'all'; shopOff.clear(); hideUsed = false; renderView(); }
   if (e.target.closest('#showOutBtn')) { showOut = true; renderView(); }
   if (e.target.closest('#showLangs')) { allResults.forEach(i => langOff.delete(langKey(i))); renderView(); }
   if (e.target.closest('#favBtn')) { mode === 'fav' ? leaveFavorites() : showFavorites(); }
@@ -809,6 +811,10 @@ function categoryOf(t){
   return 'card';
 }
 
+// použité karty (EXC / LP / PL / HP) – predvolene viditeľné, dajú sa skryť vo filtroch
+let hideUsed = false;
+const condTag = o => !o || !o.cond ? '' :
+  `<span class="k k-cond ${o.cond_group === 'used' ? 'used' : 'nm'}" title="${esc(o.condition || '')}">${o.cond_group === 'used' ? 'Použitá · ' : ''}${esc(o.cond)}</span>`;
 let allResults = [], groups = [], cat = 'all', shopOff = new Set(), shopState = {}, shopFresh = {}, sortMode = 'asc', showOut = false;
 let currentQuery = '', failedShops = [], loadingShops = [], retryTimer = null, resultsGen = 0, mode = 'home', revealNext = false;
 let searchCtrl = null, homeData = null;
@@ -866,7 +872,8 @@ function buildGroups(items, prefix){
   });
 }
 function view(g, ignore = {}){
-  const vis = g.offers.filter(o => (ignore.shop || !shopOff.has(o.shop)) && (ignore.lang || !langOff.has(langKey(o))) && (ignore.out || showOut || o.stock !== 'out'));
+  const vis = g.offers.filter(o => (ignore.shop || !shopOff.has(o.shop)) && (ignore.lang || !langOff.has(langKey(o))) && (ignore.out || showOut || o.stock !== 'out')
+    && (ignore.cond || !hideUsed || o.cond_group !== 'used'));
   if (!vis.length) return null;
   const best = vis.find(o => o.stock !== 'out') || vis[0];
   return {g, vis, best};
@@ -1058,7 +1065,7 @@ function groupHtml(v, best){
         ${imgInner(g)}${langTag(b)}
       </a>
       <div class="p-body">
-        <div class="kinds"><span class="k k-${g._c}">${CATS[g._c][2]}</span>${best ? '<span class="k k-best">Najlacnejšie</span>' : ''}</div>
+        <div class="kinds"><span class="k k-${g._c}">${CATS[g._c][2]}</span>${condTag(b)}${best ? '<span class="k k-best">Najlacnejšie</span>' : ''}</div>
         <h3 class="p-title" title="${esc(g.title)}">${esc(g.title)}</h3>
         <div class="p-price num">
           ${p === null ? '<b class="none">Cena nezistená</b>' : `<b>${multi ? '<small>od</small>' : ''}${eur(p)}</b><span class="czk">${czkOf(b, p)}</span>`}
@@ -1152,11 +1159,13 @@ function renderSide(){
   const country = Object.fromEntries(SHOPS.map(s => [s.name, s.country]));
   const langs = Object.keys(LANGS).filter(l => l === 'EN' || allResults.some(i => langKey(i) === l));
   const nOut = allResults.filter(i => i.stock === 'out').length;
+  const nUsed = allResults.filter(i => i.cond_group === 'used').length;
   $('side').innerHTML = `
     <div class="side-head"><b>Filtre</b><button class="m-x" id="sideClose" aria-label="Zavrieť">✕</button></div>
     ${has ? `<div class="side-sec"><h3>Zoradiť</h3>
       ${sortSelect('sortSel')}
       ${nOut ? `<label class="opt" style="margin-top:6px"><input type="checkbox" id="outChk"${showOut ? ' checked' : ''}> Zobraziť aj vypredané (${nOut})</label>` : ''}
+      ${nUsed ? `<label class="opt"><input type="checkbox" id="usedChk"${hideUsed ? '' : ' checked'}> Zobraziť aj použité karty (${nUsed})</label>` : ''}
     </div>` : ''}
     <div class="side-sec"><h3>Kategória</h3>
       ${Object.entries(CATS).map(([k, [label]]) =>
@@ -1181,7 +1190,7 @@ function renderSide(){
         </label>`).join('')}
       ${!has ? '<p class="note">Japonské, kórejské a čínske verzie sú predvolene skryté.</p>' : ''}
     </div>`;
-  const activeN = shopOff.size + ASIAN.filter(l => !langOff.has(l)).length + (sortMode !== 'asc') + showOut;
+  const activeN = shopOff.size + ASIAN.filter(l => !langOff.has(l)).length + (sortMode !== 'asc') + showOut + hideUsed;
   $('catBar').innerHTML = mode === 'search' ? `<button class="cat filt" id="filterPill">Filtre${activeN ? ` (${activeN})` : ''}</button>` + Object.entries(CATS).map(([k, [label]]) =>
     `<button class="cat${cat === k ? ' on' : ''}" data-cat="${k}" aria-pressed="${cat === k}">${label}${has ? `<span class="n">${catCount(k)}</span>` : ''}</button>`).join('') : '';
 }
@@ -1202,6 +1211,7 @@ $('side').addEventListener('change', e => {
   if (e.target.dataset.shop !== undefined) { const s = e.target.dataset.shop; e.target.checked ? shopOff.delete(s) : shopOff.add(s); renderView(); }
   if (e.target.id === 'sortSel') { sortMode = e.target.value; renderView(); }
   if (e.target.id === 'outChk') { showOut = e.target.checked; renderView(); }
+  if (e.target.id === 'usedChk') { hideUsed = !e.target.checked; renderView(); }
 });
 
 /* ---------- akcie ---------- */
