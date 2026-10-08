@@ -1,5 +1,5 @@
 """
-CARD RADAR 7.9 – app.py
+CARD RADAR 8.0 – app.py
 Spúšťa web a obsahuje všetky adresy (routy). Logika je v ostatných súboroch:
   logika.py   rozpoznávanie hľadania, filtre, sklad, ceny
   obchody.py  obchody, sťahovanie, katalógy, hľadanie, databáza
@@ -17,6 +17,10 @@ Premenné prostredia (Render → Environment):
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM   e-maily strážcu
   ALLOW_INDEXING 1 = web môže byť v Google
   OPERATOR_NAME, CONTACT_EMAIL   do podmienok a ochrany údajov
+  CRAWL_PARALLEL koľko obchodov sa prechádza naraz (predvolené 2)
+
+Spolupráca s obchodmi (XML feedy, partnerské odkazy, cena za klik): /admin/obchody
+Kliky a podklady na faktúru:                                          /admin/partneri
 """
 
 import gzip
@@ -48,7 +52,7 @@ import obchody as O
 import strazca
 import stranky as S
 
-VERSION = "7.9"
+VERSION = "8.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -339,6 +343,7 @@ app.add_url_rule("/admin/test", "admin_test", S.admin_test)
 app.add_url_rule("/admin/obchody", "admin_obchody", S.admin_obchody, methods=["GET", "POST"])
 app.add_url_rule("/admin/katalog", "admin_katalog", S.admin_katalog)
 app.add_url_rule("/admin/report", "admin_report", S.admin_report)
+app.add_url_rule("/admin/partneri", "admin_partneri", S.admin_partneri)
 app.add_url_rule("/sety", "sets", S.sets_page)
 app.add_url_rule("/set/<slug>", "set_detail", S.set_page)
 app.add_url_rule("/sitemap.xml", "sitemap", S.sitemap_xml)
@@ -351,7 +356,7 @@ def go():
     if not O.is_allowed_link(link):
         return redirect("/", code=302)
     if LIMIT_GO.allow():
-        O.count_click(link)
+        O.count_click(link, client_ip(), request.headers.get("User-Agent", ""))
     resp = redirect(O.out_url(link), code=302)
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["X-Robots-Tag"] = "noindex, nofollow"
