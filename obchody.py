@@ -166,6 +166,11 @@ SHOPS = [
          "https://www.posbirejto.cz/cinske-karty/",
      ],
      "max_pages": 25},
+    # Shoptet, celá Pokémon ponuka v jednej kategórii (~72 produktov, 3 strany) – október 2026
+    {"name": "Tlama Games", "country": "CZ", "enabled": True,
+     "base_url": "https://www.tlamagames.com/",
+     "catalog": ["https://www.tlamagames.com/pokemon/"], "max_pages": 10},
+    # Xzone (robots.txt zakazuje čítať kategórie) a Veselý drak (blokuje roboty): len cez XML feed
     # web blokuje roboty (HTTP 403) – zapni, keď dostaneš adresu XML feedu
     {"name": "Herný svet", "country": "SK", "enabled": False,
      "base_url": "https://www.hernysvet.sk/", "feed": "",
@@ -196,7 +201,6 @@ SHOPS = [
 KANDIDATI = [
     ("Veselý drak", "https://www.vesely-drak.cz/"),
     ("Najáda", "https://www.najada.games/"),
-    ("Tlama Games", "https://www.tlamagames.com/"),
     ("Blackfire", "https://www.blackfire.cz/"),
     ("Xzone CZ", "https://www.xzone.cz/"),
     ("Xzone SK", "https://www.xzone.sk/"),
