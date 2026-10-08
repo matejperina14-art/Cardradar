@@ -205,7 +205,7 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .p-body{padding:14px 16px 6px;display:flex;flex-direction:column;gap:8px;flex:1}
 .kinds{display:flex;gap:6px;flex-wrap:wrap}
 .k{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--k-bg);color:var(--sub)}
-.k-card{background:var(--k-card);color:var(--blue)}.k-bundle{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-box{background:var(--k-box);color:var(--orange)}.k-etb{background:var(--k-etb);color:var(--violet)}.k-other{background:var(--k-other);color:var(--teal)}
+.k-card{background:var(--k-card);color:var(--blue)}.k-bundle{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-box{background:var(--k-box);color:var(--orange)}.k-etb{background:var(--k-etb);color:var(--violet)}.k-other{background:var(--k-other);color:var(--teal)}.k-acc{background:var(--k-bg);color:var(--sub)}
 .k-best{background:var(--holo);color:#101b44}
 .k-cond.nm{background:var(--green-bg);color:var(--green)}
 .k-cond.used{background:var(--notice-bg);color:var(--notice-ink)}
@@ -769,7 +769,8 @@ const CATS = {
   box:   ['Booster boxy', '📦', 'Booster box'],
   etb:   ['ETB', '🎁', 'ETB'],
   bundle:['Bundle', '🎀', 'Bundle'],
-  other: ['Ostatné balenia', '🧺', 'Balenie']
+  other: ['Ostatné balenia', '🧺', 'Balenie'],
+  acc:   ['Príslušenstvo', '🧤', 'Príslušenstvo']
 };
 const FLAG_SVG = {
   JP: '<rect width="30" height="20" fill="#fff"/><circle cx="15" cy="10" r="6" fill="#bc002d"/>',
@@ -811,6 +812,9 @@ function categoryOf(t){
   return 'card';
 }
 
+// príslušenstvo je vo „Všetko“ len pri hľadaní príslušenstva („sleeves“), inak vo vlastnej záložke
+let accQuery = false;
+const inCat = (g, k = cat) => k === 'all' ? (g._c !== 'acc' || accQuery) : g._c === k;
 // použité karty (EXC / LP / PL / HP) – predvolene viditeľné, dajú sa skryť vo filtroch
 let hideUsed = false;
 const condTag = o => !o || !o.cond ? '' :
@@ -863,7 +867,7 @@ function buildGroups(items, prefix){
     // obrázok: z ponuky, inak už raz dotiahnutý (žiadne blikanie pri dopĺňaní pomalých obchodov)
     const image = imageOf(offers.find(o => imageOf(o)) || {}) || offers.map(o => imgByLink.get(o.link)).find(Boolean) || '';
     const g = {
-      id: prefix + (n++), key, offers, title, _c: categoryOf(first.title),
+      id: prefix + (n++), key, offers, title, _c: first.kind === 'accessory' ? 'acc' : categoryOf(first.title),
       language: first.language || '', image, _imgTried: !!image,
       _fav: !!first._fav, saved_price: first.saved_price
     };
@@ -918,7 +922,7 @@ function focusedViews(){
 function visibleViews(){
   const f = focusedViews();
   if (f.length) return f;
-  const out = groups.filter(g => cat === 'all' || g._c === cat).map(g => view(g)).filter(Boolean);
+  const out = groups.filter(g => inCat(g)).map(g => view(g)).filter(Boolean);
   out.sort(compareViews);
   return out;
 }
@@ -1014,7 +1018,7 @@ function renderStatus(list){
   }
   const focused = focusLink && focusedViews().length > 0;
   if (focusLink && allResults.length) {
-    const n = groups.filter(g => cat === 'all' || g._c === cat).map(g => view(g)).filter(Boolean).length;
+    const n = groups.filter(g => inCat(g)).map(g => view(g)).filter(Boolean).length;
     h += focused
       ? `<div class="notice info"><span>Zobrazujem vybraný produkt.</span><button class="btn" id="showAllBtn" style="margin-left:auto;padding:6px 12px">Všetky výsledky (${n})</button></div>`
       : (loadingShops.length ? '' : `<div class="notice">Vybraný produkt teraz v ponuke nevidíme (možno sa práve vypredal). Zobrazujem podobné ponuky.</div>`);
@@ -1120,20 +1124,23 @@ function renderGrid(list){
     return;
   }
   if (!list.length) {
-    const inCat = groups.filter(g => cat === 'all' || g._c === cat);
-    const noLang = inCat.map(g => view(g, {lang: true})).filter(Boolean);
+    const inCatG = groups.filter(g => inCat(g));
+    const noLang = inCatG.map(g => view(g, {lang: true})).filter(Boolean);
     const hl = [...new Set(noLang.flatMap(v => v.vis).map(langKey))].filter(l => langOff.has(l));
     if (noLang.length && hl.length) {
       $('results').innerHTML = `<div class="empty">${radik()}<h3>Našli sme len iné jazykové verzie</h3><p>${hl.map(l => LANGS[l]).join(', ')}.</p><button class="btn primary" id="showLangs">Zobraziť ich</button></div>`;
       return;
     }
-    const onlyOut = !showOut && inCat.length && inCat.every(g => g.offers.every(o => o.stock === 'out' || shopOff.has(o.shop) || langOff.has(langKey(o))));
+    const onlyOut = !showOut && inCatG.length && inCatG.every(g => g.offers.every(o => o.stock === 'out' || shopOff.has(o.shop) || langOff.has(langKey(o))));
     $('results').innerHTML = onlyOut
       ? `<div class="empty">${radik()}<h3>Všetko je momentálne vypredané</h3><p>Zobraz vypredané ponuky a pri produkte si zapni upozornenie, keď bude znova skladom.</p><button class="btn primary" id="showOutBtn">Zobraziť vypredané</button></div>`
       : `<div class="empty">${radik()}<h3>V kategórii „${CATS[cat][0]}“ nič nie je</h3><p>${shopOff.size ? 'Skús zapnúť všetky obchody.' : 'Skús inú kategóriu.'}</p><button class="btn" id="resetFilters">Zobraziť všetko</button></div>`;
     return;
   }
-  const bestId = sortMode !== 'asc' && sortMode !== 'stock' ? null : list.filter(v => v.best.stock !== 'out')
+  // „Najlacnejšie“ = najlacnejšia ponuka skladom; použitá karta ho dostane, len ak iné nie sú
+  const fresh = list.filter(v => v.best.stock !== 'out' && v.best.cond_group !== 'used');
+  const bestPool = fresh.length ? fresh : list.filter(v => v.best.stock !== 'out');
+  const bestId = sortMode !== 'asc' && sortMode !== 'stock' ? null : bestPool
     .reduce((a, v) => (a === null || (priceOf(v.best) ?? 1e9) < (priceOf(a.best) ?? 1e9)) ? v : a, null)?.g.id;
   const sameKind = new Set(list.map(v => v.g._c)).size === 1;
   const part = list.slice(0, pageN), rest = list.length - part.length;
@@ -1152,9 +1159,9 @@ function renderView(){
 /* ---------- filtre ---------- */
 function renderSide(){
   const has = groups.length > 0 && mode === 'search';
-  const catCount = k => groups.filter(g => (k === 'all' || g._c === k) && view(g)).length;
-  const shopCount = s => groups.filter(g => (cat === 'all' || g._c === cat) && g.offers.some(o => o.shop === s && !langOff.has(langKey(o)) && (showOut || o.stock !== 'out'))).length;
-  const langCount = l => groups.filter(g => (cat === 'all' || g._c === cat) && g.offers.some(o => langKey(o) === l && !shopOff.has(o.shop) && (showOut || o.stock !== 'out'))).length;
+  const catCount = k => groups.filter(g => inCat(g, k) && view(g)).length;
+  const shopCount = s => groups.filter(g => inCat(g) && g.offers.some(o => o.shop === s && !langOff.has(langKey(o)) && (showOut || o.stock !== 'out'))).length;
+  const langCount = l => groups.filter(g => inCat(g) && g.offers.some(o => langKey(o) === l && !shopOff.has(o.shop) && (showOut || o.stock !== 'out'))).length;
   const names = [...new Set([...SHOPS.map(s => s.name), ...allResults.map(i => i.shop)])];
   const country = Object.fromEntries(SHOPS.map(s => [s.name, s.country]));
   const langs = Object.keys(LANGS).filter(l => l === 'EN' || allResults.some(i => langKey(i) === l));
@@ -1567,6 +1574,7 @@ function showData(q, data, push, opts = {}){
     loadingShops = [];
   }
   if (data.query_lang) langOff.delete(data.query_lang);
+  accQuery = !!data.accessory_query;
   rememberImages(allResults);
   updateUrl(norm, push);
   revealNext = !opts.quiet;
