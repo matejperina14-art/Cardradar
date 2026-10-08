@@ -55,7 +55,7 @@ def is_admin():
 # ÚVODNÁ STRÁNKA
 # =========================================================
 
-_ETB_RE = re.compile(r"elite\s+trainer\s+box|\betb\b", re.I)
+_ETB_RE = re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I)
 _BOX_RE = re.compile(r"booster\s*(?:box|display)|boosterbox|(?-i:\bBB\b)", re.I)
 _BUNDLE_RE = re.compile(r"\bbundle\b", re.I)
 _SEALED_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|blister|"
