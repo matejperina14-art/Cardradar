@@ -245,12 +245,14 @@ def _normalize(query):
     q = clean_text(re.sub(r"\bpok[eé]mon\b", " ", q, flags=re.I))
 
     code = f'{out["set_code"].upper()} {int(out["code_number"]):03d}' if out["set_code"] else ""
+    # neznámy Pokémon („archaludon ex“): meno musí ostať pred príponou, inak vznikne „ex archaludon“
+    name, rest = (out["pokemon"], q) if out["pokemon"] else (q, "")
     if code:   # „pbl 084“ – set je daný kódom, do textu ho nepíšeme (ostane rozpoznateľný aj pri ďalšom čítaní)
-        parts = [out["pokemon"], out["suffix"], q, code, out["product_type"]]
+        parts = [name, out["suffix"], rest, code, out["product_type"]]
     elif out["product_type"] == "elite trainer box":
-        parts = [set_name, out["pokemon"], out["suffix"], out["card_number"], "elite trainer box"]
+        parts = [set_name, name, out["suffix"], rest, out["card_number"], "elite trainer box"]
     else:
-        parts = [out["pokemon"], out["suffix"], q, out["card_number"], set_name, out["product_type"]]
+        parts = [name, out["suffix"], rest, out["card_number"], set_name, out["product_type"]]
     out["normalized"] = clean_text(" ".join(p for p in parts if p)) or original
     return out
 
