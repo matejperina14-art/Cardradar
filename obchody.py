@@ -429,6 +429,7 @@ def init_db():
         if "price_czk" not in cols:
             conn.execute("ALTER TABLE catalog_items ADD COLUMN price_czk REAL")
         _fix_czk_once(conn)
+        _fix_prices_once(conn)
         _drop_implausible(conn)
         _prune(conn)
         conn.commit()
@@ -459,6 +460,17 @@ def _fix_czk_once(conn):
         conn.execute(f"DELETE FROM catalog_items WHERE shop IN ({marks})", cz)
         conn.execute(f"DELETE FROM meta WHERE k IN ({','.join('?' * len(cz))})", ["catalog:" + n for n in cz])
     conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fix_czk_v1', ?)",
+                 (datetime.now(timezone.utc).isoformat(),))
+
+
+def _fix_prices_once(conn):
+    """Jednorazovo (8. 10. 2026): verzia s chybou „135 €210“ ukladala zlé ceny (Beardex a ďalšie
+    obchody s „€“ pred číslom). Zmaže dnešnú históriu a vynúti nové prejdenie katalógov."""
+    if conn.execute("SELECT v FROM meta WHERE k = 'fix_prices_v2'").fetchone():
+        return
+    conn.execute("DELETE FROM price_daily WHERE day >= '2026-10-08'")
+    conn.execute("DELETE FROM meta WHERE k LIKE 'catalog:%'")   # katalógy sa prejdú nanovo do pár minút
+    conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fix_prices_v2', ?)",
                  (datetime.now(timezone.utc).isoformat(),))
 
 
