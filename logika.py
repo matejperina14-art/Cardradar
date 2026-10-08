@@ -291,6 +291,30 @@ def set_matches_text(text, set_name):
     return bool(stem_n) and stem_n <= {_stem(w) for w in sw}
 
 
+def quick_anchors(parsed, loose_set=False):
+    """Rýchly predfilter pre katalógy: skupiny reťazcov (bez diakritiky). Názov produktu musí
+    obsahovať aspoň jeden reťazec z KAŽDEJ skupiny, inak sa drahé porovnanie ani nespúšťa.
+    Je to len hrubé sito – presné pravidlá (card/sealed_matches_query) idú potom."""
+    groups = []
+    pokemon = parsed.get("pokemon")
+    if pokemon:
+        groups.append((fold(pokemon).replace("-", ""), fold(pokemon)))
+    set_name = fold(parsed.get("set_name") or "")
+    if set_name and not (loose_set and parsed.get("card_number")):   # loose_set: set nemusí byť v názve
+        names = [set_name] + [fold(p) for p in SET_PARTS.get(set_name, ())]
+        alts = {n.split()[0] for n in names if n.split()}
+        alts |= {fold(a) for a, c in SET_ALIASES.items() if fold(c) in names}
+        groups.append(tuple(alts))
+    number = parsed.get("card_number")
+    if number and "/" in number:
+        groups.append((number.split("/")[1],))
+    return groups
+
+
+def anchors_hit(folded_title, groups):
+    return all(any(a in folded_title for a in g) for g in groups)
+
+
 def _all_words(parsed):
     """Všetky slová hľadania (aj všeobecné), keď nič konkrétnejšie nie je."""
     return {w for w in fold_words(parsed.get("original", "")) - {"pokemon", "tcg", "the", "and", "of", "en"}
@@ -302,7 +326,11 @@ def _wanted_words(parsed):
             if len(w) >= 3 or w.isdigit()}
 
 
-_BULK_RE = re.compile(r"\bcase\b|(?<![\w/.,])\d{1,2}\s*x(?![a-z0-9])(?!\s*\d)|\bx\s*\d{1,2}\b", re.I)
+# „10x ETB“, „case“ = veľkoobchodné balenie. ALE „6x booster“, „36x booster“ je len popis obsahu
+# (bundle / box) – predtým sa takéto produkty vyhadzovali z výsledkov.
+_CONTENT_AFTER = r"(?!\s*-?\s*(?:booster\w*|bal[íi][čc]\w*|packs?\b|boost\w*|karet|kariet|cards?\b))"
+_BULK_RE = re.compile(r"\bcase\b|(?<![\w/.,])\d{1,2}\s*x(?![a-z0-9])(?!\s*\d)" + _CONTENT_AFTER +
+                      r"|\bx\s*\d{1,2}\b" + _CONTENT_AFTER, re.I)
 _WANT_BULK_RE = re.compile(r"\bcase\b|(?:bundle|blister|etb|tin|trainer\s+box)\s+display|\b\d{1,2}\s*x\b", re.I)
 
 
@@ -454,14 +482,18 @@ def parse_price_raw(text, title=""):
     text = _NOT_PRICE_RE.sub(" | ", text)   # oddeľovač, nie medzera – nič sa nespojí
     if not text.strip(" |"):
         return None, ""
-    for rx in _EUR_RES:
-        m = rx.search(text)
-        if m and to_float(m.group(1)):
-            return to_float(m.group(1)), "EUR"
-    for rx in _CZK_RES:
-        m = rx.search(text)
-        if m and to_float(m.group(1)):
-            return to_float(m.group(1)), "CZK"
+    # PRVÁ cena v texte (predtým vyhral vzor „€ 59,90“ pred „49,90 €“, aj keď bol ďalej v texte –
+    # pri „49,90 € 59,90 €“ sa tak zobrala stará / iná cena)
+    for group in ((_EUR_RES, "EUR"), (_CZK_RES, "CZK")):
+        best = None
+        for rx in group[0]:
+            for m in rx.finditer(text):
+                if to_float(m.group(1)):
+                    if best is None or m.start() < best.start():
+                        best = m
+                    break
+        if best is not None:
+            return to_float(best.group(1)), group[1]
     return None, ""
 
 
@@ -620,6 +652,37 @@ ACCESSORY_RE = _words_re(ACCESSORY_PATTERNS)
 MERCH_HARD_RE = _words_re(MERCH_HARD_PATTERNS)
 MERCH_SOFT_RE = _words_re(MERCH_SOFT_PATTERNS)
 
+# Hľadanie PRÍSLUŠENSTVA („pikachu sleeves“, „binder“, „toploader“): vtedy sa príslušenstvo
+# nevyhadzuje, ale naopak hľadá. Bez takého slova v hľadaní ostáva filter ako predtým.
+ACCESSORY_QUERY_RE = _words_re([
+    r"sleeves?", r"obal\w*", r"album\w*", r"binder\w*", r"toploader\w*", r"playmat\w*",
+    r"podlo[žz]k\w*", r"deck\s*box\w*", r"deckbox\w*", r"portfoli\w*", r"one\s*touch",
+    r"penny\s+sleeves?", r"card\s*saver\w*", r"semi\s*rigid\w*", r"puzdr\w*", r"pouzdr\w*",
+])
+_ACC_STEM = {"obaly": "obal", "obalu": "obal", "albumy": "album", "albumu": "album"}
+
+
+def is_accessory_query(q):
+    return bool(ACCESSORY_QUERY_RE.search(q or ""))
+
+
+@lru_cache(maxsize=20000)
+def is_accessory(title):
+    """Príslušenstvo na karty (sleeves, album...), nie oblečenie / hračky / prázdne krabice."""
+    t = clean_text(title)
+    return bool(ACCESSORY_QUERY_RE.search(t)) and not MERCH_HARD_RE.search(t) \
+        and not re.search(r"pr[áa]zdn|empty|proxy|fake|replik", t, re.I)
+
+
+def accessory_matches_query(title, parsed):
+    """Všetky hľadané slová (aj „sleeves“) musia byť v názve; jednotné / množné číslo je jedno."""
+    stem = lambda w: _ACC_STEM.get(w, _stem(w))
+    want = {stem(w) for w in _all_words(parsed)}
+    have = {stem(w) for w in fold_words(title)}
+    if not want or want - have:
+        return False, "words_not_in_title"
+    return True, "matched"
+
 # Znaky TCG produktu (karta / sealed)
 TCG_MARKER_RE = re.compile(
     r"booster|elite\s+trainer|\betb\b|collection|kolekci|blister|\btins?\b|\btcg\b"
@@ -703,6 +766,12 @@ def is_tcg_product(title):
     return looks_like_tcg(title) and not is_merch(title)
 
 
+def is_listed_product(title):
+    """Čo si katalóg uloží: karty / sealed produkty a aj príslušenstvo (sleeves, albumy...).
+    Do bežných výsledkov sa príslušenstvo dostane len pri hľadaní príslušenstva."""
+    return is_tcg_product(title) or is_accessory(title)
+
+
 # =========================================================
 # SKLAD
 # =========================================================
@@ -782,8 +851,8 @@ def is_combo(title):
     if sum(1 for rx in _COMBO_TYPES if rx.search(t)) >= 2:
         return True
     return bool(re.search(
-        r"(?<![\w/.,])(?:[2-9]|1[0-9])\s*(?:x|ks|kusy|pcs)(?![a-z])"
-        r"|\bx\s*(?:[2-9]|1[0-9])\b"
+        r"(?<![\w/.,])(?:[2-9]|1[0-9])\s*(?:x|ks|kusy|pcs)(?![a-z])" + _CONTENT_AFTER +
+        r"|\bx\s*(?:[2-9]|1[0-9])\b" + _CONTENT_AFTER +
         r"|\b(?:bundle\s+deal|komplet\w*|set\s+of|sada)\b", t, re.I))
 
 
