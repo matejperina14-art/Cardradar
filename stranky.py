@@ -27,6 +27,9 @@ import obchody as O
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "prevádzkovateľ CardRadar")
+# identifikácia podľa zákona o elektronickom obchode: sídlo / miesto podnikania, IČO, zápis v registri
+# napr. „Hlavná 1, 949 01 Nitra, IČO: 12345678, zapísaný v živnostenskom registri OÚ Nitra č. 430-12345“
+OPERATOR_DETAILS = os.environ.get("OPERATOR_DETAILS", "")
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "") or os.environ.get("SMTP_FROM", "")
 ALLOW_INDEXING = os.environ.get("ALLOW_INDEXING", "0") == "1"
 
@@ -155,18 +158,60 @@ def build_home():
     }
 
 
+def _store_home(data):
+    """Hotová úvodná stránka aj do databázy – ostatné procesy servera ju majú hneď, aj po reštarte."""
+    _home["data"], _home["t"] = data, time.monotonic()
+    try:
+        O.meta_set("home_cache", json.dumps({"t": time.time(), "data": data}, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _rebuild_home():
+    try:
+        _store_home(build_home())
+    except Exception as e:
+        print(f"[CardRadar] Úvodná stránka: {e}", flush=True)
+        _home["t"] = time.monotonic()   # neskúšať hneď znova
+    finally:
+        _home["building"] = False
+
+
+def _rebuild_home_bg():
+    with _home_lock:
+        if _home.get("building"):
+            return
+        _home["building"] = True
+    threading.Thread(target=_rebuild_home, daemon=True, name="home-rebuild").start()
+
+
 def home_data():
-    """Úvodná stránka z pamäte (najviac 10 min stará)."""
-    if _home["data"] is None or time.monotonic() - _home["t"] > 600:
+    """Úvodná stránka okamžite: z pamäte, inak z databázy. Staršia ako 10 min sa obnoví na pozadí –
+    návštevník nikdy nečaká na prepočet (predtým to trvalo niekoľko sekúnd)."""
+    if _home["data"] is None:
+        try:
+            saved = json.loads(O.meta_get("home_cache") or "null")
+        except Exception:
+            saved = None
+        if saved and saved.get("data"):
+            _home["data"] = saved["data"]
+            _home["t"] = time.monotonic() - max(0, time.time() - saved.get("t", 0))
+    if _home["data"] is None:   # úplne prvý štart bez dát: raz počkáme
         with _home_lock:
-            if _home["data"] is None or time.monotonic() - _home["t"] > 600:
+            if _home["data"] is None:
                 try:
-                    _home["data"] = build_home()
+                    _store_home(build_home())
                 except Exception as e:
                     print(f"[CardRadar] Úvodná stránka: {e}", flush=True)
-                    _home["data"] = _home["data"] or {"new_sets": L.NOVE_SETY}
-                _home["t"] = time.monotonic()
+                    _home["data"], _home["t"] = {"new_sets": L.NOVE_SETY}, time.monotonic()
+    elif time.monotonic() - _home["t"] > 600:
+        _rebuild_home_bg()
     return _home["data"]
+
+
+def home_cached():
+    """Úvodná stránka, len ak je už pripravená (nikdy nečaká) – vkladá sa priamo do index.html."""
+    return _home["data"] if _home["data"] is not None else None
 
 
 def _home_warmer():
@@ -174,8 +219,7 @@ def _home_warmer():
     time.sleep(20)
     while True:
         try:
-            data = build_home()
-            _home["data"], _home["t"] = data, time.monotonic()
+            _store_home(build_home())
         except Exception:
             pass
         time.sleep(480)
@@ -242,58 +286,97 @@ def _contact():
 
 
 def _text_page(title, body):
-    body = body.replace("{KONTAKT}", _contact()).replace("{PREVADZKOVATEL}", html.escape(OPERATOR_NAME))
-    return page(title, f"<h1>{title}</h1>{body}<p class='upd'>Posledná aktualizácia: október 2026</p>")
+    who = html.escape(OPERATOR_NAME) + (", " + html.escape(OPERATOR_DETAILS) if OPERATOR_DETAILS else "")
+    body = body.replace("{KONTAKT}", _contact()).replace("{PREVADZKOVATEL}", who)
+    return page(title, f"<h1>{title}</h1>{body}<p class='upd'>Platné od 8. októbra 2026</p>")
 
 
 TERMS_HTML = """
-<p>CardRadar je bezplatný porovnávač cien Pokémon TCG produktov, ktorý prevádzkuje {PREVADZKOVATEL}.</p>
-<h2>Čo CardRadar robí</h2>
-<p>Zobrazuje ceny a dostupnosť produktov z verejne dostupných stránok a feedov internetových obchodov.
-CardRadar nič nepredáva. Nákup prebieha vždy priamo v obchode a riadi sa jeho obchodnými podmienkami.</p>
-<h2>Presnosť údajov</h2>
-<p>Ceny a sklad sa aktualizujú automaticky, no môžu byť oneskorené alebo nepresné. Pred nákupom
-si vždy over cenu a dostupnosť v obchode. Ceny z českých obchodov prepočítavame z Kč na € podľa
-aktuálneho denného kurzu Európskej centrálnej banky, preto sú orientačné.</p>
-<h2>Odkazy na obchody</h2>
-<p>Niektoré odkazy môžu byť partnerské. Ak cez ne nakúpiš, CardRadar môže dostať províziu.
-Cenu pre teba to nemení.</p>
+<p>Prevádzkovateľ webu CardRadar (getcardradar.com): {PREVADZKOVATEL}. Kontakt: {KONTAKT}.</p>
+<h2>Čo CardRadar je</h2>
+<p>CardRadar je bezplatný porovnávač cien Pokémon TCG produktov (karty, Elite Trainer Boxy, booster boxy
+a ďalšie balenia) zo slovenských a českých internetových obchodov. CardRadar <b>nič nepredáva</b>,
+nie je predajcom ani sprostredkovateľom kúpy a neuzatvára s tebou žiadnu zmluvu o kúpe tovaru.
+Kliknutím na ponuku prejdeš na web obchodu; kúpna zmluva vzniká výlučne medzi tebou a obchodom
+a riadi sa jeho obchodnými podmienkami, reklamačným poriadkom a cenami.</p>
+<h2>Odkiaľ sú údaje</h2>
+<p>Ceny, dostupnosť, názvy a obrázky produktov pochádzajú z XML feedov, ktoré nám obchody poskytli,
+alebo z ich verejne dostupných stránok. Aktualizujú sa automaticky, spravidla raz za hodinu, a môžu
+byť oneskorené alebo nepresné. <b>Rozhodujúca je vždy cena a dostupnosť na stránke obchodu.</b>
+Ceny z českých obchodov prepočítavame z Kč na € podľa denného kurzu Európskej centrálnej banky,
+preto sú orientačné. Poštovné uvádzame len tam, kde ho poznáme.</p>
+<h2 id="poradie">Ako zoraďujeme ponuky</h2>
+<p>Ponuky sú predvolene zoradené <b>podľa ceny od najnižšej</b> (ponuky skladom pred vypredanými).
+Zoradenie si môžeš zmeniť (podľa názvu, dostupnosti, ceny za booster alebo ceny s dopravou).
+Rovnaký produkt z viacerých obchodov zobrazujeme spolu. Označenie „Najlacnejšie“ dostane
+najlacnejšia ponuka skladom.</p>
+<p><b>Poradie ponúk nie je možné kúpiť</b> a nijako ho neovplyvňuje, či s nami obchod spolupracuje
+alebo nám platí.</p>
+<h2 id="partneri">Ako CardRadar zarába</h2>
+<p>Používanie CardRadaru je pre teba zadarmo. Náklady na prevádzku pokrývame z odmien od obchodov:</p>
+<ul>
+<li><b>Platba za preklik</b> – niektoré obchody nám platia dohodnutú sumu za preklik z CardRadaru na ich web.</li>
+<li><b>Partnerské (affiliate) odkazy</b> – niektoré odkazy vedú cez partnerský program obchodu alebo
+affiliate siete. Ak nakúpiš, môžeme dostať províziu.</li>
+</ul>
+<p>Cenu, ktorú v obchode zaplatíš, to nijako nemení. Obchody, ktoré s nami takto spolupracujú,
+sú pri ponukách označené štítkom <b>„Partner“</b>. Zobrazujeme aj obchody, ktoré nám nič neplatia.</p>
 <h2>Strážca ceny</h2>
-<p>Služba je bezplatná a bez záruky, že e-mail príde vždy včas. Kedykoľvek ju zrušíš odkazom v e-maile.</p>
+<p>Strážca ceny a naskladnenia je bezplatná služba bez záruky, že upozornenie príde vždy včas
+alebo že produkt bude v čase nákupu dostupný za uvedenú cenu. Zrušíš ho kedykoľvek odkazom v e-maile.</p>
+<h2>Zodpovednosť</h2>
+<p>CardRadar nezodpovedá za obsah webov obchodov, za ich tovar, dodanie ani za rozdiel medzi cenou
+u nás a cenou v obchode. Ak nájdeš chybu v údajoch, napíš nám a opravíme ju.</p>
 <h2>Ochranné známky</h2>
-<p>Pokémon a súvisiace názvy sú ochranné známky ich vlastníkov. CardRadar nie je s nimi spojený.</p>
-<h2>Kontakt</h2><p>{KONTAKT}</p>
+<p>Pokémon a súvisiace názvy a obrázky sú ochranné známky ich vlastníkov (Nintendo, Creatures,
+GAME FREAK, The Pokémon Company). CardRadar nie je s nimi spojený ani nimi podporovaný.
+Obrázky produktov pochádzajú od obchodov.</p>
+<h2>Riešenie sporov</h2>
+<p>S podnetmi a sťažnosťami sa obráť na kontakt vyššie. Za kúpený tovar zodpovedá obchod, v ktorom
+si nakúpil. Dozor nad ochranou spotrebiteľa vykonáva Slovenská obchodná inšpekcia (soi.sk).</p>
 """
 
 PRIVACY_HTML = """
-<p>Prevádzkovateľ: {PREVADZKOVATEL}, kontakt: {KONTAKT}.</p>
-<h2>Aké údaje spracúvame</h2>
+<p>Prevádzkovateľ: {PREVADZKOVATEL}. Kontakt: {KONTAKT}.</p>
+<h2>Aké údaje spracúvame a prečo</h2>
 <ul>
-<li><b>Strážca ceny:</b> e-mail, sledovaný produkt a cieľová cena. Účel: poslať ti upozornenie,
-o ktoré si požiadal (právny základ: tvoj súhlas potvrdený kliknutím v e-maile).</li>
-<li><b>Hľadané výrazy:</b> ukladáme len text hľadania a počet za deň, bez väzby na teba,
-aby sme ukázali obľúbené hľadania.</li>
-<li><b>IP adresa:</b> drží sa v pamäti servera asi minútu, na ochranu pred zneužitím
-(obmedzenie počtu požiadaviek). Do databázy sa neukladá, krátkodobo sa môže objaviť
-v technických záznamoch servera.</li>
-<li><b>Prekliky do obchodov:</b> počítame ich po obchodoch a dňoch. Aby sa jeden preklik
-nezapočítal viackrát, uložíme na 2 dni len jednosmerný odtlačok (hash), z ktorého sa IP adresa
-ani produkt nedajú spätne zistiť.</li>
-<li><b>Obľúbené produkty</b> sa ukladajú iba v tvojom prehliadači, nie na serveri.</li>
+<li><b>Strážca ceny:</b> e-mail, sledovaný produkt, cieľová cena a čas potvrdenia. Účel: poslať
+upozornenie, o ktoré si požiadal. Právny základ: tvoj súhlas (čl. 6 ods. 1 písm. a) GDPR),
+potvrdený kliknutím v e-maile. Súhlas odvoláš odkazom „Zrušiť strážcu“ v každom e-maile.</li>
+<li><b>Prekliky do obchodov:</b> počítame, koľko prekliknutí smeruje do ktorého obchodu a v ktorý deň
+(podklad na vyúčtovanie s obchodmi). Aby sa jeden preklik nezapočítal viackrát, uložíme na 2 dni
+len jednosmerný odtlačok (hash) zo skrátených technických údajov – z neho sa IP adresa ani tvoja
+identita nedajú spätne zistiť. Právny základ: oprávnený záujem (čl. 6 ods. 1 písm. f) GDPR).</li>
+<li><b>Hľadané výrazy:</b> ukladáme len text hľadania a počet za deň, bez väzby na teba
+(zobrazenie „Najhľadanejšie“).</li>
+<li><b>IP adresa:</b> drží sa v pamäti servera asi minútu na ochranu pred zneužitím
+(obmedzenie počtu požiadaviek), do databázy sa neukladá. Krátkodobo sa môže objaviť
+v technických záznamoch servera. Právny základ: oprávnený záujem (bezpečnosť).</li>
+<li><b>Obľúbené produkty, posledné hľadania a tmavý režim</b> sa ukladajú iba v tvojom prehliadači,
+nie na našom serveri.</li>
 </ul>
+<h2>Prechod do obchodu</h2>
+<p>Keď klikneš na ponuku, odkaz obsahuje označenie zdroja (<code>utm_source=cardradar</code>)
+a pri partnerských obchodoch môže viesť cez server affiliate siete. Na webe obchodu alebo siete
+sa už riadi spracovanie údajov a cookies ich vlastnými zásadami ochrany súkromia – CardRadar
+k týmto údajom nemá prístup.</p>
 <h2>Ako dlho</h2>
-<p>Nepotvrdený strážca sa zmaže po 7 dňoch, splnený 30 dní po odoslaní upozornenia.
-Aktívny strážca trvá, kým ho nezrušíš odkazom v e-maile.</p>
+<p>Nepotvrdený strážca sa zmaže po 7 dňoch, splnený 30 dní po odoslaní upozornenia, aktívny
+trvá, kým ho nezrušíš. Odtlačky prekliknutí sa mažú po 2 dňoch. Súhrnné počty prekliknutí
+a hľadaní (bez osobných údajov) uchovávame dlhodobo.</p>
 <h2>Kto k údajom má prístup</h2>
 <p>Web beží na serveroch spoločnosti Render Services, Inc. v dátovom centre vo Frankfurte (EÚ).
-E-maily strážcu ceny odosiela služba Resend zo serverov v Írsku (EÚ). Doménu a DNS spravuje
-Cloudflare. Stránka nenačítava písma ani skripty od tretích strán. Údaje nepredávame
-ani nezdieľame na reklamné účely.</p>
+E-maily strážcu odosiela služba Resend zo serverov v Írsku (EÚ). Doménu a DNS spravuje Cloudflare,
+cez ktorý prechádza prevádzka webu. Títo dodávatelia spracúvajú údaje len v našom mene.
+Stránka nenačítava reklamy, analytické nástroje, písma ani skripty od tretích strán.
+Údaje nepredávame ani nezdieľame na reklamné účely.</p>
 <h2>Cookies</h2>
-<p>CardRadar nepoužíva reklamné ani sledovacie cookies. Prehliadač si ukladá len súbory
-potrebné na rýchlejšie načítanie a obľúbené produkty.</p>
+<p>CardRadar nepoužíva reklamné ani sledovacie cookies. Používame len nevyhnutné technické
+úložisko prehliadača (obľúbené produkty, posledné hľadania, tmavý režim, rýchlejšie načítanie),
+na ktoré sa súhlas nevyžaduje.</p>
 <h2>Tvoje práva</h2>
-<p>Máš právo na prístup k údajom, ich opravu, vymazanie a odvolanie súhlasu. Stačí napísať na
+<p>Máš právo na prístup k údajom, ich opravu, vymazanie, obmedzenie spracúvania, prenosnosť,
+námietku proti spracúvaniu na základe oprávneného záujmu a odvolanie súhlasu. Stačí napísať na
 kontakt vyššie. Sťažnosť môžeš podať na Úrad na ochranu osobných údajov SR (dataprotection.gov.sk).</p>
 """
 
