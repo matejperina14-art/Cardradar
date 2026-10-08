@@ -823,7 +823,8 @@ def _log(debug, **entry):
 
 
 def _matches(shop, title, extra, parsed, kind):
-    if L.is_accessory_query(parsed.get("original")):
+    # príslušenstvo (sleeves, album...): pri hľadaní príslušenstva vždy, inak len ako záložka „Príslušenstvo“
+    if L.is_accessory_query(parsed.get("original")) or (not L.is_tcg_product(title) and L.is_accessory(title)):
         return L.accessory_matches_query(title, parsed)
     if kind == "card":
         return L.card_matches_query(title, extra, parsed, loose_set=shop.get("loose_set", False))
@@ -904,8 +905,10 @@ def scrape_search(shop, query, timeout=SEARCH_TIMEOUT, fetch_q=None):
             title = extract_title(a)
             if not title:
                 continue
-            why = "" if (acc_query and L.is_accessory(title)) else \
+            why = "" if L.is_accessory(title) else \
                 (L.merch_reason(title) or ("" if L.looks_like_tcg(title) else "not_tcg"))
+            if acc_query and not L.is_accessory(title):
+                why = why or "not_accessory"
             if why:
                 debug["merch_filtered"] += 1
                 _log(debug, title=title, decision="filtered", reason=why)
@@ -1395,7 +1398,7 @@ def catalog_scrape(shop, query):
         if anchors and not L.anchors_hit(it.get("_f") or L.fold(it["title"]), anchors):
             debug["match_filtered"] += 1
             continue
-        if not (L.is_accessory(it["title"]) if acc_query else L.is_tcg_product(it["title"])):
+        if not (L.is_accessory(it["title"]) if acc_query else L.is_listed_product(it["title"])):
             debug["merch_filtered"] += 1
             continue
         if not _matches(shop, it["title"], "", parsed, kind)[0]:
