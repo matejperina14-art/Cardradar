@@ -482,8 +482,17 @@ def parse_price_raw(text, title=""):
     text = _NOT_PRICE_RE.sub(" | ", text)   # oddeľovač, nie medzera – nič sa nespojí
     if not text.strip(" |"):
         return None, ""
-    # PRVÁ cena v texte (predtým vyhral vzor „€ 59,90“ pred „49,90 €“, aj keď bol ďalej v texte –
-    # pri „49,90 € 59,90 €“ sa tak zobrala stará / iná cena)
+    # Kde je € – pred číslom („€210“, Beardex) alebo za ním („49,90 €“)? Rozhoduje zápis v tejto
+    # dlaždici: „135 €210“ = 210 € (€ je prilepené k 210), „49,90 € 59,90 €“ = 49,90 €.
+    prefix = len(re.findall(r"€\d", text))
+    suffix = len(re.findall(r"\d\s?€(?!\s?\d)", text))
+    eur_res = _EUR_RES if prefix > suffix else _EUR_RES[::-1] if suffix > prefix else None
+    if eur_res:
+        for rx in eur_res:
+            m = rx.search(text)
+            if m and to_float(m.group(1)):
+                return to_float(m.group(1)), "EUR"
+    # nerozhodné: prvá cena v texte
     for group in ((_EUR_RES, "EUR"), (_CZK_RES, "CZK")):
         best = None
         for rx in group[0]:
@@ -598,7 +607,7 @@ ACCESSORY_PATTERNS = [
     r"code\s*cards?", r"online\s+(?:code|k[óo]d\w*)", r"ptcgl\s+code\w*",
     r"proxy\w*", r"replik\w*", r"fake", r"custom\s+cards?", r"fan\s*-?made",
     # hry, súťaže, losovania, live otváranie – cena nie je cena produktu (napr. „ETB – hra“ za 60 €)
-    r"hra\s+o", r"hra\s+na", r"\(hra\)", r"[-–—]\s*hra", r"(?:pok[eé]mon\s+)?minihr\w*", r"s[úu]ťa[žz]\w*", r"sout[ěe][žz]\w*",
+    r"zahra[ťt]\w*", r"zahraj\w*", r"pr[íi][ďd]\s+si", r"hra[ťt]", r"hra\s+o", r"hra\s+na", r"\(hra\)", r"[-–—]\s*hra", r"(?:pok[eé]mon\s+)?minihr\w*", r"s[úu]ťa[žz]\w*", r"sout[ěe][žz]\w*",
     r"losovan\w*", r"losov[áa]n\w*", r"tombol\w*", r"raffle\w*", r"giveaway\w*", r"lottery", r"loter\w*",
     r"(?:box|pack|live)\s+break\w*", r"live\s+(?:opening|otv\w*|stream\w*)", r"otv[áa]ran\w*",
     r"vstupn[ée]\w*", r"turnaj\w*", r"tournament\w*", r"ticket\w*", r"l[íi]stok\w*",
@@ -832,6 +841,8 @@ _VARIANT_RES = [
     ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
     ("rev", re.compile(r"reverse", re.I)),
     ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
+    # poškodené balenie sa nespája s novým (iná cena, iný produkt)
+    ("dmg", re.compile(r"po[šs]kod\w*|po[šs]koz\w*|damaged|dent\w*|bez\s+f[óo]li\w*", re.I)),
 ]
 _COMBO_TYPES = [
     re.compile(r"elite\s+trainer\s+box|\betb\b", re.I),
