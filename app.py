@@ -84,7 +84,7 @@ class RateLimiter:
             return True
 
 
-MAX_RESULTS = 600   # najviac ponúk v jednej odpovedi (najlacnejšie)
+MAX_RESULTS = 600   # najviac ponúk v jednej odpovedi (najlacnejšie aj najdrahšie, L.spread)
 LIMIT_SEARCH = RateLimiter(30)
 LIMIT_RETRY = RateLimiter(90)    # tiché dopĺňanie pomalých obchodov (r=1) sa nepočíta do LIMIT_SEARCH
 LIMIT_SUGGEST = RateLimiter(120)
@@ -212,7 +212,9 @@ def api_search():
     O.save_history(results, log_query=None if request.args.get("r") else original)
     # celkový počet aj s ponukami, ktoré katalógy pre veľké množstvo neposlali
     total = len(results) + sum(max(0, (d.get("total_matches") or 0) - (d.get("results") or 0)) for d in diagnostics)
-    results = results[:MAX_RESULTS]   # „scarlet violet“ = tisíce ponúk; web by ich nevedel naraz zobraziť
+    # „scarlet violet“ = tisíce ponúk; web by ich nevedel naraz zobraziť. Najlacnejšie + časť najdrahších,
+    # aby pri „charizard“ nechýbali najcennejšie karty a zoradenie „Od najdrahšieho“ sedelo.
+    results = L.spread(results, MAX_RESULTS)
     O.add_trends(results)
     prices = [r["price_eur"] for r in results if r.get("price_eur")]
     payload = {
