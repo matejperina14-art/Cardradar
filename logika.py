@@ -387,7 +387,37 @@ def quick_anchors(parsed, loose_set=False):
         groups.append((total,) + codes)   # „(SCR 130)“ = 130/142 (Gengar)
     if parsed.get("code_number"):
         groups.append((parsed["code_number"],))
+    kind = classify_query(parsed)
+    ptype = parsed.get("product_type")
+    if kind == "sealed" and ptype in _PTYPE_ANCHORS:
+        groups.append(_PTYPE_ANCHORS[ptype])
+    # slová, ktoré presné pravidlá aj tak vyžadujú („rare candy“, „scarlet violet“, „bundle“...) –
+    # bez nich sa predtým prechádzal celý katalóg (Gengar = tisíce položiek)
+    words = set()
+    if kind == "card":
+        if not (pokemon or parsed.get("set_name") or number):
+            words = _wanted_words(parsed) or _all_words(parsed)
+        elif not pokemon:
+            words = _name_words(parsed)
+        words |= _strict_words(parsed)
+    elif not parsed.get("set_name"):
+        words = _wanted_words(parsed)
+    groups += [(w,) for w in sorted(words) if w]
     return groups
+
+
+# Čo musí byť v názve pri danom type produktu (bez diakritiky) – hrubé sito k _PTYPE_TITLE_RE
+_PTYPE_ANCHORS = {
+    "elite trainer box": ("elite trainer", "etb"),
+    "booster box": ("booster", "display", "boosterbox", "bb"),
+    "booster bundle": ("bundle",),
+    "collection box": ("collection", "kolekci"),
+    "premium collection": ("premium", "premiov"),
+    "blister": ("blister",),
+    "tin": ("tin", "plechov"),
+    "collection": ("collection", "kolekci", "kolekce"),
+    "booster": ("booster", "balic"),
+}
 
 
 def anchors_hit(folded_title, groups):
