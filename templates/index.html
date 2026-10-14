@@ -1045,7 +1045,7 @@ function renderStatus(list){
       <span class="meta">${list.length} ${plural(list.length,'produkt','produkty','produktov')} v ${shopsN} ${plural(shopsN,'obchode','obchodoch','obchodoch')}` +
       (low !== null ? ` · od <b class="num">${eur(low)}</b>` : '') + (fresh ? ` · ${fresh}` : '') + `</span>
       <button class="share" id="shareBtn">Zdieľať</button>
-      ${totalFound > allResults.length ? `<span class="meta" style="grid-row:auto">Našli sme ${totalFound} ponúk, zobrazujeme ${allResults.length} najlacnejších. Pre presnejšie výsledky pridaj napr. ETB, booster box alebo názov setu.</span>` : ''}
+      ${totalFound > allResults.length ? `<span class="meta" style="grid-row:auto">Našli sme ${totalFound} ponúk, zobrazujeme ${allResults.length} (najlacnejšie aj najdrahšie). Pre presnejšie výsledky pridaj napr. ETB, booster box alebo názov setu.</span>` : ''}
       <div class="sortbar"><label for="sortTop">Zoradiť:</label>${sortSelect('sortTop')}</div></div>`;
   }
   $('status').innerHTML = h;
