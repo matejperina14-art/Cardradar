@@ -103,7 +103,7 @@ def _uniq(items, limit, key=lambda x: x["price_eur"], reverse=False):
 
 
 def build_home():
-    deals, etb, boxes, bundles, cards, all_items = [], [], [], [], [], []
+    deals, etb, boxes, bundles, cards, sheets, all_items = [], [], [], [], [], [], []
     for link, title, shop, price, stock, image, old_max, any_image in _latest_rows():
         if not L.is_tcg_product(title) or not L.price_plausible(title, price):
             continue
@@ -118,6 +118,9 @@ def build_home():
         if old_max and old_max - price >= 1 and price <= old_max * 0.97:
             deals.append(dict(it, old_price_eur=round(old_max, 2),
                               drop_pct=round((old_max - price) / old_max * 100)))
+        if L.SHEET_RE.search(title):   # print sheety majú vlastný riadok, nie sú to „Top karty“
+            sheets.append(it)
+            continue
         if L.is_combo(title) or L._BULK_RE.search(title):
             continue
         if _ETB_RE.search(title):
@@ -142,6 +145,14 @@ def build_home():
             s["etb_from"] = min(i["price_eur"] for i in s_etb)
         if s_box:
             s["box_from"] = min(i["price_eur"] for i in s_box)
+        # set bez ETB / boxu (30th Celebration): cena bundle, inak najlacnejšie balenie
+        plain = [i for i in mine if not L.is_combo(i["title"]) and not L._BULK_RE.search(i["title"])
+                 and L.product_kind(i["title"]) == "sealed"]
+        s_bundle = [i for i in plain if _BUNDLE_RE.search(i["title"]) and not re.search(r"display", i["title"], re.I)]
+        if s_bundle:
+            s["bundle_from"] = min(i["price_eur"] for i in s_bundle)
+        if plain:
+            s["sealed_from"] = min(i["price_eur"] for i in plain)
         s["offers"] = len(mine)
         sets.append(s)
 
@@ -152,6 +163,7 @@ def build_home():
         "cheap_box": _uniq(boxes, 12),
         "cheap_bundle": _uniq(bundles, 12),
         "top_cards": _uniq(cards, 12, reverse=True),
+        "sheets": _uniq(sheets, 12, reverse=True),
         "popular": O.popular_queries(),
         "new_sets": sets,
         "kurz_czk": {"rate": L.KURZ["CZK"], "date": L.KURZ_INFO.get("date", "")},
