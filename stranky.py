@@ -1160,8 +1160,10 @@ def _audit_one(shop, it):
     if final and urllib.parse.urlsplit(final).path.rstrip("/") != urllib.parse.urlsplit(it["link"]).path.rstrip("/") \
             and not page_["name"]:
         p.append("produkt už neexistuje (presmerované)")
-    ours, theirs = _audit_words(r["title"]), _audit_words(page_["name"])
-    if page_["name"] and ours and len(ours & theirs) / len(ours) < 0.6:
+    ours = _audit_words(r["title"])
+    best = max(page_.get("names") or [page_["name"]], key=lambda n: len(ours & _audit_words(n)), default="")
+    row["obchod_nazov"] = best
+    if best and ours and len(ours & _audit_words(best)) / len(ours) < 0.6:
         p.append("iný názov")
     cena = page_["price_eur"]
     if cena is None:
