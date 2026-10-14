@@ -84,7 +84,7 @@ def _latest_rows():
             FROM price_daily p
             JOIN (SELECT link, MAX(day) AS d FROM price_daily WHERE day >= ? GROUP BY link) r
               ON p.link = r.link AND p.day = r.d
-            WHERE p.price_eur > 0 AND (p.stock IS NULL OR p.stock != 'out')
+            WHERE p.price_eur > 0 AND (p.stock IS NULL OR p.stock NOT IN ('out', 'coming'))
         """, (since30, since3)).fetchall()
     finally:
         conn.close()
@@ -1184,7 +1184,7 @@ def _run_audit(n, shop_name=""):
     per = max(2, -(-n // max(1, len(shops))))
     for s in shops:
         items = [i for i in O.load_catalog(s["name"])[0] if i.get("price_eur")]
-        fresh = [i for i in items if i.get("stock") != "out"] or items
+        fresh = [i for i in items if i.get("stock") not in ("out", "coming")] or items
         picks[s["name"]] = (s, _random.sample(fresh, min(per, len(fresh))))
     state["total"] = sum(len(v[1]) for v in picks.values())
     O.meta_set("audit", json.dumps(state))
