@@ -1123,3 +1123,148 @@ def admin_report():
     sent = send_report(state) if request.args.get("send") else None
     return jsonify({"problems": problems, "ok": ok, "email": ADMIN_EMAIL or None, "sent": sent,
                     "clicks_30d": O.click_stats(30)})
+
+# =========================================================
+# ADMIN: KONTROLA PROTI OBCHODOM (/admin/kontrola)
+# Náhodne vyberie produkty z katalógov, otvorí ich stránku priamo v obchode a porovná
+# názov, cenu a sklad s tým, čo ukazuje CardRadar. Beží na pozadí (1 – 3 minúty).
+#   /admin/kontrola?start=1            nová kontrola (40 produktov zo všetkých obchodov)
+#   /admin/kontrola?start=1&n=80       viac produktov (najviac 150)
+#   /admin/kontrola?start=1&shop=gengar.cz   len jeden obchod
+#   /admin/kontrola?format=json        výsledok ako text (na poslanie)
+# =========================================================
+
+import random as _random
+
+_AUDIT_SKIP = {"pokemon", "tcg", "the", "and", "of", "en", "eng", "english", "karta", "card", "single",
+               "nm", "lp", "exc", "pl", "hp", "near", "mint"}
+
+
+def _audit_words(t):
+    return {w for w in L.fold_words(t) if len(w) >= 2} - _AUDIT_SKIP
+
+
+def _audit_one(shop, it):
+    import strazca
+    r = L.make_result(shop, it["title"], it["price_eur"], it["link"], it.get("image", ""), it.get("stock", ""),
+                      price_czk=it.get("price_czk"))
+    page_ = strazca.product_page(it["link"])
+    row = {"shop": shop["name"], "link": it["link"], "nase_nazov": r["title"], "nasa_cena": r["price_eur"],
+           "nas_sklad": r["stock"], "druh": r["kind"], "problemy": []}
+    if page_.get("error"):
+        row["problemy"].append("stránka neodpovedá: " + str(page_["error"])[:80])
+        return row
+    row.update(obchod_nazov=page_["name"], obchod_cena=page_["price_eur"], obchod_sklad=page_["stock"])
+    p = row["problemy"]
+    final = page_.get("final_url") or ""
+    if final and urllib.parse.urlsplit(final).path.rstrip("/") != urllib.parse.urlsplit(it["link"]).path.rstrip("/") \
+            and not page_["name"]:
+        p.append("produkt už neexistuje (presmerované)")
+    ours, theirs = _audit_words(r["title"]), _audit_words(page_["name"])
+    if page_["name"] and ours and len(ours & theirs) / len(ours) < 0.6:
+        p.append("iný názov")
+    cena = page_["price_eur"]
+    if cena is None:
+        row["poznamka"] = "obchod nemá cenu v dátach stránky (nedá sa overiť)"
+    elif abs(cena - r["price_eur"]) > max(0.3, cena * 0.03):
+        p.append(f"iná cena: CardRadar {r['price_eur']:.2f} €, obchod {cena:.2f} €")
+    ours_in = r["stock"] in ("in", "preorder", "order")
+    if page_.get("stock_sure") and r["stock"] and page_["stock"] and ours_in != (page_["stock"] in ("in", "preorder", "order")):
+        p.append(f"iný sklad: CardRadar „{r['stock']}“, obchod „{page_['stock']}“")
+    return row
+
+
+def _run_audit(n, shop_name=""):
+    state = {"status": "running", "started": time.time(), "done": 0, "total": 0, "rows": []}
+    shops = [s for s in O.active_shops() if O.is_catalog(s)
+             and (not shop_name or L.fold(s["name"]) == L.fold(shop_name))]
+    picks = {}
+    per = max(2, -(-n // max(1, len(shops))))
+    for s in shops:
+        items = [i for i in O.load_catalog(s["name"])[0] if i.get("price_eur")]
+        fresh = [i for i in items if i.get("stock") != "out"] or items
+        picks[s["name"]] = (s, _random.sample(fresh, min(per, len(fresh))))
+    state["total"] = sum(len(v[1]) for v in picks.values())
+    O.meta_set("audit", json.dumps(state))
+    lock = threading.Lock()
+
+    def per_shop(s, items):
+        for it in items:
+            try:
+                row = _audit_one(s, it)
+            except Exception as e:
+                row = {"shop": s["name"], "link": it["link"], "nase_nazov": it["title"], "problemy": ["chyba kontroly: " + str(e)[:100]]}
+            with lock:
+                state["rows"].append(row)
+                state["done"] = len(state["rows"])
+                O.meta_set("audit", json.dumps(state, ensure_ascii=False))
+            time.sleep(0.8)   # šetrne k obchodu
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        list(ex.map(lambda v: per_shop(*v), picks.values()))
+    state.update(status="done", finished=time.time())
+    O.meta_set("audit", json.dumps(state, ensure_ascii=False))
+
+
+def _audit_summary(state):
+    rows = state.get("rows", [])
+    shops = {}
+    for r in rows:
+        x = shops.setdefault(r["shop"], {"skontrolovane": 0, "v_poriadku": 0, "problemy": 0, "bez_ceny_na_stranke": 0})
+        x["skontrolovane"] += 1
+        if r["problemy"]:
+            x["problemy"] += 1
+        else:
+            x["v_poriadku"] += 1
+        if r.get("poznamka"):
+            x["bez_ceny_na_stranke"] += 1
+    return shops
+
+
+def admin_kontrola():
+    e = html.escape
+    if not is_admin():
+        return page("Nepovolené", "<h1>Nepovolené</h1><p>Pridaj ?key=ADMIN_KEY</p>", status=403)
+    try:
+        state = json.loads(O.meta_get("audit") or "null")
+    except Exception:
+        state = None
+    running = bool(state and state.get("status") == "running" and time.time() - state.get("started", 0) < 900)
+    if not running and (request.args.get("start") or not state):
+        n = max(5, min(150, int(L.to_float(request.args.get("n", "40")) or 40)))
+        threading.Thread(target=_run_audit, args=(n, request.args.get("shop", "")), daemon=True,
+                         name="audit").start()
+        state, running = {"status": "running", "done": 0, "total": n}, True
+    if request.args.get("format") == "json" and not running:
+        rows = state.get("rows", [])
+        return jsonify({"prehlad": _audit_summary(state),
+                        "problemy": [r for r in rows if r["problemy"]],
+                        "v_poriadku_ukazka": [r for r in rows if not r["problemy"]][:5]})
+    if running:
+        pct = round(state.get("done", 0) / max(1, state.get("total", 1)) * 100)
+        resp = page("Kontrola beží", f"<div class='box'><h1>Kontrolujem produkty v obchodoch…</h1>"
+                                     f"<p>Hotových {state.get('done', 0)} z {state.get('total', 0)}</p>"
+                                     f"<div class='bar'><i style='width:{pct}%'></i></div>"
+                                     f"<p><small>Stránka sa obnovuje sama, trvá to 1 – 3 minúty.</small></p></div>",
+                    back=False)
+        resp.headers["Refresh"] = "4; url=/admin/kontrola"
+        return resp
+    summ = _audit_summary(state)
+    rows_html = "".join(
+        f"<tr><td>{e(n)}</td><td>{x['skontrolovane']}</td><td class=ok>{x['v_poriadku']}</td>"
+        f"<td class='{'err' if x['problemy'] else ''}'>{x['problemy']}</td><td>{x['bez_ceny_na_stranke']}</td></tr>"
+        for n, x in sorted(summ.items()))
+    probs = "".join(
+        f"<details open><summary><b>{e(r['shop'])}</b> · {e(r['nase_nazov'][:70])}</summary>"
+        f"<p class=err>{'<br>'.join(e(x) for x in r['problemy'])}</p>"
+        f"<p><small>Obchod: {e(r.get('obchod_nazov') or '–')} · {e(str(r.get('obchod_cena') or '–'))} € · "
+        f"<a href='{e(r['link'])}' target=_blank rel=noopener>otvoriť v obchode</a></small></p></details>"
+        for r in state.get("rows", []) if r["problemy"]) or "<p class=ok>Žiadne rozdiely 🎉</p>"
+    when = datetime.fromtimestamp(state.get("finished", time.time()), timezone.utc).strftime("%d.%m. %H:%M UTC")
+    h = (f"<h1>Kontrola proti obchodom</h1><p>Dokončené {when}. <a href='/admin/kontrola?start=1'>Spustiť znova</a> · "
+         f"<a href='/admin/kontrola?format=json'>Výsledok ako text</a></p>"
+         f"<div class='wrap'><table><tr><th>Obchod</th><th>Skontrolované</th><th>V poriadku</th><th>Rozdiely</th>"
+         f"<th>Bez ceny na stránke</th></tr>{rows_html}</table></div>"
+         f"<p><small>Katalógy sa obnovujú každú hodinu (Gengar každé 3 h), malý rozdiel v cene alebo sklade môže "
+         f"byť len zmena od posledného načítania.</small></p><h2>Rozdiely</h2>{probs}")
+    return page("Kontrola proti obchodom", h, back=False)
