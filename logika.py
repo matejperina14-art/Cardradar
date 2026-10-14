@@ -1072,10 +1072,41 @@ def group_key(title, lang=""):
 _ONE_PER_SET = {"etb", "booster box", "booster bundle", "sleeved booster", "booster pack"}
 _CODE_KEY_RE = re.compile(r"\(([A-Z0-9]{2,5})(?:\s+([A-Z]{1,3}))?\s+([A-Z]{0,3})(\d{1,3})[a-z]?\)")
 # Kód setu -> počet kariet v sete (číslo za lomkou). Gengar píše „(SSP 238)“, iné obchody „238/191“.
-# Len overené sety; nový set doplň podľa toho, ako ho píšu obchody (napr. "pbl": 88).
+# Overené sety; nové sa doplnia samé z katalógov (learn_code_totals), ručne netreba nič.
 CODE_TOTALS = {"svi": 198, "pal": 193, "obf": 197, "mew": 165, "par": 182, "paf": 91, "tef": 162,
                "twm": 167, "sfa": 64, "scr": 142, "ssp": 191, "pre": 131, "jtg": 159, "dri": 182,
-               "blk": 86, "wht": 86, "meg": 132, "pfl": 94}
+               "blk": 86, "wht": 86, "meg": 132, "pfl": 94, "asc": 217}
+LEARNED_TOTALS = {}   # zistené z katalógov (learn_code_totals), napr. {"pbl": 88}
+
+
+def learn_code_totals(titles):
+    """Počet kariet v sete sa zistí sám z názvov v obchodoch: „Mega Gengar ex 084/088 Pitch Black“ -> pbl = 88.
+    Nový set tak netreba dopĺňať ručne. Platí najčastejšie číslo za lomkou (aspoň 3 karty, 60 % zhoda).
+    Vráti nové hodnoty, ktoré sa naučil."""
+    code_of = {}
+    for code, name in SET_CODES.items():
+        code_of.setdefault(name, code)
+    counts = {}
+    for t in titles:
+        m = _CARDNUM_RE.search(t or "")
+        if not m:
+            continue
+        set_name = normalize_query(strip_codes(t)).get("set_name")
+        code = code_of.get(set_name)
+        if code and code not in CODE_TOTALS:
+            c = counts.setdefault(code, {})
+            total = int(m.group(2))
+            c[total] = c.get(total, 0) + 1
+    new = {}
+    for code, c in counts.items():
+        total, n = max(c.items(), key=lambda x: x[1])
+        if n >= 3 and n >= 0.6 * sum(c.values()) and LEARNED_TOTALS.get(code) != total:
+            new[code] = total
+    if new:
+        LEARNED_TOTALS.update(new)
+        CODE_TOTALS.update(new)
+        group_key.cache_clear()
+    return new
 # Slová, ktoré nie sú menom karty (obchody ich píšu rôzne) – pri kľúči sa vynechajú
 _KEY_SKIP = {"pokemon", "tcg", "karta", "card", "single", "eng", "english", "anglicka", "anglicky",
              "alt", "art", "full", "illustration", "rare", "special", "sir", "ir", "sar", "ar", "holo",
