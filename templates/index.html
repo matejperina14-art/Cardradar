@@ -848,8 +848,11 @@ const STOCK = {
   in:       ['Skladom', 's-in'],
   out:      ['Vypredané', 's-out'],
   preorder: ['Predobjednávka', 's-pre'],
-  order:    ['Na objednávku', 's-ord']
+  order:    ['Na objednávku', 's-ord'],
+  coming:   ['Očakávame', 's-out']
 };
+// „Očakávame“ = zatiaľ sa nedá kúpiť, správa sa ako vypredané
+const isOut = s => s === 'out' || s === 'coming';
 
 /* ---------- skupiny ---------- */
 const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
@@ -872,7 +875,7 @@ function buildGroups(items, prefix){
   }
   let n = 0;
   return [...map.entries()].map(([key, offers]) => {
-    offers.sort((a, b) => (a.stock === 'out') - (b.stock === 'out') || (priceOf(a) ?? 1e9) - (priceOf(b) ?? 1e9));
+    offers.sort((a, b) => (isOut(a.stock)) - (isOut(b.stock)) || (priceOf(a) ?? 1e9) - (priceOf(b) ?? 1e9));
     const first = offers[0];
     const cnt = {}; offers.forEach(o => { const t = clean(o.title); cnt[t] = (cnt[t] || 0) + 1; });
     const title = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || b.length - a.length)[0] || first.title;
@@ -888,10 +891,10 @@ function buildGroups(items, prefix){
   });
 }
 function view(g, ignore = {}){
-  const vis = g.offers.filter(o => (ignore.shop || !shopOff.has(o.shop)) && (ignore.lang || !langOff.has(langKey(o))) && (ignore.out || showOut || o.stock !== 'out')
+  const vis = g.offers.filter(o => (ignore.shop || !shopOff.has(o.shop)) && (ignore.lang || !langOff.has(langKey(o))) && (ignore.out || showOut || !isOut(o.stock))
     && (ignore.cond || !hideUsed || o.cond_group !== 'used'));
   if (!vis.length) return null;
-  const best = vis.find(o => o.stock !== 'out') || vis[0];
+  const best = vis.find(o => !isOut(o.stock)) || vis[0];
   return {g, vis, best};
 }
 // zoradenie: cena, názov, dostupnosť, cena za booster, cena s dopravou
@@ -903,7 +906,7 @@ const SORTS = {
   pack:  'Najlacnejší booster',
   total: 'Najlacnejšie s dopravou'
 };
-const STOCK_RANK = {in: 0, preorder: 1, order: 2, '': 3, out: 4};
+const STOCK_RANK = {in: 0, preorder: 1, order: 2, '': 3, coming: 4, out: 5};
 const nameCmp = new Intl.Collator('sk', {sensitivity: 'base', numeric: true});
 function sortKey(v){
   if (sortMode === 'pack') return num(v.best.price_per_pack) ?? (1e6 + (priceOf(v.best) ?? 0));
@@ -977,7 +980,7 @@ async function showFavorites(){
   }
   const paint = () => {
     if (mode !== 'fav') return;
-    fg.forEach(g => g.offers.sort((a, b) => (a.stock === 'out') - (b.stock === 'out') || (priceOf(a) ?? 1e9) - (priceOf(b) ?? 1e9)));
+    fg.forEach(g => g.offers.sort((a, b) => (isOut(a.stock)) - (isOut(b.stock)) || (priceOf(a) ?? 1e9) - (priceOf(b) ?? 1e9)));
     $('results').innerHTML = '<div class="pgrid">' + fg.map(g => groupHtml({g, vis: g.offers, best: g.offers[0]}, false)).join('') + '</div>';
   };
   paint();
@@ -1037,7 +1040,7 @@ function renderStatus(list){
   }
   if (allResults.length) {
     const offers = list.flatMap(v => v.vis);
-    const prices = list.map(v => v.best).filter(o => o.stock !== 'out').map(priceOf).filter(p => p !== null);
+    const prices = list.map(v => v.best).filter(o => !isOut(o.stock)).map(priceOf).filter(p => p !== null);
     const low = prices.length ? Math.min(...prices) : null;
     const shopsN = new Set(offers.map(o => o.shop)).size;
     const fresh = freshText(list);
@@ -1069,7 +1072,7 @@ function groupHtml(v, best){
   const more = vis.length > 3 && !openGroups.has(g.key);
   const shown = more ? vis.slice(0, 3) : vis;
   const multi = vis.length > 1;
-  const inStock = vis.filter(o => o.stock !== 'out');
+  const inStock = vis.filter(o => !isOut(o.stock));
   const cheapest = inStock.map(priceOf).filter(x => x !== null);
   const minP = cheapest.length ? Math.min(...cheapest) : null;
   const sold = !inStock.length;
@@ -1092,9 +1095,9 @@ function groupHtml(v, best){
     <ul class="offers">
       ${shown.map(o => {
         const st = STOCK[o.stock] || ['Sklad neuvedený', ''];
-        const cheap = multi && o.stock !== 'out' && priceOf(o) === minP;
+        const cheap = multi && !isOut(o.stock) && priceOf(o) === minP;
         const fresh = ago(shopFresh[o.shop]);
-        return `<li class="offer${cheap ? ' cheap' : ''}${o.stock === 'out' ? ' sold' : ''}">
+        return `<li class="offer${cheap ? ' cheap' : ''}${isOut(o.stock) ? ' sold' : ''}">
           <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener">
             <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}${o.partner ? '<span class="partner" title="Obchod s CardRadarom spolupracuje (platí za prekliky alebo províziu). Poradie ponúk to neovplyvňuje.">Partner</span>' : ''}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
             <span class="o-price num">${eur(priceOf(o))}</span>
@@ -1143,15 +1146,15 @@ function renderGrid(list){
       $('results').innerHTML = `<div class="empty">${radik()}<h3>Našli sme len iné jazykové verzie</h3><p>${hl.map(l => LANGS[l]).join(', ')}.</p><button class="btn primary" id="showLangs">Zobraziť ich</button></div>`;
       return;
     }
-    const onlyOut = !showOut && inCatG.length && inCatG.every(g => g.offers.every(o => o.stock === 'out' || shopOff.has(o.shop) || langOff.has(langKey(o))));
+    const onlyOut = !showOut && inCatG.length && inCatG.every(g => g.offers.every(o => isOut(o.stock) || shopOff.has(o.shop) || langOff.has(langKey(o))));
     $('results').innerHTML = onlyOut
       ? `<div class="empty">${radik()}<h3>Všetko je momentálne vypredané</h3><p>Zobraz vypredané ponuky a pri produkte si zapni upozornenie, keď bude znova skladom.</p><button class="btn primary" id="showOutBtn">Zobraziť vypredané</button></div>`
       : `<div class="empty">${radik()}<h3>V kategórii „${CATS[cat][0]}“ nič nie je</h3><p>${shopOff.size ? 'Skús zapnúť všetky obchody.' : 'Skús inú kategóriu.'}</p><button class="btn" id="resetFilters">Zobraziť všetko</button></div>`;
     return;
   }
   // „Najlacnejšie“ = najlacnejšia ponuka skladom; použitá karta ho dostane, len ak iné nie sú
-  const fresh = list.filter(v => v.best.stock !== 'out' && v.best.cond_group !== 'used');
-  const bestPool = fresh.length ? fresh : list.filter(v => v.best.stock !== 'out');
+  const fresh = list.filter(v => !isOut(v.best.stock) && v.best.cond_group !== 'used');
+  const bestPool = fresh.length ? fresh : list.filter(v => !isOut(v.best.stock));
   const bestId = sortMode !== 'asc' && sortMode !== 'stock' ? null : bestPool
     .reduce((a, v) => (a === null || (priceOf(v.best) ?? 1e9) < (priceOf(a.best) ?? 1e9)) ? v : a, null)?.g.id;
   const sameKind = new Set(list.map(v => v.g._c)).size === 1;
@@ -1172,12 +1175,12 @@ function renderView(){
 function renderSide(){
   const has = groups.length > 0 && mode === 'search';
   const catCount = k => groups.filter(g => inCat(g, k) && view(g)).length;
-  const shopCount = s => groups.filter(g => inCat(g) && g.offers.some(o => o.shop === s && !langOff.has(langKey(o)) && (showOut || o.stock !== 'out'))).length;
-  const langCount = l => groups.filter(g => inCat(g) && g.offers.some(o => langKey(o) === l && !shopOff.has(o.shop) && (showOut || o.stock !== 'out'))).length;
+  const shopCount = s => groups.filter(g => inCat(g) && g.offers.some(o => o.shop === s && !langOff.has(langKey(o)) && (showOut || !isOut(o.stock)))).length;
+  const langCount = l => groups.filter(g => inCat(g) && g.offers.some(o => langKey(o) === l && !shopOff.has(o.shop) && (showOut || !isOut(o.stock)))).length;
   const names = [...new Set([...SHOPS.map(s => s.name), ...allResults.map(i => i.shop)])];
   const country = Object.fromEntries(SHOPS.map(s => [s.name, s.country]));
   const langs = Object.keys(LANGS).filter(l => l === 'EN' || allResults.some(i => langKey(i) === l));
-  const nOut = allResults.filter(i => i.stock === 'out').length;
+  const nOut = allResults.filter(i => isOut(i.stock)).length;
   const nUsed = allResults.filter(i => i.cond_group === 'used').length;
   $('side').innerHTML = `
     <div class="side-head"><b>Filtre</b><button class="m-x" id="sideClose" aria-label="Zavrieť">✕</button></div>
@@ -1291,7 +1294,7 @@ function chartSvg(points){
     const v = lo + (hi - lo) * i / 3, y = Y(v);
     grid += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" class="gl"/><text x="${L - 8}" y="${y + 4}" text-anchor="end" class="gt">${eurFmt.format(v)} €</text>`;
   }
-  const dots = pts.length <= 40 ? pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" class="${points[i].stock === 'out' ? 'dot out' : 'dot'}"><title>${dShort(points[i].day)}: ${eur(points[i].price_eur)}</title></circle>`).join('') : '';
+  const dots = pts.length <= 40 ? pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" class="${isOut(points[i].stock) ? 'dot out' : 'dot'}"><title>${dShort(points[i].day)}: ${eur(points[i].price_eur)}</title></circle>`).join('') : '';
   return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="Graf vývoja ceny">${grid}
     <path d="${area}" class="ar"/><path d="${line}" class="ln"/>${dots}
     <text x="${L}" y="${H - 8}" class="gt">${dShort(points[0].day)}</text>
@@ -1333,14 +1336,14 @@ async function openHistory(g, link){
 function openAlert(g){
   const v = view(g, {shop: true, lang: true, out: true}) || {best: g.offers[0]};
   let o = v.best;
-  const sold = g.offers.every(x => x.stock === 'out');
+  const sold = g.offers.every(x => isOut(x.stock));
   let email = ''; try { email = localStorage.getItem('cr_email') || ''; } catch(e){}
   const tgt = x => { const p = priceOf(x); return p !== null ? Math.max(0.01, Math.floor(p * 0.9 * 100) / 100) : ''; };
   openModal(sold ? 'Upozornenie na naskladnenie' : 'Strážca ceny', `<p class="m-sub">${esc(g.title)}</p>
     <form id="alertForm" class="m-form" novalidate>
       ${g.offers.length > 1 ? `<label>Obchod
-        <select id="aShop" class="input">${g.offers.map(x => `<option value="${esc(x.link)}"${x.link === o.link ? ' selected' : ''}>${esc(x.shop)} – ${x.stock === 'out' ? 'vypredané' : 'teraz'} ${eur(priceOf(x))}</option>`).join('')}</select>
-      </label>` : `<p class="m-note" style="margin:0">${esc(o.shop)} · ${o.stock === 'out' ? 'vypredané' : 'teraz'} ${eur(priceOf(o))}</p>`}
+        <select id="aShop" class="input">${g.offers.map(x => `<option value="${esc(x.link)}"${x.link === o.link ? ' selected' : ''}>${esc(x.shop)} – ${isOut(x.stock) ? 'vypredané' : 'teraz'} ${eur(priceOf(x))}</option>`).join('')}</select>
+      </label>` : `<p class="m-note" style="margin:0">${esc(o.shop)} · ${isOut(o.stock) ? 'vypredané' : 'teraz'} ${eur(priceOf(o))}</p>`}
       ${sold ? '' : `<label>Napíš mi, keď cena klesne na
         <span class="inrow"><input id="aTarget" class="input num" type="number" inputmode="decimal" step="0.01" min="0.01" value="${tgt(o)}" required> €</span>
       </label>`}
