@@ -846,7 +846,9 @@ def _hidden(tag):
     return "display:none" in style or "visibility:hidden" in style
 
 
-def visible_text(el):
+def visible_text(el, max_part=None):
+    """Viditeľný text prvku. max_part = vynechať dlhé kusy textu (popis produktu v dlaždici –
+    „…otvorili v rámci predobjednávok…“ nesmie určiť sklad)."""
     if el is None:
         return ""
     parts = []
@@ -857,7 +859,7 @@ def visible_text(el):
                 hidden = True
                 break
             p = p.parent
-        if not hidden:
+        if not hidden and (max_part is None or len(L.clean_text(s)) <= max_part):
             parts.append(str(s))
     return L.clean_text(" ".join(parts))
 
@@ -873,7 +875,7 @@ def detect_stock_el(el):
         if btn.has_attr("disabled") or "disabled" in (btn.get("class") or []):
             label = btn.get_text(" ", strip=True)
             return "preorder" if L.STOCK_PRE_RE.search(label) else "coming" if L.COMING_RE.search(label) else "out"
-    text = visible_text(el)
+    text = visible_text(el, max_part=50)   # krátke štítky (sklad, tlačidlá), nie popis produktu
     stock = L.detect_stock(text)
     if stock in ("", "in") and L.COMING_RE.search(text):
         return "coming"   # „Očakávame“ = zatiaľ sa nedá kúpiť (obchod ho vedie ako nedostupný)
@@ -885,7 +887,7 @@ def detect_stock_el(el):
             return "preorder"
         if re.search(r"do\s+ko[šs][íi]ka|add\s+to\s+cart|koupit|k[úu]pi[ťt]", label):
             return "in"
-    if L.COMING_RE.search(el.get_text(" ", strip=True)):
+    if L.COMING_RE.search(text):
         return "coming"   # „Očakávame“ (iHRYsko): teraz sa nedá kúpiť
     return ""
 
@@ -1193,8 +1195,14 @@ _TILE_TEXT_RE = re.compile(r"\d\s*(?:€|Kč|CZK|EUR)|€\s*\d|skladom|skladem|v
 
 
 # názov súboru obrázka („6a45265c3eac4 tcg pokemon … 6a452838cb975[1]“) alebo veta z popisu produktu
-_JUNK_NAME_RE = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b|\[\d+\]\s*$|\.(?:jpe?g|png|webp|gif)\b|"
+_JUNK_NAME_RE = re.compile(r"(?:obsahuj\w*|n[áa]jdete|ide[áa]ln\w*\s+(?:darček|darcek|pre))\s|[.!]\s*$|"
+                           r"(?:\S+\s+){15,}\S|"   # 16+ slov = veta z popisu, nie názov
+                           r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b|\[\d+\]\s*$|\.(?:jpe?g|png|webp|gif)\b|"
                            r"\w_\w+_\w|[.!?]\s+[A-ZÁČĎÉÍĽĹŇÓÔŔŠŤÚÝŽ]|\b\d+\s*(?:cm|mm)\b", re.I)
+
+
+# jedno zlepené slovo bez medzier („Violetexbooster“, „crystalblazebooster“) – názov súboru obrázka
+_GLUED_RE = re.compile(r"^[a-z0-9]{12,}$", re.I)
 
 
 def _best_title(cands):
@@ -1215,7 +1223,7 @@ def _parse_listing(shop, html, page_url, debug=None):
         try:
             for a in soup.select(shop["link_selector"]):
                 t = extract_title(a)
-                if t and not _JUNK_TITLE_RE.match(t):
+                if t and not _JUNK_TITLE_RE.match(t) and not _GLUED_RE.match(t):
                     preferred.setdefault(clean_link(abs_url(page_url, a.get("href"))).lower().rstrip("/"), a)
         except Exception:
             pass
@@ -1246,6 +1254,7 @@ def _parse_listing(shop, html, page_url, debug=None):
         # Najdlhší názov (plný „Pikachu ex 238/191 Surging Sparks“, nie krátky alt obrázka „Pikachu ex“).
         # Odkaz cez celú dlaždicu (s cenou, skladom, tlačidlom) nie je názov – ten sa berie len ako záloha.
         clean = [x for x in named if not _TILE_TEXT_RE.search(x[1]) and not _JUNK_NAME_RE.search(x[1])]
+        clean = [x for x in clean if not _GLUED_RE.match(x[1])] or clean   # „Violetexbooster“ (alt obrázka)
         _, title, a = _best_title(clean) if clean else min(named, key=lambda x: x[0])
         if loose and not extract_image(a, page_url):
             continue
@@ -2336,4 +2345,3 @@ def start_background():
     threading.Thread(target=_czk_loop, daemon=True, name="czk").start()   # každý proces potrebuje kurz
     if only_one_process("catalog"):
         threading.Thread(target=_catalog_loop, daemon=True, name="catalog").start()
-      
