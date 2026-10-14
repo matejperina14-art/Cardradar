@@ -260,7 +260,7 @@ def _should_notify(price, stock, target, stock_sure=True):
     if is_stock_alert(target):
         # naskladnenie: len ak sklad vieme naisto (JSON-LD / meta), nie z textu stránky
         return stock in ("in", "preorder") and stock_sure
-    if not price or price > target or stock == "out":
+    if not price or price > target or stock in ("out", "coming"):
         return False
     if stock in ("in", "preorder", "order"):
         return True
