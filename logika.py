@@ -674,7 +674,7 @@ _SEALED_TYPE_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection
                              r"blister|display|deck|\bbox\b|chest|bal[íi][čc]|(?-i:\bBB\b)|"
                              # Build & Battle (Box / Stadium / Kit), Battle Academy, Trainer Kit, Starter Set...
                              r"build\s*(?:&|and)?\s*battle|battle\s+academy|\bstadium\b|trainer\s+kit|"
-                             r"starter\s+(?:set|deck|kit)|plechovk|\bsada\b", re.I)
+                             r"starter\s+(?:set|deck|kit)|plechovk|\bsada\b|calendar|kalend[áa]r", re.I)
 
 
 def price_plausible(title, eur):
