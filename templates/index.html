@@ -207,6 +207,7 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .k{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--k-bg);color:var(--sub)}
 .k-card{background:var(--k-card);color:var(--blue)}.k-bundle{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-box{background:var(--k-box);color:var(--orange)}.k-etb{background:var(--k-etb);color:var(--violet)}.k-other{background:var(--k-other);color:var(--teal)}.k-acc{background:var(--k-bg);color:var(--sub)}
 .k-best{background:var(--holo);color:#101b44}
+.k-sheet{background:var(--k-etb);color:var(--violet)}
 .k-cond.nm{background:var(--green-bg);color:var(--green)}
 .k-cond.used{background:var(--notice-bg);color:var(--notice-ink)}
 .p-title{margin:0;font-size:15px;line-height:1.35;font-weight:650;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.7em}
@@ -774,7 +775,8 @@ const CATS = {
   etb:   ['ETB', '🎁', 'ETB'],
   bundle:['Bundle', '🎀', 'Bundle'],
   other: ['Ostatné balenia', '🧺', 'Balenie'],
-  acc:   ['Príslušenstvo', '🧤', 'Príslušenstvo']
+  acc:   ['Príslušenstvo', '🧤', 'Príslušenstvo'],
+  sheet: ['Print sheety', '📜', 'Sheet']
 };
 const FLAG_SVG = {
   JP: '<rect width="30" height="20" fill="#fff"/><circle cx="15" cy="10" r="6" fill="#bc002d"/>',
@@ -810,6 +812,7 @@ function langTag(x){
 // kategória: server vie, či je to karta / balík / príslušenstvo; jemné delenie balíkov podľa názvu
 function catOf(o){
   if (o.kind === 'accessory') return 'acc';
+  if (o.kind === 'sheet') return 'sheet';
   const c = categoryOf(o.title);
   if (o.kind === 'card') return c === 'etb' || c === 'box' ? c : 'card';
   if (o.kind === 'sealed' && c === 'card') return 'other';
@@ -1447,7 +1450,11 @@ const FALLBACK_SETS = [['Delta Reign','delta reign'],['30th Celebration','30th c
 let homeRetryTimer = null;
 const SET_COLORS = ['#e8a900','#2453d6','#6b45d8','#0a8a4a','#d4334b','#0d8a7c','#d6407f','#d9561c'];
 function setHtml(s, i){
-  const prices = [num(s.etb_from) !== null ? `<div>ETB od <b>${eur(s.etb_from)}</b></div>` : '', num(s.box_from) !== null ? `<div>Box od <b>${eur(s.box_from)}</b></div>` : ''].filter(Boolean);
+  // ETB a box; set bez nich (30th Celebration) ukáže bundle, inak najlacnejšie balenie
+  let prices = [num(s.etb_from) !== null ? `<div>ETB od <b>${eur(s.etb_from)}</b></div>` : '', num(s.box_from) !== null ? `<div>Box od <b>${eur(s.box_from)}</b></div>` : ''].filter(Boolean);
+  if (prices.length < 2 && num(s.bundle_from) !== null) prices.push(`<div>Bundle od <b>${eur(s.bundle_from)}</b></div>`);
+  if (prices.length < 2 && num(s.sealed_from) !== null && ![s.etb_from, s.box_from, s.bundle_from].includes(s.sealed_from))
+    prices.push(`<div>Balenia od <b>${eur(s.sealed_from)}</b></div>`);
   return `<div class="setcard" style="--c:${SET_COLORS[i % SET_COLORS.length]}" role="listitem" data-q="${esc(s.query)}" tabindex="0">
     <div class="tile-img">${s.image ? `<img src="${esc(s.image)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : placeholder('box')}${i < 2 ? '<span class="set-new">Nové</span>' : ''}</div>
     <div class="tile-body">
@@ -1473,6 +1480,7 @@ function renderHome(){
   h += railSec('Najlacnejšie booster boxy', d.cheap_box, 'box');
   h += railSec('Najlacnejšie bundle', d.cheap_bundle, 'bundle');
   h += railSec('Top karty', d.top_cards, 'card', 'najcennejšie karty skladom');
+  h += railSec('Print sheety', d.sheets, 'sheet', 'nerozstrihané tlačové archy');
   h += `<section class="hsec"><h2>Ako CardRadar funguje</h2><ol class="steps">
     <li><b>Vyhľadaj</b><span>Kartu, set alebo produkt. Prejdeme všetky obchody naraz.</span></li>
     <li><b>Porovnaj</b><span>Rovnaký produkt z rôznych obchodov vidíš spolu, od najlacnejšieho.</span></li>
@@ -1485,7 +1493,7 @@ function renderHome(){
     const ar = r.closest('.hsec').querySelector('.arrows');
     if (ar) ar.classList.toggle('hide', r.scrollWidth <= r.clientWidth + 4);
   });
-  const all = [...deals, ...etb, ...(d.cheap_box || []), ...(d.cheap_bundle || []), ...(d.top_cards || [])];
+  const all = [...deals, ...etb, ...(d.cheap_box || []), ...(d.cheap_bundle || []), ...(d.top_cards || []), ...(d.sheets || [])];
   all.forEach(x => { if (!imageOf(x) && imgByLink.get(x.link)) x.image = imgByLink.get(x.link); });
   const miss = all.filter(x => !imageOf(x) && x.link).slice(0, 36);
   if (miss.length && !d._imgTried) {
