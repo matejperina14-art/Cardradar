@@ -1150,6 +1150,10 @@ def load_catalog(shop_name):
     items = [{"link": r[0], "title": r[1], "price_eur": r[2], "image": r[3] or "", "stock": r[4] or "",
               "price_czk": r[5], "_f": L.fold(r[1] or "")} for r in rows]   # _f = názov bez diakritiky (predfilter)
     updated = meta[0] if meta else ""
+    try:
+        L.learn_code_totals(it["title"] for it in items)   # počty kariet nových setov (pbl = 88...)
+    except Exception:
+        pass
     with _cat_lock:
         _cat_mem[shop_name] = (time.monotonic(), items, updated)
     return items, updated
