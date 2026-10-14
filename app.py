@@ -372,6 +372,7 @@ app.add_url_rule("/admin/obchody", "admin_obchody", S.admin_obchody, methods=["G
 app.add_url_rule("/admin/katalog", "admin_katalog", S.admin_katalog)
 app.add_url_rule("/admin/report", "admin_report", S.admin_report)
 app.add_url_rule("/admin/partneri", "admin_partneri", S.admin_partneri)
+app.add_url_rule("/admin/kontrola", "admin_kontrola", S.admin_kontrola)
 app.add_url_rule("/sety", "sets", S.sets_page)
 app.add_url_rule("/set/<slug>", "set_detail", S.set_page)
 app.add_url_rule("/sitemap.xml", "sitemap", S.sitemap_xml)
