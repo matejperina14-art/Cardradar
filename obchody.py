@@ -1179,6 +1179,11 @@ _JUNK_TITLE_RE = re.compile(
     r"top|v[ýy]predaj|sale|new|predobjedn\w*|p[řr]edobjedn\w*|do\s+ko[šs][íi]ka|k[úu]pi[ťt]|koupit)\W*$", re.I)
 
 
+# text celej dlaždice (cena, sklad, košík) – taký „názov“ nechceme
+_TILE_TEXT_RE = re.compile(r"\d\s*(?:€|Kč|CZK|EUR)|€\s*\d|skladom|skladem|vypredan|vyprodan|do\s+ko[šs][íi]k|"
+                           r"k[úu]pi[ťt]|koupit|add\s+to\s+cart|predobjedn|p[řr]edobjedn", re.I)
+
+
 def _parse_listing(shop, html, page_url, debug=None):
     soup = BeautifulSoup(html, HTML_PARSER)
     host = host_of(shop["base_url"])
@@ -1216,7 +1221,10 @@ def _parse_listing(shop, html, page_url, debug=None):
             loose = True
         if not named:
             continue
-        _, title, a = min(named, key=lambda x: x[0])
+        # Najdlhší názov (plný „Pikachu ex 238/191 Surging Sparks“, nie krátky alt obrázka „Pikachu ex“).
+        # Odkaz cez celú dlaždicu (s cenou, skladom, tlačidlom) nie je názov – ten sa berie len ako záloha.
+        clean = [x for x in named if not _TILE_TEXT_RE.search(x[1])]
+        _, title, a = max(clean, key=lambda x: x[0]) if clean else min(named, key=lambda x: x[0])
         if loose and not extract_image(a, page_url):
             continue
         block = find_block(a)
@@ -1634,9 +1642,10 @@ def catalog_scrape(shop, query):
             continue
         matched.append(it)
     # pri veľmi všeobecnom hľadaní („scarlet violet“) sú to tisíce položiek – ďalej ide len MAX_SHOP_RESULTS
+    # (väčšina najlacnejších + časť najdrahších, aby nechýbali najcennejšie karty)
     matched.sort(key=lambda it: it["price_eur"] or 0)
     debug["total_matches"] = len(matched)
-    for it in matched[:MAX_SHOP_RESULTS]:
+    for it in L.spread(matched, MAX_SHOP_RESULTS):
         results.append(L.make_result(shop, it["title"], it["price_eur"], it["link"], it["image"], it["stock"],
                                      price_czk=it.get("price_czk")))
     results.sort(key=lambda r: r["price_eur"])
