@@ -817,6 +817,7 @@ MERCH_HARD_PATTERNS = [
     r"plag[áa]t\w*", r"poster\w*", r"sticker\w*", r"n[áa]lepk\w*", r"samolep\w*", r"tetov\w*",
     r"knih\w*", r"kniha", r"books?", r"komiks\w*", r"manga", r"omal\w*", r"encyklop\w*",
     r"nintendo", r"videohr\w*", r"switch",
+    r"monopoly", r"spolo[čc]ensk\w*", r"deskov\w*", r"stolov\w*\s+hr\w*", r"board\s*games?", r"pexeso", r"kvarteto",
     # jedlo
     r"[čc]okol[áa]d\w*", r"cukrovink\w*", r"bonbon\w*", r"candy", r"l[íi]zank\w*",
     r"[žz]uva[čc]k\w*", r"ramune", r"limon[áa]d\w*",
@@ -974,6 +975,7 @@ STOCK_ORDER_RE = re.compile(r"na\s+objedn[áa]vku|do\s+\d+\s+dn[íi]|na\s+dotaz|
 STOCK_IN_RE = re.compile(
     r"skladom|skladem|na\s+sklad[eě]|in\s+stock|dostupn[ée]|k\s+odberu"
     r"|k\s+dispozici|ihne[dď]|expedujeme|odes[ií]l[aá]me", re.I)
+_STOCK_SURE_IN_RE = re.compile(r"skladom|skladem|na\s+sklad[eě]|in\s+stock", re.I)
 COMING_RE = re.compile(r"o[čc]ak[áa]vame|o[čc]ek[áa]v[áa]me|pripravujeme|coming\s+soon", re.I)
 
 
@@ -986,6 +988,9 @@ def detect_stock(text):
         return "out"
     if STOCK_PRE_RE.search(text):
         return "preorder"
+    # „Skladom – doručenie do 2 dní“ je skladom; „do X dní“ bez „skladom“ = na objednávku
+    if _STOCK_SURE_IN_RE.search(text) and not re.search(r"na\s+objedn|u\s+dod[áa]vate", text, re.I):
+        return "in"
     if STOCK_ORDER_RE.search(text):
         return "order"
     if STOCK_IN_RE.search(text):
