@@ -382,7 +382,9 @@ def quick_anchors(parsed, loose_set=False):
         groups.append(tuple(alts))
     number = parsed.get("card_number")
     if number and "/" in number:
-        groups.append((number.split("/")[1],))
+        total = number.split("/")[1]
+        codes = tuple("(" + c for c, t in CODE_TOTALS.items() if str(t) == total.lstrip("0"))
+        groups.append((total,) + codes)   # „(SCR 130)“ = 130/142 (Gengar)
     if parsed.get("code_number"):
         groups.append((parsed["code_number"],))
     return groups
@@ -417,7 +419,11 @@ def card_number_in(text, number):
         a, b = (int(x) for x in number.split("/"))
     except (ValueError, AttributeError):
         return False
-    return any(int(m.group(1)) == a and int(m.group(2)) == b for m in _CARDNUM_RE.finditer(text or ""))
+    if any(int(m.group(1)) == a and int(m.group(2)) == b for m in _CARDNUM_RE.finditer(text or "")):
+        return True
+    # Gengar píše „(SCR 130)“ namiesto „130/142“ – kód setu s rovnakým počtom kariet
+    return any(int(m.group(4)) == a and not m.group(2) and not m.group(3)
+               and CODE_TOTALS.get(m.group(1).lower()) == b for m in _CODE_KEY_RE.finditer(text or ""))
 
 
 def card_matches_query(title, extra_text, parsed, loose_set=False):
@@ -438,12 +444,51 @@ def card_matches_query(title, extra_text, parsed, loose_set=False):
         return False, "set_not_found"
     if suffix and not has_word(strip_codes(title), suffix):
         return False, "suffix_not_in_title"
+    title_words = fold_words(title)
     # „rare candy“: bez Pokémona, setu a čísla musia byť hľadané slová v názve
     if not (pokemon or set_name or number):
         want = _wanted_words(parsed) or _all_words(parsed)
-        if not want or want - fold_words(title):
+        if not want or want - title_words:
             return False, "words_not_in_title"
+    # Pokémon, ktorého nepoznáme („archaludon ex 130/142“): meno musí byť v názve,
+    # inak by stačilo číslo karty a našla by sa iná karta s tým istým číslom (Lugia ex 130/142)
+    elif not pokemon and _name_words(parsed) - title_words:
+        return False, "name_not_in_title"
+    # „mega charizard x ex“, „radiant charizard“, „team rocket's mewtwo“: tieto slová musia sedieť,
+    # inak by sa našiel každý Charizard ex
+    if _strict_words(parsed) - title_words:
+        return False, "variant_not_in_title"
     return True, "matched"
+
+
+# Slová, ktoré menia, o akú kartu ide – pri hľadaní musia byť v názve
+STRICT_MODIFIERS = {"mega", "radiant", "shining", "galarian", "alolan", "hisuian", "paldean", "dark", "light"}
+# Slová o raritách a stave – nie sú súčasťou mena karty, obchody ich píšu rôzne
+_NOT_NAME_WORDS = {"alt", "art", "full", "illustration", "rare", "special", "sir", "ir", "sar", "ar", "holo",
+                   "reverse", "promo", "secret", "gold", "hyper", "ultra", "double", "tera", "ex", "gx",
+                   "vmax", "vstar", "nm", "mint", "near", "psa", "cgc", "bgs", "single", "karta", "karticka",
+                   "edition", "shiny", "foil", "stamp", "stamped"}
+_SET_TOKEN_WORDS = ({w for a in SET_ALIASES for w in fold_words(a)} | set(SET_CODES)
+                    | {w for s in KNOWN_SETS for w in fold_words(s)})
+
+
+def _name_words(parsed):
+    """Slová mena karty, keď Pokémona nepoznáme (bez setu, kódu, čísel a rarít)."""
+    return {w for w in _wanted_words(parsed) if not w.isdigit() and len(w) >= 3}  \
+        - _SET_TOKEN_WORDS - _NOT_NAME_WORDS - fold_words(parsed.get("set_name"))
+
+
+def _strict_words(parsed):
+    original = parsed.get("original", "") or ""
+    words = fold_words(original)
+    out = words & STRICT_MODIFIERS
+    if re.search(r"\bmega\s+evolution\b", original, re.I):   # séria „Mega Evolution“, nie Mega Pokémon
+        out.discard("mega")
+    if "mega" in out:
+        out |= words & {"x", "y"}                            # Mega Charizard X / Y
+    # majiteľ karty: „Lillie's Clefairy ex“, „Team Rocket's Mewtwo ex“, „Iono's Bellibolt ex“
+    out |= {fold(m) for m in re.findall(r"([A-Za-zÀ-ž]{2,})['’]s\b", original)}
+    return out - fold_words(parsed.get("pokemon"))
 
 
 # Ako obchody píšu typ produktu v názve
@@ -522,6 +567,7 @@ _NOISE_RE = re.compile(
     r"|po[šs]tovn[ée](?:\s+od)?|zdarma\s+od|nad)\s*:?\s*-?\s*(?:€\s*" + _NUM + r"|" + _NUM + r"\s*(?:€|" + _CZK + r"))"
     r"|" + _NUM + r"\s*(?:€|" + _CZK + r")\s*/\s*(?:ks|kus|pack|booster|bal\w*)", re.I)
 _EUR_RES = [re.compile(r"€\s*" + _NUM), re.compile(_NUM + r"\s*€")]
+_EUR_WORD_RE = re.compile(r"(?<![A-Za-z])(?:EUR|Eur|eur)(?![A-Za-z])")
 _CZK_RES = [re.compile(_NUM + r"\s*" + _CZK, re.I), re.compile(r"CZK\s*" + _NUM, re.I)]
 
 
@@ -563,6 +609,8 @@ def parse_price_raw(text, title=""):
     """(suma, 'EUR' | 'CZK') alebo (None, ''). Ceny 'bez DPH' a úspory sa ignorujú.
     title = názov produktu; odstráni sa z textu, aby sa číslo z názvu nezlepilo s cenou."""
     text = _strip_title(clean_text(text), title)
+    text = _EUR_WORD_RE.sub("€", text)   # „169,90 EUR“ = „169,90 €“ (predtým sa produkt vôbec nenačítal)
+    text = re.sub(r"(\d),[-–]\s*€", r"\1 €", text)   # „49,- €“
     text = _NOISE_RE.sub(" ", _EX_VAT.sub(" ", text))
     text = _NOT_PRICE_RE.sub(" | ", text)   # oddeľovač, nie medzera – nič sa nespojí
     if not text.strip(" |"):
@@ -571,23 +619,22 @@ def parse_price_raw(text, title=""):
     # dlaždici: „135 €210“ = 210 € (€ je prilepené k 210), „49,90 € 59,90 €“ = 49,90 €.
     prefix = len(re.findall(r"€\d", text))
     suffix = len(re.findall(r"\d\s?€(?!\s?\d)", text))
-    eur_res = _EUR_RES if prefix > suffix else _EUR_RES[::-1] if suffix > prefix else None
-    if eur_res:
-        for rx in eur_res:
-            m = rx.search(text)
-            if m:
-                v = to_float(m.group(1))
-                return (v, "EUR") if v else (None, "")
-    # nerozhodné: prvá cena v texte. „0 Kč“ (Gengar: nevydaný produkt) = bez ceny, nehľadá sa ďalšie číslo
-    for group in ((_EUR_RES, "EUR"), (_CZK_RES, "CZK")):
-        best = None
-        for rx in group[0]:
-            m = rx.search(text)
-            if m and (best is None or m.start() < best.start()):
-                best = m
-        if best is not None:
-            v = to_float(best.group(1))
-            return (v, group[1]) if v else (None, "")
+    if prefix != suffix:
+        groups = [([_EUR_RES[0] if prefix > suffix else _EUR_RES[1]], "EUR")]
+    else:
+        groups = [(_EUR_RES, "EUR"), (_CZK_RES, "CZK")]
+    for regexes, cur in groups:
+        found = sorted((m.start(), to_float(m.group(1))) for rx in regexes for m in rx.finditer(text))
+        if not found:
+            continue
+        first = found[0][1]
+        # „0 Kč“ (Gengar: nevydaný produkt) = bez ceny, nehľadá sa ďalšie číslo
+        if not first:
+            return None, ""
+        # Viac cien v jednej dlaždici = zvyčajne pôvodná a akciová („Pôvodne 59,90 € 49,90 €“),
+        # alebo „od – do“. Platí nižšia. Drobné sumy (pod 45 % prvej ceny) nie sú cena produktu.
+        vals = [v for _, v in found if v and v >= first * 0.45]
+        return min(vals), cur
     return None, ""
 
 
@@ -807,7 +854,7 @@ CARD_MARKER_RE = re.compile(
 _TCG_SAFE_RE = re.compile(
     r"rare\s+candy|puzzle\s+of\s+time|poster\s+collection|binder\s+collection"
     r"|sticker\s+collection|collector'?s?\s+chest|nintendo\s+(?:black\s+star\s+)?promos?"
-    r"|trick\s+or\s+trade|grey\s+felt\s+hat", re.I)
+    r"|trick\s+or\s+trade|grey\s+felt\s+hat|energy\s+switch", re.I)
 _SWITCH_RE = re.compile(r"(?<!\w)(?:energy\s+)?switch(?:\s+cart)?(?!\w)", re.I)
 _CONSOLE_RE = re.compile(r"nintendo\s+switch|konzol\w*|console|oled|joy-?con|videohr\w*|video\s*game", re.I)
 
@@ -987,7 +1034,9 @@ def group_key(title, lang=""):
     number = p.get("card_number") or ""
 
     if ptype and set_name and ptype != "collection":
-        key = f"s|{set_name}|{ptype}|{pokemon}|{variants}|{lang}"
+        # ETB, box, bundle, booster: v sete je len jeden, Pokémon na obale („ETB (Mega Zeraora)“) nerozhoduje
+        who = "" if ptype in _ONE_PER_SET else pokemon
+        key = f"s|{set_name}|{ptype}|{who}|{variants}|{lang}"
         if ptype in _DETAIL_TYPES:
             drop = _DETAIL_SKIP | fold_words(set_name)
             detail = sorted(w for w in fold_words(t)
@@ -995,18 +1044,44 @@ def group_key(title, lang=""):
                             and not re.fullmatch(r"(?:sv|me|swsh|sm|xy)\d+\w*", w))
             key += "|" + "-".join(detail)
         return key
-    if number and pokemon:
-        return f"c|{pokemon}|{number}|{variants}|{lang}"
-    # karta s kódom setu: „Charizard ex (OBF 125) - NM“ – rovnaký kód = rovnaká karta v každom obchode
-    m = re.search(r"\(([A-Z0-9]{2,5})(?:\s+([A-Z]{1,3}))?\s+([A-Z]{0,3})(\d{1,3})[a-z]?\)", t)
-    if m and not ptype:
-        name = " ".join(sorted(fold_words(t[:m.start()]) - {"pokemon", "tcg", "karta", "card"}))
-        if name:
-            code = f"{m.group(1)}{m.group(2) or ''}{m.group(3)}{int(m.group(4))}".lower()
-            return f"c|{name}|{code}|{variants}|{lang}"
+    if not ptype:
+        # Karta: meno (slová pred číslom) + číslo. „Pikachu ex (SSP 238) - NM“ (Gengar) a
+        # „Pikachu ex 238/191 Surging Sparks“ dostanú ten istý kľúč – kód setu sa prevedie na číslo.
+        m = _CODE_KEY_RE.search(t)
+        n = _CARDNUM_RE.search(t)
+        cut = min(x.start() for x in (m, n) if x) if (m or n) else None
+        if cut is not None:
+            name = " ".join(sorted(fold_words(t[:cut]) - _KEY_SKIP - fold_words(set_name)))
+            if not name and pokemon:
+                name = fold(pokemon)
+            if n and (not m or n.start() <= m.start()):
+                num = f"{int(n.group(1))}/{int(n.group(2))}"
+            else:
+                total = CODE_TOTALS.get(m.group(1).lower())
+                if total and not m.group(2) and not m.group(3):
+                    num = f"{int(m.group(4))}/{total}"
+                else:
+                    num = f"{m.group(1)}{m.group(2) or ''}{m.group(3)}{int(m.group(4))}".lower()
+            if name:
+                return f"c|{name}|{num}|{variants}|{lang}"
     if pokemon and set_name and p.get("suffix") and not ptype:
         return f"c|{pokemon}|{p['suffix']}|{set_name}|{variants}|{lang}"
     return None
+
+
+_ONE_PER_SET = {"etb", "booster box", "booster bundle", "sleeved booster", "booster pack"}
+_CODE_KEY_RE = re.compile(r"\(([A-Z0-9]{2,5})(?:\s+([A-Z]{1,3}))?\s+([A-Z]{0,3})(\d{1,3})[a-z]?\)")
+# Kód setu -> počet kariet v sete (číslo za lomkou). Gengar píše „(SSP 238)“, iné obchody „238/191“.
+# Len overené sety; nový set doplň podľa toho, ako ho píšu obchody (napr. "pbl": 88).
+CODE_TOTALS = {"svi": 198, "pal": 193, "obf": 197, "mew": 165, "par": 182, "paf": 91, "tef": 162,
+               "twm": 167, "sfa": 64, "scr": 142, "ssp": 191, "pre": 131, "jtg": 159, "dri": 182,
+               "blk": 86, "wht": 86, "meg": 132, "pfl": 94}
+# Slová, ktoré nie sú menom karty (obchody ich píšu rôzne) – pri kľúči sa vynechajú
+_KEY_SKIP = {"pokemon", "tcg", "karta", "card", "single", "eng", "english", "anglicka", "anglicky",
+             "alt", "art", "full", "illustration", "rare", "special", "sir", "ir", "sar", "ar", "holo",
+             "reverse", "promo", "secret", "gold", "hyper", "ultra", "double", "tera", "shiny", "foil",
+             "nm", "mint", "near", "ex", "gx", "v", "vmax", "vstar", "jp", "jpn", "japan", "japanese",
+             "japonska", "japonsky", "kr", "cn", "de", "en"} | {w for s in KNOWN_SETS for w in fold_words(s)}
 
 
 # =========================================================
@@ -1071,6 +1146,14 @@ def card_condition(title):
         if rx.search(t):
             return code, label, grp
     return "", "", ""
+
+
+def spread(items, limit, expensive_share=0.25):
+    """Z cenovo zoradeného zoznamu nechá `limit` položiek: väčšinu najlacnejších a časť najdrahších."""
+    if len(items) <= limit:
+        return list(items)
+    top = int(limit * expensive_share)
+    return list(items[:limit - top]) + list(items[len(items) - top:])
 
 
 def make_result(shop, title, price, link, image="", stock="", price_czk=None):
