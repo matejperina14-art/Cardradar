@@ -1079,26 +1079,54 @@ CODE_TOTALS = {"svi": 198, "pal": 193, "obf": 197, "mew": 165, "par": 182, "paf"
 LEARNED_TOTALS = {}   # zistené z katalógov (learn_code_totals), napr. {"pbl": 88}
 
 
+_PAIR_CODE, _PAIR_SLASH = {}, {}   # (meno, číslo) -> kódy setov / počty kariet, zo všetkých obchodov
+
+
+def _card_name(t, cut):
+    return " ".join(sorted(fold_words(t[:cut]) - _KEY_SKIP))
+
+
 def learn_code_totals(titles):
-    """Počet kariet v sete sa zistí sám z názvov v obchodoch: „Mega Gengar ex 084/088 Pitch Black“ -> pbl = 88.
-    Nový set tak netreba dopĺňať ručne. Platí najčastejšie číslo za lomkou (aspoň 3 karty, 60 % zhoda).
-    Vráti nové hodnoty, ktoré sa naučil."""
+    """Počet kariet v sete sa zistí sám z názvov v obchodoch, nový set netreba dopĺňať ručne:
+      - „Mega Gengar ex 084/088 Pitch Black“ -> pbl = 88 (set v názve),
+      - „Mega Gengar ex (PBL 084)“ (Gengar) + „Mega Gengar ex 084/088“ (iný obchod) -> pbl = 88 (párovanie).
+    Platí najčastejšie číslo za lomkou (aspoň 3 karty, 60 % zhoda). Vráti nové hodnoty."""
     code_of = {}
     for code, name in SET_CODES.items():
         code_of.setdefault(name, code)
-    counts = {}
+    votes = {}
+
+    def vote(code, total, k=1):
+        c = votes.setdefault(code, {})
+        c[total] = c.get(total, 0) + k
+
     for t in titles:
-        m = _CARDNUM_RE.search(t or "")
-        if not m:
+        t = t or ""
+        m = _CODE_KEY_RE.search(t)
+        if m and not m.group(2) and not m.group(3):
+            code = m.group(1).lower()
+            if code in SET_CODES and code not in CODE_TOTALS:
+                name = _card_name(t, m.start())
+                if name and len(_PAIR_CODE) < 100000:
+                    _PAIR_CODE.setdefault((name, int(m.group(4))), set()).add(code)
             continue
-        set_name = normalize_query(strip_codes(t)).get("set_name")
-        code = code_of.get(set_name)
+        n = _CARDNUM_RE.search(t)
+        if not n:
+            continue
+        total = int(n.group(2))
+        name = _card_name(t, n.start())
+        if name and len(_PAIR_SLASH) < 100000:
+            _PAIR_SLASH.setdefault((name, int(n.group(1))), set()).add(total)
+        code = code_of.get(normalize_query(strip_codes(t)).get("set_name"))
         if code and code not in CODE_TOTALS:
-            c = counts.setdefault(code, {})
-            total = int(m.group(2))
-            c[total] = c.get(total, 0) + 1
+            vote(code, total)
+    for key, codes in _PAIR_CODE.items():
+        totals = _PAIR_SLASH.get(key)
+        if totals and len(totals) == 1:   # tá istá karta s jediným možným počtom
+            for code in codes:
+                vote(code, next(iter(totals)))
     new = {}
-    for code, c in counts.items():
+    for code, c in votes.items():
         total, n = max(c.items(), key=lambda x: x[1])
         if n >= 3 and n >= 0.6 * sum(c.values()) and LEARNED_TOTALS.get(code) != total:
             new[code] = total
