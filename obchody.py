@@ -871,8 +871,12 @@ def detect_stock_el(el):
         return ""
     for btn in el.select(_CART_BTN):
         if btn.has_attr("disabled") or "disabled" in (btn.get("class") or []):
-            return "preorder" if L.STOCK_PRE_RE.search(btn.get_text(" ", strip=True)) else "out"
-    stock = L.detect_stock(visible_text(el))
+            label = btn.get_text(" ", strip=True)
+            return "preorder" if L.STOCK_PRE_RE.search(label) else "coming" if L.COMING_RE.search(label) else "out"
+    text = visible_text(el)
+    stock = L.detect_stock(text)
+    if stock in ("", "in") and L.COMING_RE.search(text):
+        return "coming"   # „Očakávame“ = zatiaľ sa nedá kúpiť (obchod ho vedie ako nedostupný)
     if stock:
         return stock
     for btn in el.select(_CART_BTN):
@@ -882,7 +886,7 @@ def detect_stock_el(el):
         if re.search(r"do\s+ko[šs][íi]ka|add\s+to\s+cart|koupit|k[úu]pi[ťt]", label):
             return "in"
     if L.COMING_RE.search(el.get_text(" ", strip=True)):
-        return "preorder"
+        return "coming"   # „Očakávame“ (iHRYsko): teraz sa nedá kúpiť
     return ""
 
 
@@ -2332,3 +2336,4 @@ def start_background():
     threading.Thread(target=_czk_loop, daemon=True, name="czk").start()   # každý proces potrebuje kurz
     if only_one_process("catalog"):
         threading.Thread(target=_catalog_loop, daemon=True, name="catalog").start()
+      
