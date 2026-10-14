@@ -671,7 +671,10 @@ def parse_price_raw(text, title=""):
 # Rozumné hranice ceny v € – čo je mimo, je takmer isto zle prečítané
 _GRADED_RE = re.compile(r"\b(?:psa|cgc|bgs|sgc|graded|ohodnocen\w*|gradovan\w*)\b", re.I)
 _SEALED_TYPE_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|"
-                             r"blister|display|deck|\bbox\b|chest|bal[íi][čc]|(?-i:\bBB\b)", re.I)
+                             r"blister|display|deck|\bbox\b|chest|bal[íi][čc]|(?-i:\bBB\b)|"
+                             # Build & Battle (Box / Stadium / Kit), Battle Academy, Trainer Kit, Starter Set...
+                             r"build\s*(?:&|and)?\s*battle|battle\s+academy|\bstadium\b|trainer\s+kit|"
+                             r"starter\s+(?:set|deck|kit)|plechovk|\bsada\b", re.I)
 
 
 def price_plausible(title, eur):
