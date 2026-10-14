@@ -171,7 +171,40 @@ def product_offer(link):
     resp, _ = O.fetch(link, timeout=10)
     if not resp:
         return None, "", False
+    return offer_from_soup(BeautifulSoup(resp.text, O.HTML_PARSER))
+
+
+def product_page(link):
+    """Pre /admin/kontrola: čo naozaj ukazuje stránka produktu v obchode (názov, cena, sklad)."""
+    resp, info = O.fetch(link, timeout=12)
+    if not resp:
+        return {"error": info.get("error") or info.get("status") or "neodpovedá"}
     soup = BeautifulSoup(resp.text, O.HTML_PARSER)
+    price, stock, sure = offer_from_soup(soup)
+    name = ""
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        for node in _walk(data):
+            t = str(node.get("@type", ""))
+            if "Product" in t and node.get("name"):
+                name = L.clean_text(node["name"])
+                break
+        if name:
+            break
+    if not name:
+        el = soup.select_one('meta[property="og:title"]')
+        name = L.clean_text(el.get("content")) if el and el.get("content") else ""
+    if not name:
+        h1 = soup.find("h1")
+        name = L.clean_text(h1.get_text(" ", strip=True)) if h1 else ""
+    return {"name": name, "price_eur": price, "stock": stock, "stock_sure": sure,
+            "final_url": resp.url}
+
+
+def offer_from_soup(soup):
     price, currency, stock, sure = None, "EUR", "", False
 
     for script in soup.find_all("script", type="application/ld+json"):
