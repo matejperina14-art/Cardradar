@@ -1176,36 +1176,65 @@ def _audit_one(shop, it):
     return row
 
 
-def _run_audit(n, shop_name=""):
-    state = {"status": "running", "started": time.time(), "done": 0, "total": 0, "rows": []}
+def _audit_start(n, shop_name=""):
+    """Pripraví zoznam produktov na kontrolu. Kontrola nebeží na pozadí (Render server reštartuje
+    a má viac procesov) – každé obnovenie stránky skontroluje ďalšiu dávku a uloží ju do databázy."""
     shops = [s for s in O.active_shops() if O.is_catalog(s)
              and (not shop_name or L.fold(s["name"]) == L.fold(shop_name))]
-    picks = {}
     per = max(2, -(-n // max(1, len(shops))))
+    queue = []
     for s in shops:
         items = [i for i in O.load_catalog(s["name"])[0] if i.get("price_eur")]
         fresh = [i for i in items if i.get("stock") not in ("out", "coming")] or items
-        picks[s["name"]] = (s, _random.sample(fresh, min(per, len(fresh))))
-    state["total"] = sum(len(v[1]) for v in picks.values())
-    O.meta_set("audit", json.dumps(state))
-    lock = threading.Lock()
-
-    def per_shop(s, items):
-        for it in items:
-            try:
-                row = _audit_one(s, it)
-            except Exception as e:
-                row = {"shop": s["name"], "link": it["link"], "nase_nazov": it["title"], "problemy": ["chyba kontroly: " + str(e)[:100]]}
-            with lock:
-                state["rows"].append(row)
-                state["done"] = len(state["rows"])
-                O.meta_set("audit", json.dumps(state, ensure_ascii=False))
-            time.sleep(0.8)   # šetrne k obchodu
-
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(lambda v: per_shop(*v), picks.values()))
-    state.update(status="done", finished=time.time())
+        for it in _random.sample(fresh, min(per, len(fresh))):
+            queue.append({"shop": s["name"], **{k: it.get(k) for k in ("link", "title", "price_eur", "price_czk", "image", "stock")}})
+    # obchody striedavo, aby jedna dávka nešla celá do jedného obchodu
+    seen = {}
+    for q in queue:
+        q["_r"] = seen[q["shop"]] = seen.get(q["shop"], -1) + 1
+    queue.sort(key=lambda q: q.pop("_r"))
+    state = {"status": "running", "started": time.time(), "done": 0, "total": len(queue), "rows": [],
+             "queue": queue, "busy_until": 0}
     O.meta_set("audit", json.dumps(state, ensure_ascii=False))
+    return state
+
+
+AUDIT_BATCH = 4
+
+
+def _audit_step(state):
+    """Skontroluje ďalšiu dávku (najviac AUDIT_BATCH produktov, každý z iného obchodu, súbežne)."""
+    if time.time() < state.get("busy_until", 0):   # inú dávku práve robí iná požiadavka
+        return state
+    state["busy_until"] = time.time() + 25
+    O.meta_set("audit", json.dumps(state, ensure_ascii=False))
+    batch, rest, used = [], [], set()
+    for q in state["queue"]:
+        if len(batch) < AUDIT_BATCH and q["shop"] not in used:
+            batch.append(q)
+            used.add(q["shop"])
+        else:
+            rest.append(q)
+    shops = {s["name"]: s for s in O.all_shops()}
+
+    def one(q):
+        shop = shops.get(q["shop"]) or {"name": q["shop"], "country": "SK"}
+        try:
+            return _audit_one(shop, q)
+        except Exception as e:
+            return {"shop": q["shop"], "link": q["link"], "nase_nazov": q["title"],
+                    "problemy": ["chyba kontroly: " + str(e)[:100]]}
+
+    with ThreadPoolExecutor(max_workers=AUDIT_BATCH) as ex:
+        rows = list(ex.map(one, batch))
+    state["rows"] += rows
+    state["queue"] = rest
+    state["done"] = len(state["rows"])
+    state["busy_until"] = 0
+    if not rest:
+        state.update(status="done", finished=time.time())
+    O.meta_set("audit", json.dumps(state, ensure_ascii=False))
+    return state
 
 
 def _audit_summary(state):
@@ -1231,12 +1260,14 @@ def admin_kontrola():
         state = json.loads(O.meta_get("audit") or "null")
     except Exception:
         state = None
-    running = bool(state and state.get("status") == "running" and time.time() - state.get("started", 0) < 900)
-    if not running and (request.args.get("start") or not state):
+    if request.args.get("start") or not state or "queue" not in state and state.get("status") == "running":
         n = max(5, min(150, int(L.to_float(request.args.get("n", "40")) or 40)))
-        threading.Thread(target=_run_audit, args=(n, request.args.get("shop", "")), daemon=True,
-                         name="audit").start()
-        state, running = {"status": "running", "done": 0, "total": n}, True
+        state = _audit_start(n, request.args.get("shop", ""))
+        return redirect("/admin/kontrola", code=303)   # obnovovanie stránky nesmie kontrolu spúšťať znova
+    running = state.get("status") == "running"
+    if running:
+        state = _audit_step(state)
+        running = state.get("status") == "running"
     if request.args.get("format") == "json" and not running:
         rows = state.get("rows", [])
         return jsonify({"prehlad": _audit_summary(state),
@@ -1247,9 +1278,10 @@ def admin_kontrola():
         resp = page("Kontrola beží", f"<div class='box'><h1>Kontrolujem produkty v obchodoch…</h1>"
                                      f"<p>Hotových {state.get('done', 0)} z {state.get('total', 0)}</p>"
                                      f"<div class='bar'><i style='width:{pct}%'></i></div>"
-                                     f"<p><small>Stránka sa obnovuje sama, trvá to 1 – 3 minúty.</small></p></div>",
+                                     f"<p><small>Stránka sa obnovuje sama a pri každom obnovení skontroluje ďalšie produkty. "
+                                     f"Nechaj ju otvorenú, trvá to 2 – 4 minúty.</small></p></div>",
                     back=False)
-        resp.headers["Refresh"] = "4; url=/admin/kontrola"
+        resp.headers["Refresh"] = "1; url=/admin/kontrola"
         return resp
     summ = _audit_summary(state)
     rows_html = "".join(
