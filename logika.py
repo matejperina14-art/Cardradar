@@ -978,7 +978,7 @@ COMING_RE = re.compile(r"o[čc]ak[áa]vame|o[čc]ek[áa]v[áa]me|pripravujeme|co
 
 
 def detect_stock(text):
-    """'in' | 'out' | 'preorder' | 'order' | '' (nevieme)"""
+    """'in' | 'out' | 'preorder' | 'order' | '' (nevieme); 'coming' (Očakávame) dopĺňa obchody.detect_stock_el"""
     text = clean_text(text)
     if not text:
         return ""
