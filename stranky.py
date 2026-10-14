@@ -1170,8 +1170,10 @@ def _audit_one(shop, it):
         row["poznamka"] = "obchod nemá cenu v dátach stránky (nedá sa overiť)"
     elif abs(cena - r["price_eur"]) > max(0.3, cena * 0.03):
         p.append(f"iná cena: CardRadar {r['price_eur']:.2f} €, obchod {cena:.2f} €")
-    ours_in = r["stock"] in ("in", "preorder", "order")
-    if page_.get("stock_sure") and r["stock"] and page_["stock"] and ours_in != (page_["stock"] in ("in", "preorder", "order")):
+    ours_in = r["stock"] in ("in", "preorder")
+    # „Na objednávku“ píše obchod sám, hoci v dátach stránky má „vypredané“ (Posbírej to) – nie je to chyba
+    if page_.get("stock_sure") and r["stock"] not in ("", "order") and page_["stock"] \
+            and ours_in != (page_["stock"] in ("in", "preorder", "order")):
         p.append(f"iný sklad: CardRadar „{r['stock']}“, obchod „{page_['stock']}“")
     return row
 
