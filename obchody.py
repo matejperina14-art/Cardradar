@@ -1188,6 +1188,20 @@ _TILE_TEXT_RE = re.compile(r"\d\s*(?:€|Kč|CZK|EUR)|€\s*\d|skladom|skladem|v
                            r"k[úu]pi[ťt]|koupit|add\s+to\s+cart|predobjedn|p[řr]edobjedn", re.I)
 
 
+# názov súboru obrázka („6a45265c3eac4 tcg pokemon … 6a452838cb975[1]“) alebo veta z popisu produktu
+_JUNK_NAME_RE = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b|\[\d+\]\s*$|\.(?:jpe?g|png|webp|gif)\b|"
+                           r"\w_\w+_\w|[.!?]\s+[A-ZÁČĎÉÍĽĹŇÓÔŔŠŤÚÝŽ]|\b\d+\s*(?:cm|mm)\b", re.I)
+
+
+def _best_title(cands):
+    """Najdlhší názov, ktorý obsahuje všetky slová najkratšieho („Pikachu ex“ -> „Pikachu ex 238/191 Surging Sparks“).
+    Dlhší text s inými slovami (popis produktu) sa nevyberie."""
+    cands = sorted(cands, key=lambda x: x[0])
+    base = L.fold_words(cands[0][1])
+    ok = [c for c in cands if base <= L.fold_words(c[1])]
+    return max(ok, key=lambda x: x[0])
+
+
 def _parse_listing(shop, html, page_url, debug=None):
     soup = BeautifulSoup(html, HTML_PARSER)
     host = host_of(shop["base_url"])
@@ -1227,8 +1241,8 @@ def _parse_listing(shop, html, page_url, debug=None):
             continue
         # Najdlhší názov (plný „Pikachu ex 238/191 Surging Sparks“, nie krátky alt obrázka „Pikachu ex“).
         # Odkaz cez celú dlaždicu (s cenou, skladom, tlačidlom) nie je názov – ten sa berie len ako záloha.
-        clean = [x for x in named if not _TILE_TEXT_RE.search(x[1])]
-        _, title, a = max(clean, key=lambda x: x[0]) if clean else min(named, key=lambda x: x[0])
+        clean = [x for x in named if not _TILE_TEXT_RE.search(x[1]) and not _JUNK_NAME_RE.search(x[1])]
+        _, title, a = _best_title(clean) if clean else min(named, key=lambda x: x[0])
         if loose and not extract_image(a, page_url):
             continue
         block = find_block(a)
