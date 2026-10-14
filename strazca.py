@@ -181,26 +181,25 @@ def product_page(link):
         return {"error": info.get("error") or info.get("status") or "neodpovedá"}
     soup = BeautifulSoup(resp.text, O.HTML_PARSER)
     price, stock, sure = offer_from_soup(soup)
-    name = ""
+    names = []
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string or "")
         except Exception:
             continue
         for node in _walk(data):
-            t = str(node.get("@type", ""))
-            if "Product" in t and node.get("name"):
-                name = L.clean_text(node["name"])
-                break
-        if name:
-            break
-    if not name:
-        el = soup.select_one('meta[property="og:title"]')
-        name = L.clean_text(el.get("content")) if el and el.get("content") else ""
-    if not name:
-        h1 = soup.find("h1")
-        name = L.clean_text(h1.get_text(" ", strip=True)) if h1 else ""
-    return {"name": name, "price_eur": price, "stock": stock, "stock_sure": sure,
+            if "Product" in str(node.get("@type", "")) and node.get("name"):
+                names.append(L.clean_text(node["name"]))
+    h1 = soup.find("h1")
+    if h1:
+        names.append(L.clean_text(h1.get_text(" ", strip=True)))
+    for el in (soup.select_one('meta[property="og:title"]'), soup.find("title")):
+        t = L.clean_text((el.get("content") if el and el.name == "meta" else el.get_text()) if el else "")
+        if t:
+            names.append(re.split(r"\s+[|–—-]\s+(?=[^|–—-]*$)", t)[0])   # „Názov | Obchod“ -> „Názov“
+    names = [n for n in dict.fromkeys(names) if n]
+    name = names[0] if names else ""
+    return {"name": name, "names": names, "price_eur": price, "stock": stock, "stock_sure": sure,
             "final_url": resp.url}
 
 
