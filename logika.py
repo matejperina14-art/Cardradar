@@ -681,7 +681,7 @@ def price_plausible(title, eur):
     """False = cena je nezmyselná pre tento typ produktu (chyba čítania)."""
     if not eur or eur < 0.1:
         return False
-    if is_combo(title) or _BULK_RE.search(title or ""):
+    if is_combo(title) or _BULK_RE.search(title or "") or SHEET_RE.search(title or ""):
         return eur <= 20000
     if _SEALED_TYPE_RE.search(title or ""):
         return eur <= 6000
@@ -1273,8 +1273,15 @@ def make_result(shop, title, price, link, image="", stock="", price_czk=None):
     return reprice(r)
 
 
+# Print sheet / uncut sheet – samostatný druh (nie je to karta ani balenie)
+SHEET_RE = re.compile(r"print\s*sheet|uncut\s*sheet|sheet\s*cut|press\s*sheet|tla[čc]ov\w*\s+arch", re.I)
+
+
 def product_kind(title):
-    """'sealed' = balík (ETB, box, bundle, blister, tin, kolekcia...), 'accessory' = sleeves, album..., inak 'card'."""
+    """'sealed' = balík (ETB, box, bundle, blister, tin, kolekcia...), 'accessory' = sleeves, album...,
+    'sheet' = print sheet, inak 'card'."""
+    if SHEET_RE.search(title or ""):
+        return "sheet"
     if not is_tcg_product(title) and is_accessory(title):
         return "accessory"
     return "sealed" if _SEALED_TYPE_RE.search(title or "") else "card"
