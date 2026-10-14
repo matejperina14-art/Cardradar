@@ -878,7 +878,8 @@ def admin_katalog():
             return jsonify(O.debug_listing(shop, request.args.get("url")))
         items, updated = O.load_catalog(shop["name"])
         return jsonify({"shop": shop["name"], "items": len(items), "updated": updated, "sample": items[:20]})
-    return jsonify({"refresh_min": O.CATALOG_REFRESH_MIN, "catalogs": [
+    return jsonify({"refresh_min": O.CATALOG_REFRESH_MIN, "code_totals": L.CODE_TOTALS,
+                    "code_totals_learned": L.LEARNED_TOTALS, "catalogs": [
         {"shop": s["name"], "enabled": s.get("enabled", True), "items": len(O.load_catalog(s["name"])[0]),
          "updated": O.load_catalog(s["name"])[1], "crawling": O.is_crawling(s["name"])} for s in shops]})
 
