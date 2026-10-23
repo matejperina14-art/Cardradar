@@ -793,6 +793,9 @@ MERCH_HARD_PATTERNS = [
     r"rukavic\w*", r"[šs]atk\w*", r"[šs][áa]l", r"[šs][áa]ly", r"scarf\w*",
     r"tepl[áa]k\w*", r"leg[íi]n\w*", r"[šs]ortk\w*", r"bund[ay]", r"jacket\w*",
     r"papu[čc]\w*", r"slippers?", r"oble[čc]en\w*", r"textil\w*", r"bunda",
+    r"jumper\w*", r"svet[e]?r\w*", r"sweter\w*", r"pullover\w*", r"plavk\w*", r"swim(?:suit|wear|ming\s+trunks?)\w*",
+    r"mask[auy]", r"masek", r"sleep(?:ing)?\s+mask\w*", r"eye\s+mask\w*",
+    r"d[áa][žz]dn[íi]k\w*", r"de[šs]tn[íi]k\w*", r"umbrell\w*",
     # plyšáky, hračky
     r"ply[šs]\w*", r"plush\w*", r"peluche\w*", r"hra[čc]k\w*", r"toys?", r"lego",
     r"mega\s+construx", r"stavebnic\w*", r"puzzle\w*", r"pokladni[čc]k\w*",
@@ -804,6 +807,9 @@ MERCH_HARD_PATTERNS = [
     r"svietidl\w*", r"sv[ií]tidl\w*", r"deka", r"deky", r"blanket\w*", r"vank[úu][šs]\w*",
     r"pol[šs]t[áa][řr]\w*", r"uter[áa]k\w*", r"ru[čc]n[íi]k\w*", r"osu[šs]k\w*", r"towel\w*",
     r"oblie[čc]k\w*", r"povle[čc]\w*", r"tanier\w*", r"tal[íi][řr]\w*", r"misk[ayu]",
+    r"bowl\w*", r"ramen", r"chopsticks?", r"pal[íi][čc]k\w*\s+na\s+jedl\w*", r"h[ůu]lk\w*",
+    r"night\s*light\w*", r"light\s*-?\s*up", r"no[čc]n\w*\s+(?:lamp\w*|sv[ei]\w*)",
+    r"clock\w*", r"alarm\w*", r"bud[íi]k\w*",
     r"lunch\s*box\w*", r"desiatov\w*", r"svačin\w*", r"box\s+na\s+jedlo",
     # škola, doplnky, elektronika
     r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?", r"kabelk\w*",
