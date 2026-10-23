@@ -810,6 +810,9 @@ MERCH_HARD_PATTERNS = [
     r"bowl\w*", r"ramen", r"chopsticks?", r"pal[íi][čc]k\w*\s+na\s+jedl\w*", r"h[ůu]lk\w*",
     r"night\s*light\w*", r"light\s*-?\s*up", r"no[čc]n\w*\s+(?:lamp\w*|sv[ei]\w*)",
     r"clock\w*", r"alarm\w*", r"bud[íi]k\w*",
+    r"vaflova[čc]\w*", r"waffle\w*", r"hriankova[čc]\w*", r"toaster\w*", r"topinkova[čc]\w*", r"sendvi[čc]ova[čc]\w*",
+    r"d[óo]z[ay]\w*", r"kanvi[čc]k\w*", r"konvi[čc]k\w*", r"teapot\w*", r"podt[áa]c?k\w*", r"coaster\w*",
+    r"ra[ňn]ajkov\w*\s+sad\w*", r"sad[ay]\s+n[áa]dob\w*", r"n[áa]dob[íi]\w*", r"kuchy[ňn]\w*",
     r"lunch\s*box\w*", r"desiatov\w*", r"svačin\w*", r"box\s+na\s+jedlo",
     # škola, doplnky, elektronika
     r"batoh\w*", r"backpack\w*", r"ruksak\w*", r"ta[šs]k\w*", r"bags?", r"kabelk\w*",
