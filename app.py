@@ -378,13 +378,21 @@ app.add_url_rule("/set/<slug>", "set_detail", S.set_page)
 app.add_url_rule("/sitemap.xml", "sitemap", S.sitemap_xml)
 
 
+BOT_WORDS = ("bot", "crawl", "spider", "slurp", "preview", "headless", "lighthouse", "python-requests", "curl")
+
+
+def is_bot():
+    ua = request.headers.get("User-Agent", "").lower()
+    return not ua or any(w in ua for w in BOT_WORDS)
+
+
 @app.get("/go")
 def go():
     """Odchod do obchodu: započíta klik a presmeruje (s utm alebo partnerským odkazom)."""
     link = L.clean_text(request.args.get("u", ""))
     if not O.is_allowed_link(link):
         return redirect("/", code=302)
-    if LIMIT_GO.allow():
+    if LIMIT_GO.allow() and not is_bot():   # Googlebot a iné roboty sa do klikov nepočítajú
         O.count_click(link, client_ip(), request.headers.get("User-Agent", ""))
     resp = redirect(O.out_url(link), code=302)
     resp.headers["Cache-Control"] = "no-store"
