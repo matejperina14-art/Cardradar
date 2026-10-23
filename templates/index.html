@@ -205,7 +205,7 @@ main.container{flex:1;padding-top:24px;padding-bottom:20px}
 .p-body{padding:14px 16px 6px;display:flex;flex-direction:column;gap:8px;flex:1}
 .kinds{display:flex;gap:6px;flex-wrap:wrap}
 .k{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--k-bg);color:var(--sub)}
-.k-card{background:var(--k-card);color:var(--blue)}.k-bundle{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-box{background:var(--k-box);color:var(--orange)}.k-etb{background:var(--k-etb);color:var(--violet)}.k-other{background:var(--k-other);color:var(--teal)}.k-acc{background:var(--k-bg);color:var(--sub)}
+.k-card{background:var(--k-card);color:var(--blue)}.k-bundle{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-box{background:var(--k-box);color:var(--orange)}.k-etb{background:var(--k-etb);color:var(--violet)}.k-other{background:var(--k-other);color:var(--teal)}.k-pack{background:var(--k-bundle);color:var(--k-bundle-ink)}.k-acc{background:var(--k-bg);color:var(--sub)}
 .k-best{background:var(--holo);color:#101b44}
 .k-sheet{background:var(--k-etb);color:var(--violet)}
 .k-cond.nm{background:var(--green-bg);color:var(--green)}
@@ -774,6 +774,7 @@ const CATS = {
   box:   ['Booster boxy', '📦', 'Booster box'],
   etb:   ['ETB', '🎁', 'ETB'],
   bundle:['Bundle', '🎀', 'Bundle'],
+  pack:  ['Boostery', '✨', 'Booster'],
   other: ['Ostatné balenia', '🧺', 'Balenie'],
   acc:   ['Príslušenstvo', '🧤', 'Príslušenstvo'],
   sheet: ['Print sheety', '📜', 'Sheet']
@@ -823,6 +824,8 @@ function categoryOf(t){
   if (/elite\s+trainer(?:\s+box)?|\betb\b/i.test(t)) return 'etb';
   if ((/booster\s*(?:box|display)|boosterbox/i.test(t) || /\bBB\b/.test(t)) && !/bundle|blister/i.test(t)) return 'box';
   if (/\bbundle\b/i.test(t) && !/display/i.test(t)) return 'bundle';
+  // jednotlivý booster (aj sleeved): nie blister, tin, kolekcia ani box s boostermi
+  if (/booster|bal[íi][čc]ek|\bpack\b/i.test(t) && !/blister|\btins?\b|collection|kolekci|premium|display|\bbox\b|deck|\d\s*-?\s*(?:pack|booster)|energ/i.test(t)) return 'pack';
   if (/booster|bundle|collection|kolekci|\btins?\b|blister|battle\s+deck|theme\s+deck|build\s*(?:&|and)?\s*battle|premium|display/i.test(t)) return 'other';
   return 'card';
 }
@@ -1011,7 +1014,7 @@ function leaveFavorites(){
 /* ---------- zástupné obrázky ---------- */
 function placeholder(c){
   if (c === 'card') return `<svg class="ph" viewBox="0 0 60 84" aria-hidden="true"><rect x="2" y="2" width="56" height="80" rx="6" class="ph-a"/><rect x="8" y="9" width="44" height="32" rx="3" class="ph-b"/><path d="M30 17l3 6 6.5.8-4.8 4.4 1.3 6.4L30 31.3l-6 3.3 1.3-6.4-4.8-4.4 6.5-.8z" class="ph-c"/><rect x="8" y="48" width="44" height="4" rx="2" class="ph-b"/><rect x="8" y="57" width="32" height="4" rx="2" class="ph-b"/></svg>`;
-  if (c === 'other') return `<svg class="ph" viewBox="0 0 60 84" aria-hidden="true"><path d="M8 8l4-4 4 4 4-4 4 4 4-4 4 4 4-4 4 4 4-4 4 4V76l-4 4-4-4-4 4-4-4-4 4-4-4-4 4-4-4-4 4-4-4z" class="ph-a"/><circle cx="30" cy="42" r="11" class="ph-b"/><circle cx="30" cy="42" r="5" class="ph-c"/></svg>`;
+  if (c === 'other' || c === 'pack') return `<svg class="ph" viewBox="0 0 60 84" aria-hidden="true"><path d="M8 8l4-4 4 4 4-4 4 4 4-4 4 4 4-4 4 4 4-4 4 4V76l-4 4-4-4-4 4-4-4-4 4-4-4-4 4-4-4-4 4-4-4z" class="ph-a"/><circle cx="30" cy="42" r="11" class="ph-b"/><circle cx="30" cy="42" r="5" class="ph-c"/></svg>`;
   return `<svg class="ph" viewBox="0 0 84 70" aria-hidden="true"><path d="M8 22L42 8l34 14v36L42 66 8 58z" class="ph-a"/><path d="M8 22l34 12 34-12M42 34v32" class="ph-l"/><path d="M42 8L25 15l34 12 17-5" class="ph-b"/></svg>`;
 }
 
