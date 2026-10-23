@@ -454,7 +454,7 @@ def shops_page():
 def robots_txt():
     if ALLOW_INDEXING:
         body = ("User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin/\nDisallow: /alerts/\n"
-                "Disallow: /go\n" + (f"Sitemap: {PUBLIC_URL}/sitemap.xml\n" if PUBLIC_URL else ""))
+                + (f"Sitemap: {PUBLIC_URL}/sitemap.xml\n" if PUBLIC_URL else ""))
     else:
         body = "User-agent: *\nDisallow: /\n"
     return Response(body, mimetype="text/plain")
