@@ -591,7 +591,7 @@ fetch('/api/config').then(r => r.ok ? r.json() : null).then(c => {
   if (c.alerts_enabled && !ALERTS) { ALERTS = true; if (mode === 'search' && allResults.length) renderView(); }
   SHOPS = Array.isArray(c.shops) ? c.shops : [];
   if (!SHOPS.length) return;
-  $('footShops').innerHTML = 'Prehľadávame: ' + SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener">${esc(s.name)}</a>`).join(', ') +
+  $('footShops').innerHTML = 'Prehľadávame: ' + SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener sponsored nofollow">${esc(s.name)}</a>`).join(', ') +
     `. Ceny sú orientačné, pred nákupom ich over u predajcu. Prepočet: 1 € = ${String(Math.round(CZK_RATE * 1000) / 1000).replace('.', ',')} Kč.`;
   renderSide();
   if (mode === 'home') renderHome();
@@ -1083,7 +1083,7 @@ function groupHtml(v, best){
     ? `<span class="trend ${p < g.saved_price ? 'down' : 'up'} num">pri uložení ${eur(g.saved_price)}</span>` : '';
   return `<article class="pcard${best ? ' best' : ''}${sold ? ' sold' : ''}" data-id="${g.id}">
     <div class="p-top">
-      <a class="p-media${!g.image && g._imgPending ? ' wait' : ''}" href="${esc(outLink(b.link))}" target="_blank" rel="noopener" tabindex="-1" aria-hidden="true">
+      <a class="p-media${!g.image && g._imgPending ? ' wait' : ''}" href="${esc(outLink(b.link))}" target="_blank" rel="noopener sponsored nofollow" tabindex="-1" aria-hidden="true">
         ${imgInner(g)}${langTag(b)}
       </a>
       <div class="p-body">
@@ -1101,7 +1101,7 @@ function groupHtml(v, best){
         const cheap = multi && !isOut(o.stock) && priceOf(o) === minP;
         const fresh = ago(shopFresh[o.shop]);
         return `<li class="offer${cheap ? ' cheap' : ''}${isOut(o.stock) ? ' sold' : ''}">
-          <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener">
+          <a href="${esc(outLink(o.link))}" target="_blank" rel="noopener sponsored nofollow">
             <span class="o-shop"><b><span class="sd ${st[1]}"></span>${esc(o.shop)}${o.partner ? '<span class="partner" title="Obchod s CardRadarom spolupracuje (platí za prekliky alebo províziu). Poradie ponúk to neovplyvňuje.">Partner</span>' : ''}</b><span class="o-meta">${st[0]}${shipTxt(o)}${fresh ? ' · ' + fresh : ''}</span></span>
             <span class="o-price num">${eur(priceOf(o))}</span>
             <span class="o-go" aria-hidden="true">↗</span>
@@ -1433,7 +1433,7 @@ function tileHtml(it, kind){
       <div class="tile-title" title="${esc(it.title)}">${esc(it.title)}</div>
       <div class="tile-shop">${esc(it.shop)}</div>
       <div class="tile-price num">${kind === 'deal' ? `<s>${eur(it.old_price_eur)}</s>` : ''}<b>${eur(it.price_eur)}</b></div>
-      <div class="tile-acts"><button data-q="${esc(it.query || it.title)}" data-focus="${esc(it.link || '')}">Porovnať</button><a href="${esc(outLink(it.link))}" target="_blank" rel="noopener">Do obchodu</a></div>
+      <div class="tile-acts"><button data-q="${esc(it.query || it.title)}" data-focus="${esc(it.link || '')}">Porovnať</button><a href="${esc(outLink(it.link))}" target="_blank" rel="noopener sponsored nofollow">Do obchodu</a></div>
     </div>
   </div>`;
 }
@@ -1485,7 +1485,7 @@ function renderHome(){
     <li><b>Vyhľadaj</b><span>Kartu, set alebo produkt. Prejdeme všetky obchody naraz.</span></li>
     <li><b>Porovnaj</b><span>Rovnaký produkt z rôznych obchodov vidíš spolu, od najlacnejšieho.</span></li>
     <li><b>Kúp priamo v obchode</b><span>Odkaz ťa zavedie na produkt u predajcu. Nič nepredávame.</span></li></ol></section>`;
-  if (SHOPS.length) h += `<section class="hsec"><h2>Obchody na CardRadare</h2><div class="shoplist">${SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener">${esc(s.name)} <small>${esc(s.country)}</small></a>`).join('')}</div></section>`;
+  if (SHOPS.length) h += `<section class="hsec"><h2>Obchody na CardRadare</h2><div class="shoplist">${SHOPS.map(s => `<a href="${esc(outLink(s.url))}" target="_blank" rel="noopener sponsored nofollow">${esc(s.name)} <small>${esc(s.country)}</small></a>`).join('')}</div></section>`;
   $('status').innerHTML = '';
   $('results').innerHTML = `<div class="home">${h}</div>`;
   // šípky len pri riadkoch, ktoré sa naozaj dajú posúvať
