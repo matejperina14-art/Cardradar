@@ -1484,6 +1484,11 @@ _FEED_TEXT_KEYS = ("CATEGORYTEXT", "PRODUCT_TYPE", "GOOGLE_PRODUCT_CATEGORY", "M
                    "CATEGORY", "DESCRIPTION")
 
 
+# kategória feedu, ktorá znamená zberateľské karty (porovnáva sa bez diakritiky)
+_TCG_CAT_RE = re.compile(r"\btcg\b|trading\s+card|sberatelsk\w*\s+(?:karet|karty|hry)|zberatelsk\w*\s+(?:kart\w*|hry)"
+                         r"|karetn\w*\s+hr\w*|kartov\w*\s+hr\w*|collectible\s+card|card\s+games?", re.I)
+
+
 def parse_feed(shop, stream, limit=None, max_bytes=150 * 1024 * 1024):
     """Prečíta XML feed (Heureka, Google Merchant, Zboží, väčšina e-shopov). Vráti (položky, info).
     limit = koľko Pokémon položiek stačí (test feedu v admine)."""
@@ -1517,8 +1522,16 @@ def parse_feed(shop, stream, limit=None, max_bytes=150 * 1024 * 1024):
             skip("nie je Pokémon")
             continue
         info["pokemon"] += 1
-        if L.is_merch(title) and not L.is_accessory(title):
+        # Kategória feedu: „Hry | Sběratelské hry | Pokémon TCG“ = TCG; „Oblečení“, „Hrnky“,
+        # „Knihy | Manga“ = merch. Feed s celým sortimentom (imago) tak pustí len karty a balíky.
+        cat = " ".join(d.get(k, "") for k in ("CATEGORYTEXT", "PRODUCT_TYPE", "GOOGLE_PRODUCT_CATEGORY"))
+        tcg_cat = bool(_TCG_CAT_RE.search(L.fold(cat)))
+        acc = L.is_accessory(title)
+        if not acc and L.is_merch(title, "" if tcg_cat else cat):
             skip("merch")
+            continue
+        if not acc and not tcg_cat and not L.looks_like_tcg(title):
+            skip("nie je TCG")
             continue
         raw = d.get("PRICE_VAT") or d.get("SALE_PRICE") or d.get("PRICE") or ""
         m = re.search(r"\d[\d\s.,]*", raw)
