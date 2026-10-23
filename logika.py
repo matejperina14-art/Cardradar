@@ -187,6 +187,14 @@ _SUFFIX_RE = re.compile(r"\b(vmax|vstar|ex|gx|v)\b", re.I)
 _CARDNUM_RE = re.compile(r"\b(\d{1,4})\s*/\s*(\d{1,4})\b")
 
 
+def _match_len(q, candidates):
+    for pattern, _ in candidates:
+        m = pattern.search(q)
+        if m:
+            return len(m.group(0))
+    return 0
+
+
 def _extract(q, candidates):
     for pattern, canonical in candidates:
         if pattern.search(q):
@@ -225,12 +233,23 @@ def _normalize(query):
             q = pattern.sub(" ", q)
             break
 
-    # najprv celé názvy setov („surging sparks“), až potom skratky („sv8“)
-    set_name, q = _extract(q, _KNOWN_SETS_RE)
-    if not set_name:
-        set_name, q = _extract(q, _SETS_RE)
+    # najprv celé názvy setov („surging sparks“), až potom skratky („sv8“). Dlhší iný názov má
+    # však prednosť pred kratším setom v ňom: „30th Anniversary Celebrations“ nie je „Celebrations“.
+    set_name, q2 = _extract(q, _KNOWN_SETS_RE)
+    alias, q3 = _extract(q, _SETS_RE)
+    if alias and (not set_name or _match_len(q, _SETS_RE) > _match_len(q, _KNOWN_SETS_RE)):
+        set_name, q = alias, q3
+    elif set_name:
+        q = q2
     if not set_name and out["set_code"]:
         set_name = SET_CODES[out["set_code"]]
+    # „Black Bolt & White Flare – Black Bolt ETB“: platí ten z dvojice, ktorý je v názve viackrát / posledný
+    for a, b in SET_PARTS.values():
+        if set_name in (a, b) and re.search(r"\b" + a + r"\b", original, re.I) and re.search(r"\b" + b + r"\b", original, re.I):
+            pos = lambda n: (len(re.findall(r"\b" + n + r"\b", original, re.I)),
+                             max(m.start() for m in re.finditer(r"\b" + n + r"\b", original, re.I)))
+            set_name = a if pos(a) > pos(b) else b
+            q = re.sub(r"\b(?:" + a + "|" + b + r")\b", " ", q)
     for w in set_name.split():
         q = re.sub(r"\b" + re.escape(w) + r"\b", " ", q)
     out["set_name"] = set_name
@@ -683,6 +702,8 @@ def price_plausible(title, eur):
         return False
     if is_combo(title) or _BULK_RE.search(title or "") or SHEET_RE.search(title or ""):
         return eur <= 20000
+    if re.search(r"mini\s+tin", title or "", re.I) and not re.search(r"display|case|\d+\s*x", title or "", re.I):
+        return eur <= 400   # „30th Celebration Mini Tin“ za 74 519 Kč je chyba obchodu
     if _SEALED_TYPE_RE.search(title or ""):
         return eur <= 6000
     if _GRADED_RE.search(title or ""):
@@ -769,7 +790,7 @@ ACCESSORY_PATTERNS = [
     r"card\s*saver\w*", r"semi\s*rigid\w*", r"graded\s+(?:card\s+)?(?:case|slab)\s+(?:holder|protector)",
     r"slab\s+(?:case|holder|stand)\w*", r"pr[áa]zdn\w*\s+slab\w*",
     # prázdne krabice, kódy, nepravé karty – nie sú to produkty s kartami
-    r"pr[áa]zdn\w*", r"empty", r"bez\s+(?:booster\w*|bal[íi][čc]\w*|kar[ite]\w*|obsahu)",
+    r"pr[áa]zdn\w*", r"empty", r"krabi[čc]k\w*\s+(?:\S+\s+){0,3}(?:ultra\s+premium|premium|elite|etb|booster)", r"bez\s+(?:booster\w*|bal[íi][čc]\w*|kar[ite]\w*|obsahu)",
     r"(?:only\s+)?box\s+only", r"len\s+(?:krabic\w*|box)", r"jen\s+(?:krabic\w*|box)",
     r"code\s*cards?", r"online\s+(?:code|k[óo]d\w*)", r"ptcgl\s+code\w*",
     r"proxy\w*", r"replik\w*", r"fake", r"custom\s+cards?", r"fan\s*-?made",
@@ -1014,7 +1035,9 @@ def detect_stock(text):
 GROUP_TYPES = [
     ("etb", re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I)),
     ("booster box", re.compile(r"booster\s*(?:box|display)|boosterbox|(?-i:\bBB\b)", re.I)),
-    ("booster bundle", re.compile(r"booster\s*bundle", re.I)),
+    ("bundle display", re.compile(r"bundle\W+(?:sealed\s+)?display|bundle\W+(?:sealed\s+)?case|sealed\s+display", re.I)),
+    ("booster bundle", re.compile(r"booster\s*bundle|\bbundle\b", re.I)),
+    ("ex box", re.compile(r"\bex\s+box\b", re.I)),
     ("sleeved booster", re.compile(r"sleeved\s+booster", re.I)),
     ("3-pack blister", re.compile(r"3\s*-?\s*pack|three\s+pack|3\s*booster\s+blister", re.I)),
     ("checklane blister", re.compile(r"checklane|1\s*-?\s*pack\s+blister|single\s+blister", re.I)),
@@ -1027,7 +1050,10 @@ GROUP_TYPES = [
 ]
 _VARIANT_RES = [
     ("pc", re.compile(r"pok[eé]mon\s+center", re.I)),
-    ("half", re.compile(r"\bhalf\b|polovi[čc]n", re.I)),
+    ("half", re.compile(r"\bhalf\b|polovi[čc]n|\b18\s*-?\s*(?:packs?|booster\w*|bal\w*)\s*(?:booster\s*)?(?:box|display)", re.I)),
+    ("jumbo", re.compile(r"\bjumbo\b", re.I)),
+    ("slim", re.compile(r"\bslim\b", re.I)),
+    ("enh", re.compile(r"\benhanced\b", re.I)),
     ("rev", re.compile(r"reverse", re.I)),
     ("psa", re.compile(r"\b(?:psa|cgc|bgs|graded)\b", re.I)),
     ("used", None),   # podľa card_condition (stav karty na konci názvu)
@@ -1043,11 +1069,18 @@ _COMBO_TYPES = [
     re.compile(r"collection|kolekci", re.I),
 ]
 # Pri blistroch a tinoch rozhoduje aj Pokémon/motív – rôzne motívy sa nespájajú
-_DETAIL_TYPES = {"3-pack blister", "checklane blister", "blister", "mini tin", "tin", "build battle"}
+_DETAIL_TYPES = {"3-pack blister", "checklane blister", "blister", "mini tin", "tin", "build battle", "ex box"}
 _DETAIL_SKIP = GENERIC_WORDS | {
     "checklane", "premium", "pack", "blister", "mini", "tin", "tins", "scarlet", "violet", "sword",
     "shield", "mega", "evolution", "series", "edition", "with", "build", "battle", "kit", "stadium",
     "japonsky", "japanese", "korejsky", "korean", "cinsky", "chinese", "nemecky", "german"}
+# slová, ktoré pri spájaní podľa slov nerozhodujú (obchod, značka, jazyk, séria, slovo „box“).
+# „premium“, „ultra“, „special“, „mega“, „x“, „display“ a číslo série rozhodujú – tie ostávajú.
+_WORD_SKIP = (GENERIC_WORDS - {"premium", "display", "mini"}) | {
+    "usa", "pc", "the", "and", "a", "s", "jp", "kr", "cn", "chn", "japan", "korea", "japanese", "korean",
+    "chinese", "japonsky", "japonska", "korejsky", "korejska", "cinsky", "cinska", "simplified",
+    "nemecky", "german", "pozor", "new", "original", "with", "ex2", "edition",
+    "scarlet", "violet", "sword", "shield", "sun", "moon", "sv", "swsh", "sm", "anniversary"}
 
 
 @lru_cache(maxsize=20000)
@@ -1059,7 +1092,7 @@ def is_combo(title):
     return bool(re.search(
         r"(?<![\w/.,])(?:[2-9]|1[0-9])\s*(?:x|ks|kusy|pcs)(?![a-z])" + _CONTENT_AFTER +
         r"|\bx\s*(?:[2-9]|1[0-9])\b" + _CONTENT_AFTER +
-        r"|\b(?:bundle\s+deal|komplet\w*|set\s+of|sada)\b", t, re.I))
+        r"|\b(?:bundle\s+deal|komplet\w*|set\s+of|sada(?!['’]s))\b|\s\+\s", t, re.I)) and not CODE_CARD_RE.search(title or "")
 
 
 @lru_cache(maxsize=20000)
@@ -1079,8 +1112,25 @@ def group_key(title, lang=""):
     pokemon = (p.get("pokemon") or "").lower()
     set_name = p.get("set_name") or ""
     number = p.get("card_number") or ""
+    if ptype:
+        set_name = _group_set(t, set_name)
 
-    if ptype and set_name and ptype != "collection":
+    if ptype and (ptype == "collection" or ptype in _DETAIL_TYPES or not set_name):
+        # kolekcie, tiny, blistre a produkty bez setu: spoja sa len pri ROVNAKÝCH slovách v názve
+        drop = _WORD_SKIP | fold_words(set_name)
+        tt = re.sub(r"\((?:sv|me|swsh)\s*[\d.]+\)|\b\d+\.\d+\b", " ", t, flags=re.I)   # „(SV10.5)“, „2.5“
+        if set_name not in SERIE:   # názov série nerozhoduje: „Mega Evolution 2.5 Ascended Heroes – Mini Tin“
+            tt = re.sub(r"mega\s+evolution|scarlet\s*(?:&|and)?\s*violet|sword\s*(?:&|and)?\s*shield|sun\s*(?:&|and)?\s*moon",
+                        " ", tt, flags=re.I)
+        tt = re.sub(r"(?<![\w.])(\d)\s*-?\s*pack\b", r"\1pack", tt, flags=re.I)  # 2-Pack = 2 Pack = 2pack
+        words = sorted({_stem(w) for w in fold_words(tt)} - {_stem(w) for w in drop})
+        words = [w for w in words if (len(w) >= 2 or w.isdigit() or w in ("x", "y"))
+                 and not (w.isdigit() and len(w) > 1 and not re.fullmatch(r"(?:19|20)\d\d", w))
+                 and not re.fullmatch(r"(?:sv|me|swsh|sm|xy|csv)\d+\w*", w)]
+        if len(words) >= (1 if set_name else 2):
+            return f"w|{set_name}|{ptype}|{'-'.join(words)}|{variants}|{lang}"
+        return None
+    if ptype and set_name:
         # ETB, box, bundle, booster: v sete je len jeden, Pokémon na obale („ETB (Mega Zeraora)“) nerozhoduje
         who = "" if ptype in _ONE_PER_SET else pokemon
         key = f"s|{set_name}|{ptype}|{who}|{variants}|{lang}"
@@ -1117,6 +1167,58 @@ def group_key(title, lang=""):
 
 
 _ONE_PER_SET = {"etb", "booster box", "booster bundle", "sleeved booster", "booster pack"}
+
+# Sety, ktoré sa len SPÁJAJÚ (japonské, kórejské, čínske a staršie anglické). Nie sú v KNOWN_SETS,
+# aby neovplyvnili hľadanie ani zoznam setov. Prednosť majú pred sériou („Mega Evolution – Inferno X“)
+# a pred kratším setom v názve („Collect 151: Gathering“ nie je to isté ako „151“).
+GROUP_SETS = {
+    # SV / Mega (JP, KR)
+    "ancient roar": "", "future flash": "", "wild force": "", "cyber judge": "", "clay burst": "",
+    "snow hazard": "", "triplet beat": "", "triple beat": "triplet beat", "raging surf": "",
+    "ruler of the black flame": "", "night wanderer": "", "stellar miracle": "", "paradise dragona": "",
+    "super electric breaker": "", "battle partners": "", "glory of team rocket": "", "mask of change": "",
+    "crimson haze": "", "scarlet ex": "", "violet ex": "", "mega symphonia": "", "mega dream": "",
+    "inferno x": "", "abyss eye": "", "nihil zero": "", "munikis zero": "nihil zero", "ninja spinner": "",
+    "storm emeralda": "", "mega brave": "mega evolution mega brave",
+    # SV (CN)
+    "blade awakening": "", "eternal birth": "", "dark crystal blaze": "", "chasing glory together": "",
+    "bright fantasy": "", "brilliant fantasy": "", "stellar crystal": "", "bonus round": "",
+    "terastal gathering": "", "vivid portrayals indigo": "", "vivid portrayals obsidian": "",
+    "collect 151 gathering": "", "collect 151 hope": "",
+    "gem pack vol 1": "", "gem pack vol 2": "", "gem pack vol 3": "", "gem pack vol 4": "",
+    "gem pack vol 5": "", "gem pack vol 6": "",
+    # SwSh (JP, KR, CN)
+    "time gazer": "", "space juggler": "", "battle region": "", "star birth": "", "vmax climax": "",
+    "incandescent arcana": "", "paradigm trigger": "", "lost abyss": "", "eevee heroes": "",
+    "fusion arts": "", "blue sky stream": "", "jet black spirit": "", "legendary heartbeat": "",
+    "matchless fighters": "", "rapid strike": "", "single strike": "", "silver lance": "",
+    "shiny star v": "", "vmax rising": "", "infinity zone": "", "towering perfection": "",
+    "brilliant counterattack": "", "scorching skies": "", "final flame dance": "", "shadow of glory": "",
+    "primordial arts overgrow": "", "primordial arts torrent": "", "brave stars brave": "",
+    "brave stars charm": "", "azure shadows": "", "shadows of the blue sea": "",
+    # SM (JP) a staršie EN
+    "dream league": "", "alter genesis": "", "double blaze": "", "gg end": "", "remix bout": "",
+    "ultra shiny gx": "", "burning shadows": "", "forbidden light": "", "celestial storm": "",
+    "ultra prism": "", "crimson invasion": "", "guardians rising": "", "shining legends": "",
+    "dragon majesty": "", "cosmic eclipse": "", "team up": "", "lost thunder": "",
+    "ancient origins": "", "roaring skies": "", "fates collide": "", "steam siege": "",
+    "primal clash": "", "phantom forces": "", "furious fists": "", "xy evolutions": "",
+    "shadow threat": "",
+}
+_GROUP_SETS_RE = [(re.compile(r"\b" + re.escape(a) + r"\b"), c or a)
+                  for a, c in sorted(GROUP_SETS.items(), key=lambda x: len(x[0]), reverse=True)]
+
+
+def _group_set(t, set_name):
+    """Set na spájanie: GROUP_SETS má prednosť pred sériou a pred kratším známym setom."""
+    f = " ".join(re.findall(r"[a-z0-9]+", fold(t)))
+    f = re.sub(r"\bgem pack vol(?:ume)?\s*(\d)\b", r"gem pack vol \1", f)
+    f = re.sub(r"\bcollect 151\b", "collect 151", f)
+    for rx, canon in _GROUP_SETS_RE:
+        m = rx.search(f)
+        if m and (not set_name or set_name in SERIE or len(m.group(0)) > len(set_name)):
+            return canon
+    return set_name
 _CODE_KEY_RE = re.compile(r"\(([A-Z0-9]{2,5})(?:\s+([A-Z]{1,3}))?\s+([A-Z]{0,3})(\d{1,3})[a-z]?\)")
 # Kód setu -> počet kariet v sete (číslo za lomkou). Gengar píše „(SSP 238)“, iné obchody „238/191“.
 # Overené sety; nové sa doplnia samé z katalógov (learn_code_totals), ručne netreba nič.
@@ -1293,6 +1395,9 @@ def product_kind(title):
         return "sheet"
     if not is_tcg_product(title) and is_accessory(title):
         return "accessory"
+    # karta s kódom setu: „Ancient Booster Energy Capsule (PAR 159)“, „Charmander (PAF 007) - … Collection“
+    if CODE_CARD_RE.search(title or "") and not re.search(r"booster\s*(?:box|display)|elite\s+trainer|\betb\b", title, re.I):
+        return "card"
     return "sealed" if _SEALED_TYPE_RE.search(title or "") else "card"
 
 
