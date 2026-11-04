@@ -60,7 +60,7 @@ def is_admin():
 
 _ETB_RE = re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I)
 _BOX_RE = re.compile(r"booster\s*(?:box|display)|boosterbox|(?-i:\bBB\b)", re.I)
-_BUNDLE_RE = re.compile(r"\bbundle\b", re.I)
+_BUNDLE_RE = re.compile(r"(?<!iron\s)\bbundle\b", re.I)   # „Iron Bundle“ je Pokémon (karta), nie booster bundle
 _SEALED_RE = re.compile(r"booster|bundle|elite\s+trainer|\betb\b|collection|kolekci|\btins?\b|blister|"
                         r"display|deck|premium|build\s*(?:&|and)?\s*battle|\bbox\b|chest|bal[íi][čc]|"
                         r"starter|academy|\bcase\b|mystery|plechovk|\bsada\b", re.I)
@@ -108,7 +108,7 @@ def build_home():
         if not L.is_tcg_product(title) or not L.price_plausible(title, price):
             continue
         lang = L.detect_language(title)
-        if lang in L.ASIAN_LANGS:
+        if lang in L.ASIAN_LANGS or (not lang and L.is_asian_set(title)):   # „Abyss Eye Booster Box“ = JP
             continue
         it = {"link": link, "title": title, "shop": shop, "price_eur": round(price, 2),
               "stock": stock or "", "image": image or any_image or "", "language": lang,
