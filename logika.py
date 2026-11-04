@@ -1217,6 +1217,33 @@ GROUP_SETS = {
     "primal clash": "", "phantom forces": "", "furious fists": "", "xy evolutions": "",
     "shadow threat": "",
 }
+# Sety, ktoré vychádzajú LEN v Ázii (JP / KR / CN). Obchody často nepíšu jazyk do názvu
+# („Abyss Eye Booster Box“), preto sa podľa mena setu spozná ázijský produkt (úvodná stránka).
+ASIAN_ONLY_SETS = {
+    "ancient roar", "future flash", "wild force", "cyber judge", "clay burst", "snow hazard",
+    "triplet beat", "triple beat", "raging surf", "ruler of the black flame", "night wanderer",
+    "stellar miracle", "paradise dragona", "super electric breaker", "battle partners",
+    "glory of team rocket", "mask of change", "crimson haze", "scarlet ex", "violet ex",
+    "mega symphonia", "mega dream", "inferno x", "abyss eye", "nihil zero", "munikis zero",
+    "ninja spinner", "storm emeralda", "mega brave", "heat wave arena", "heat wave",
+    "blade awakening", "eternal birth", "dark crystal blaze", "chasing glory together",
+    "bright fantasy", "brilliant fantasy", "stellar crystal", "terastal gathering",
+    "vivid portrayals indigo", "vivid portrayals obsidian", "collect 151 gathering", "collect 151 hope",
+    "gem pack", "time gazer", "space juggler", "battle region", "star birth", "vmax climax",
+    "incandescent arcana", "paradigm trigger", "lost abyss", "eevee heroes", "fusion arts",
+    "blue sky stream", "jet black spirit", "legendary heartbeat", "matchless fighters",
+    "single strike", "silver lance", "shiny star v", "vmax rising", "infinity zone",
+    "towering perfection", "brilliant counterattack", "scorching skies", "final flame dance",
+    "shadow of glory", "primordial arts", "brave stars", "azure shadows", "shadows of the blue sea",
+}
+_ASIAN_SETS_RE = re.compile(r"\b(?:" + "|".join(re.escape(x) for x in sorted(ASIAN_ONLY_SETS, key=len, reverse=True)) + r")\b")
+
+
+def is_asian_set(title):
+    """Produkt zo setu, ktorý vyšiel len v Ázii (JP / KR / CN)."""
+    return bool(_ASIAN_SETS_RE.search(" ".join(re.findall(r"[a-z0-9]+", fold(title)))))
+
+
 _GROUP_SETS_RE = [(re.compile(r"\b" + re.escape(a) + r"\b"), c or a)
                   for a, c in sorted(GROUP_SETS.items(), key=lambda x: len(x[0]), reverse=True)]
 
