@@ -1514,6 +1514,22 @@ def _feed_currency(shop, raw_price, d):
     return (shop.get("currency") or ("CZK" if shop.get("country") == "CZ" else "EUR")).upper()
 
 
+SK_VAT = 0.23   # slovenská DPH od 2025
+CZ_VAT = 0.21
+
+
+def _sk_vat_wrong(shop, d):
+    """SK obchod, ktorého feed počíta cenu s českou DPH 21 % (imago) – cena na webe je s 23 %."""
+    if (shop.get("country") or "").upper() != "SK":
+        return False
+    vat = L.to_float((d.get("VAT") or "").replace("%", "").strip())
+    if vat is None:
+        return False
+    if vat < 1:   # „0.21“ namiesto „21%“
+        vat *= 100
+    return abs(vat - CZ_VAT * 100) < 0.01
+
+
 _FEED_ITEM_TAGS = ("SHOPITEM", "ITEM", "ENTRY", "PRODUCT", "OFFER")
 _FEED_TEXT_KEYS = ("CATEGORYTEXT", "PRODUCT_TYPE", "GOOGLE_PRODUCT_CATEGORY", "MANUFACTURER", "BRAND",
                    "CATEGORY", "DESCRIPTION")
@@ -1577,6 +1593,12 @@ def parse_feed(shop, stream, limit=None, max_bytes=150 * 1024 * 1024):
         price_czk = None
         if _feed_currency(shop, raw, d) == "CZK":
             price_czk, price = price, L.czk_to_eur(price)
+        elif _sk_vat_wrong(shop, d):
+            # imago heureka_sk.xml (november 2026): cena s českou DPH 21 % („VAT: 21%“), web má
+            # slovenských 23 % – napr. vo feede 86,34 €, na webe 87,78 €. Prepočet sa vypne sám,
+            # keď obchod feed opraví (VAT: 23%).
+            price = price / (1 + CZ_VAT) * (1 + SK_VAT)
+            info["vat_fixed"] = info.get("vat_fixed", 0) + 1
         if not L.price_plausible(title, price):
             skip("nezmyselná cena")
             continue
