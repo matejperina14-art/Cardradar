@@ -69,6 +69,7 @@ GENERIC_WORDS = {
     "premium", "kolekcia", "kolekce", "set", "edicia", "edice", "the", "and", "of",
     "en", "eng", "english", "anglicky", "anglicka", "anglicke", "card", "cards", "karty",
     "game", "hra", "balicek", "balicky", "sealed",
+    "upc", "spc", "bb", "bbb", "plechovka", "plechovky",   # skratky typu produktu
 }
 
 
@@ -164,10 +165,17 @@ PRODUCT_PATTERNS = [
     ("booster box", r"\bbooster\s*(?:box|display)\b"),
     ("booster bundle", r"\bbooster\s*bundle\b"),
     ("booster bundle", r"\bbundle\b"),                     # „bundle“ = booster bundle
+    ("booster bundle", r"\bbbb\b"),                        # BBB = booster bundle
+    ("booster box", r"\bbb\b"),                            # BB = booster box
+    # UPC / SPC pred „premium collection“, inak by „ultra premium collection“ našlo každú premium kolekciu
+    ("ultra premium collection", r"\bultra[\s-]*premium(?:\s+(?:collection|kolekci\w*|kolekce))?\b"),
+    ("ultra premium collection", r"\bupc\b"),
+    ("super premium collection", r"\bsuper[\s-]*premium(?:\s+(?:collection|kolekci\w*|kolekce))?\b"),
+    ("super premium collection", r"\bspc\b"),
     ("collection box", r"\bcollection\s+box\b"),
     ("premium collection", r"\bpremium\s+collection\b"),
     ("blister", r"\bblister(?:\s+pack)?\b"),
-    ("tin", r"\btins?\b"),
+    ("tin", r"\btins?\b|\bplechovk\w*"),
     ("booster box", r"\bdisplay\b"),                        # „display“ = booster box
     ("collection", r"\bcollection\b|\bkolekci\w*|\bkolekce\b"),
     ("booster", r"\bboosters?\b"),
@@ -431,6 +439,8 @@ _PTYPE_ANCHORS = {
     "booster box": ("booster", "display", "boosterbox", "bb"),
     "booster bundle": ("bundle",),
     "collection box": ("collection", "kolekci"),
+    "ultra premium collection": ("ultra", "upc"),
+    "super premium collection": ("super", "spc"),
     "premium collection": ("premium", "premiov"),
     "blister": ("blister",),
     "tin": ("tin", "plechov"),
@@ -546,6 +556,8 @@ _PTYPE_TITLE_RE = {
     "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b|boosterbox|(?-i:\bBB\b)", re.I),   # BB = Posbírej to
     "booster bundle": re.compile(r"\bbundle\b", re.I),   # niektoré obchody píšu len „Bundle“
     "collection box": re.compile(r"collection\s+box|kolekci\w*\s+box", re.I),
+    "ultra premium collection": re.compile(r"ultra[\s-]*pr[ée]mi(?:um|ov\w*)|\bupc\b", re.I),
+    "super premium collection": re.compile(r"super[\s-]*pr[ée]mi(?:um|ov\w*)|\bspc\b", re.I),
     "premium collection": re.compile(r"premium\s+collection|pr[ée]miov\w*\s+kolekci", re.I),
     "blister": re.compile(r"blister", re.I),
     "tin": re.compile(r"\btins?\b|plechovk\w*", re.I),
