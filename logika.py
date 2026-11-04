@@ -164,7 +164,7 @@ PRODUCT_PATTERNS = [
     ("elite trainer box", r"\betb\b"),
     ("booster box", r"\bbooster\s*(?:box|display)\b"),
     ("booster bundle", r"\bbooster\s*bundle\b"),
-    ("booster bundle", r"\bbundle\b"),                     # „bundle“ = booster bundle
+    ("booster bundle", r"(?<!iron\s)\bbundle\b"),          # „bundle“ = booster bundle (nie Pokémon Iron Bundle)
     ("booster bundle", r"\bbbb\b"),                        # BBB = booster bundle
     ("booster box", r"\bbb\b"),                            # BB = booster box
     # UPC / SPC pred „premium collection“, inak by „ultra premium collection“ našlo každú premium kolekciu
@@ -554,7 +554,7 @@ def _strict_words(parsed):
 _PTYPE_TITLE_RE = {
     "elite trainer box": re.compile(r"elite\s+trainer(?:\s+box)?|\betb\b", re.I),
     "booster box": re.compile(r"booster\s*(?:box|display)|\bdisplay\b|boosterbox|(?-i:\bBB\b)", re.I),   # BB = Posbírej to
-    "booster bundle": re.compile(r"\bbundle\b", re.I),   # niektoré obchody píšu len „Bundle“
+    "booster bundle": re.compile(r"(?<!iron\s)\bbundle\b", re.I),   # len „Bundle“; „Iron Bundle“ je Pokémon
     "collection box": re.compile(r"collection\s+box|kolekci\w*\s+box", re.I),
     "ultra premium collection": re.compile(r"ultra[\s-]*pr[ée]mi(?:um|ov\w*)|\bupc\b", re.I),
     "super premium collection": re.compile(r"super[\s-]*pr[ée]mi(?:um|ov\w*)|\bspc\b", re.I),
